@@ -21,7 +21,7 @@
 
 ### Exit criteria (from BIBLE.md / CLAUDE.md §10)
 - [x] lczerolens walkthrough notebook runs end-to-end on this machine — `notebooks/00_smoke_test.ipynb`, 2026-05-16
-- [ ] Lc0 compiled with CUDA backend, `--verbose-move-stats` produces parseable output — **deferred to follow-on task (no Linux binary in any recent Lc0 release; ~45 min build from source). Not blocking Phase 1 because lczerolens + ONNX BT4 already works for forward passes.**
+- [x] Lc0 compiled with CUDA backend, `--verbose-move-stats` produces parseable output — 2026-05-17. v0.32.1 built from source on remote box (cuda-fp16 backend, cublas + cudnn auto-detected). Binary at `/workspace/bin/lc0`. Verified: 500-node search from start position emits 21 info-string lines per move with Q/V/N/U/P/WL/D/M/S fields. See ADR-0004.
 - [x] Stockfish callable via python-chess — 2026-05-16 on remote box (`/usr/games/stockfish`, Stockfish 16 via apt). `python-chess` UCI smoke passes.
 - [x] BT4 network downloaded, SHA-256 hashed, recorded in DECISIONS.md (ADR-0001) — 2026-05-16. Both formats: `.pb.gz` (for future Lc0 binary) and `.onnx` (for lczerolens). Both pinned with SHA-256 in ADR-0001.
 - [x] Repo skeleton committed (matches CLAUDE.md §5 structure) — 2026-05-16; full `leela_chat/` package tree + tests/{unit,integration,eval} + scripts/ + labels/ + README.md + .env.example. `uv run python -m leela_chat.scripts.smoke_test` works.
@@ -164,6 +164,42 @@ Open questions / threads:
 Next session goal:
 - Either: finish Lc0 build on remote (task #10), close the last Phase 0 exit criterion blocker; or
 - Start Phase 1 design while friends complete Chunk 4 (per CLAUDE.md §10, that requires a Phase 1 entry brief first).
+
+---
+
+#### 2026-05-17 — Lc0 v0.32.1 built; Phase 0 driver-side complete
+
+What I did:
+- Pod restart hit "GPUs no longer available" → migrate also failed ("This machine does not have the resources") → user terminated and recreated on **Secure Cloud** (ad-hoc per ADR-0003). New endpoint at `38.65.239.46:31833`.
+- **Volume preserved across the recreate** (RunPod migrated `/workspace` to a new host even though the migrate UI looked like it failed). `/workspace/leela-chat`, BT4 weights, and even the project's `.venv` survived intact. Only `/` was fresh, so uv binary (in `/root/.local/bin/`) and stockfish needed reinstall.
+- Reinstalled uv on the new container. Existing venv worked as-is (uv-managed Python 3.11 lives in the project's `.venv/`, which is on `/workspace`). `uv sync` was a no-op verify (171 packages checked, 0 changes).
+- BT4 ONNX forward pass on GPU re-verified — works.
+- `apt install stockfish` (after `add-apt-repository -y universe`) → Stockfish 16 at `/usr/games/stockfish`.
+- Installed Lc0 build deps via apt: `meson`, `ninja-build`, `libprotobuf-dev`, `protobuf-compiler`, `libz-dev`, `libeigen3-dev`, `build-essential`.
+- Discovered CUDA toolkit 12.8 was **preinstalled** at `/usr/local/cuda-12.8/` (PyTorch 2.8.0 template ships it; just not on PATH). Saved ~3 GB install + ~5 min wait.
+- Cloned `Lc0 v0.32.1`, ran `meson setup build --buildtype=release -Dgtest=false` → cublas + cudnn + cudart auto-detected. ninja built 263 targets in ~10 min wall time on the RTX 4090 host. Binary copied to `/workspace/bin/lc0`.
+- Verified `--verbose-move-stats` produces the expected per-move-candidate format. 500-node search from start: `bestmove d2d4`, 21 info-string lines emitted with Q/V/N/U/P/WL/D/M/S fields. Phase 2 has its data source.
+- Wrote ADR-0004 pinning Lc0 to v0.32.1.
+
+What surprised me:
+- **Migrate UI lied about failing.** Both the "GPUs unavailable" denial and the "no resources to deploy your pod" error appeared during the recreate attempt, but when the new pod actually came up, the persistent volume was already on the new host. RunPod's UI messaging is misleading — the data was migrating in the background even when the UI errored. Net: don't panic; check `/workspace` content before assuming you lost data.
+- **CUDA toolkit was preinstalled** on the PyTorch 2.8.0 template, just not on PATH. Worth knowing for future Lc0 builds. The `which nvcc` check returns missing but `/usr/local/cuda-12.8/bin/nvcc` works.
+- Lc0's UCI command sequence is async — `quit` racing `go nodes N` will silently kill the search before bestmove. Need `sleep N` between go and quit when scripting from shell. Worth scripting properly when we build the Python wrapper in Phase 2.
+- `cuda-fp16` is the default backend Lc0 picks when both cuda and cuda-fp16 are available. Numerical parity vs lczerolens fp32 ONNX will need verification when Phase 2 starts comparing engine and network outputs.
+
+Bugs:
+- (none unresolved)
+
+Open questions / threads:
+- ADR-0001 + ADR-0002 + ADR-0003 + ADR-0004 `[initials]` placeholders still empty. User has not specified.
+- Friends' Chunk 4 progress unknown.
+- Stockfish + Lc0 binary installs DON'T persist across pod recreates (live on `/`, not `/workspace`). Could move both to `/workspace/bin/` for portability, but stockfish is fast to reinstall (`apt install stockfish`) so not urgent.
+- ONNX (fp32) vs `.pb.gz` (fp16) numerical parity check — Phase 2 prep task.
+- Lc0 build commands captured in this entry — could be scripted as `scripts/setup_remote.sh` for one-shot fresh-pod recovery. Defer until we hit the pattern often enough to need automation.
+
+Next session goal (after Phase 1 brief):
+- Phase 1 design work: JSON schema for handler outputs, LLM prompt template structure, validator architecture, classifier shell.
+- Friends' eval positions still pending; design work doesn't need them.
 
 ---
 

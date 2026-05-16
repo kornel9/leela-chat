@@ -156,4 +156,46 @@ ADR-0002 locked the architectural pattern (local CPU + remote cloud GPU split) b
 
 ---
 
-<!-- Append new ADRs below this line. Number sequentially: ADR-0004, ADR-0005, etc. -->
+### ADR-0004: Pin Lc0 engine version to v0.32.1
+
+- **Date:** 2026-05-17
+- **Status:** Accepted
+- **Phase:** Phase 0 — Environment
+- **Decision-makers:** [initials]
+
+#### Context
+Per CLAUDE.md §4 the Lc0 engine version is a foundational pin. Lc0 ships no Linux binaries in recent releases (v0.31.x – v0.32.x are Windows + Android only), so the engine has to be built from source on the remote box. Pinning the source tag we build from prevents silent drift.
+
+#### Decision
+Pin Lc0 to **v0.32.1** (released 2025-11-23, the latest stable as of build date).
+
+- **Source tag:** `https://github.com/LeelaChessZero/lc0/releases/tag/v0.32.1`
+- **Build host:** RunPod Secure Cloud RTX 4090 (per ADR-0003 fallback after Community capacity issues 2026-05-17)
+- **Build toolchain:** meson 1.3.2 + ninja 1.11.1 + nvcc 12.8 (preinstalled at `/usr/local/cuda-12.8/`).
+- **Backends auto-detected by meson:** `cublas`, `cudnn`, `cudart`. Default runtime backend selected: `cuda-fp16`.
+- **Installed binary:** `/workspace/bin/lc0`
+- **Runtime env:** `LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64`
+- **Verified 2026-05-17:** `--verbose-move-stats` emits the expected `info string <move> N:... P:... Q:... V:...` lines per move candidate. 500-node search from starting position completes in ~250ms after backend warmup. `bestmove d2d4` from start with BT4.
+
+#### Alternatives considered
+- **v0.32.0 / pre-release tags:** rejected — no reason to use older stable.
+- **HEAD / master:** rejected — non-reproducible. Bug fixes can change `--verbose-move-stats` formatting, which Phase 2 will parse.
+- **Pre-built Linux binary:** unavailable; no recent Lc0 release ships one.
+- **Ubuntu `nvidia-cuda-toolkit` package:** rejected — ships older CUDA (12.0 on 24.04); we want toolkit major.minor to match the runtime cu128.
+
+#### Consequences
+- Reproducible Lc0 behavior across rebuilds (same source tag, same backends).
+- `--verbose-move-stats` output format frozen to v0.32.1 — Phase 2 parsing can rely on it.
+- Bumping the version is a deliberate ADR amendment, not implicit drift.
+- A fresh pod requires a rebuild (~10 min ninja compile if CUDA toolkit is preinstalled, longer if not). All commands captured in PHASE_NOTES.md 2026-05-17 entry.
+- `cuda-fp16` backend uses half-precision inference. Numerical parity with lczerolens ONNX (fp32) is approximate, not exact. May matter when comparing engine output to network output in Phase 2 — flag for verification.
+
+#### References
+- ADR-0001 (BT4 network pin) — Lc0 binary consumes BT4 `.pb.gz`; lczerolens consumes BT4 `.onnx`. Same weights.
+- ADR-0003 (RunPod GPU target) — Lc0 lives on the remote box, not the laptop.
+- CLAUDE.md §4 "Pinned versions" — Lc0 version listed as TBD; this ADR fills it.
+- CLAUDE.md §8 — "Smolgen in BT4: not vanilla transformer attention; logit-lens math differs." Affects Phase 6, not Phase 0.
+
+---
+
+<!-- Append new ADRs below this line. Number sequentially: ADR-0005, ADR-0006, etc. -->
