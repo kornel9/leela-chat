@@ -38,8 +38,8 @@ Links to PRIOR_WORK.md entries, papers, repos, or commits relevant to this decis
 
 ### ADR-0001: Pin Lc0 network to BT4-1024x15x32h-swa-6147500
 
-- **Date:** 2026-05-16 (decision accepted; SHA-256 pending download)
-- **Status:** Accepted — network pin confirmed; SHA-256 to be filled in when weights are downloaded in Chunk 3
+- **Date:** 2026-05-16 (decision accepted; weights downloaded + hashed 2026-05-16)
+- **Status:** Accepted
 - **Phase:** Phase 0 — Environment
 - **Decision-makers:** [initials]
 
@@ -47,7 +47,18 @@ Links to PRIOR_WORK.md entries, papers, repos, or commits relevant to this decis
 We need a single Lc0 network for the entire project lifetime. Switching networks invalidates probes, SAEs, max-activation caches, and feature labels.
 
 #### Decision
-Pin **BT4-1024x15x32h-swa-6147500**. Recorded SHA-256: _pending — to be filled in Chunk 3 (Lc0 build + BT4 download)_.
+Pin **BT4-1024x15x32h-swa-6147500**.
+
+Two file formats are stored side-by-side on the remote box. They represent the same weights — the ONNX is a conversion of the protobuf, with the same `BT4-1024x15x32h-swa-6147500` checkpoint at its core.
+
+| Format | Used by | Source | SHA-256 |
+|---|---|---|---|
+| `model.pb.gz` (Lc0 protobuf, 335,897,546 B) | Lc0 binary (Phase 2 MCTS) | `https://huggingface.co/shermansiu/lc0_BT4-1024x15x32h-swa-6147500` | `66e6c1b5308c34230801dc171df580d7a66ec916dc2211246a485ef8e545c67e` |
+| `BT4-1024x15x32h-swa-6147500.onnx` (741,143,429 B) | lczerolens (Phase 1+ forward passes) | `https://huggingface.co/andyrdt/leela-chess-bt4-onnx` | `d869428f55dc27699c0b252cd288e149607f1fd1a3d421ed2e037a4cd1744c44` |
+
+- **On-disk path (remote box):** `/workspace/weights/BT4-1024x15x32h-swa-6147500/`
+- **Architecture confirmed via `config.yaml`:** `embedding_size: 1024`, `encoder_layers: 15`, `encoder_heads: 32`, `use_smolgen: true`, `input_type: classic`, `value: wdl`, `policy: attention`.
+- **GPU forward pass verified** 2026-05-16 via lczerolens on the ONNX file (RTX 4090). Output heads: `policy: (1, 1858)`, `wdl: (1, 3)`, `mlh: (1, ...)` — extra moves-left head beyond what Maia-1100 has.
 
 #### Alternatives considered
 - **T82-768x15x24h-swa-7464000:** matches Jenner et al. and Iterative Inference papers. Rejected because the Fudan SAEs are trained on BT4, and Fudan is the most product-relevant prior work for Phases 4–7.

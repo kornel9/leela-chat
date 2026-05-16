@@ -21,11 +21,11 @@
 
 ### Exit criteria (from BIBLE.md / CLAUDE.md §10)
 - [x] lczerolens walkthrough notebook runs end-to-end on this machine — `notebooks/00_smoke_test.ipynb`, 2026-05-16
-- [ ] Lc0 compiled with CUDA backend, `--verbose-move-stats` produces parseable output — **on remote GPU box per ADR-0002**
-- [ ] Stockfish callable via python-chess
-- [ ] BT4 network downloaded, SHA-256 hashed, recorded in DECISIONS.md (ADR-0001) — **on remote GPU box per ADR-0002**
+- [ ] Lc0 compiled with CUDA backend, `--verbose-move-stats` produces parseable output — **deferred to follow-on task (no Linux binary in any recent Lc0 release; ~45 min build from source). Not blocking Phase 1 because lczerolens + ONNX BT4 already works for forward passes.**
+- [x] Stockfish callable via python-chess — 2026-05-16 on remote box (`/usr/games/stockfish`, Stockfish 16 via apt). `python-chess` UCI smoke passes.
+- [x] BT4 network downloaded, SHA-256 hashed, recorded in DECISIONS.md (ADR-0001) — 2026-05-16. Both formats: `.pb.gz` (for future Lc0 binary) and `.onnx` (for lczerolens). Both pinned with SHA-256 in ADR-0001.
 - [x] Repo skeleton committed (matches CLAUDE.md §5 structure) — 2026-05-16; full `leela_chat/` package tree + tests/{unit,integration,eval} + scripts/ + labels/ + README.md + .env.example. `uv run python -m leela_chat.scripts.smoke_test` works.
-- [ ] 50 eval positions written in `tests/eval/eval_positions.yaml` with YAML schema validated
+- [ ] 50 eval positions written in `tests/eval/eval_positions.yaml` with YAML schema validated — **friends authoring per G0.2 override.**
 
 ### Chunk plan
 1. **Chunk 1** — lczerolens smoke test (2–4 hours)
@@ -114,6 +114,56 @@ Questions / open threads:
 
 Next session goal:
 - Provision the RunPod box (ADR-0003), mirror venv with CUDA torch wheel, run smoke test there, download BT4, fill ADR-0001's SHA-256. Optionally start Chunk 4 (eval positions) locally in parallel.
+
+---
+
+#### 2026-05-16 (continued, 3) — Chunk 4 delegated to friends; pivoting to Chunk 3
+
+What I did:
+- Discussed eval-set authoring framing with user: handlers, ground truth, schema, FEN vs PGN, step-by-step process, handler spread (3–4 / 3–4 / 2–3 across the three Phase 1 handlers), recommended attributes are sufficient for first 10 (defer `expected_top_move_san` / `expected_eval_range` to Phase 1).
+- **User decided to delegate Chunk 4 authoring to chess friends.** This overrides G0.2 (the "solo authoring + friends review at Phase 1 exit" decision locked on 2026-05-16 earlier).
+- Pivoting to Chunk 3 (RunPod box) — no dependency on eval positions, so parallel work.
+
+Open questions / threads:
+- **G0.2 override consequence:** the original "friends review at Phase 1 exit" step disappears if friends are the authors. Need a replacement review step. **Options:** (a) user reviews each batch from friends as it lands; (b) a *different* friend reviews; (c) accept "multi-friend authoring = implicit consensus." **Decide before the first batch arrives.**
+- **Eval-set timeline:** friends have ~3-week runway before Phase 1 handler work needs grading. If batches don't arrive on time, pull positions back in-house.
+- **Per-handler batching:** if friends deliver positions in batches grouped by handler, the first Phase 1 handler can start grading once its ~10 are done — buys flexibility. Worth coordinating with them.
+
+Next session goal:
+- Chunk 3: provision RunPod RTX 4090 Community per ADR-0003. Mirror venv with CUDA torch wheel, run smoke test on the box, download BT4 + sha256sum → fill ADR-0001's pending hash, install Lc0 with `--verbose-move-stats`, install Stockfish.
+
+---
+
+#### 2026-05-16 (continued, 4) — Chunk 3 mostly done; Lc0 binary deferred
+
+What I did:
+- Provisioned RunPod pod (RTX 4090 Community, PyTorch 2.8.0 template, Ubuntu 24.04, 100 GB persistent volume at `/workspace`). Driver 580.105.08, CUDA 12.8.
+- Generated local SSH ed25519 keypair (`~/.ssh/id_ed25519`), registered on RunPod.
+- Set up `~/.ssh/config` with `Host runpod` alias for cleaner SSH commands.
+- Wrote pyproject.toml local/remote split per ADR-0002: `[tool.uv.environments]` constrains the resolver to "WSL Linux" + "non-WSL Linux"; dependency markers use `'microsoft' in platform_release` to pick `+cpu` (laptop) vs `+cu128` (RunPod) wheels for torch + torchvision. Downgraded pin from 2.12.0 → 2.11.0 because cu128 index lags one minor behind cpu.
+- Installed uv on remote, rsynced project to `/workspace/leela-chat/`, ran `uv sync` on the box → torch 2.11.0+cu128, torchvision 0.26.0+cu128, 174 packages.
+- Smoke test (`leela_chat.scripts.smoke_test`, Maia-1100) passes on the box with `cuda_available=True`.
+- **Downloaded BT4** in both formats: `.pb.gz` from `shermansiu/lc0_BT4-1024x15x32h-swa-6147500` (for the future Lc0 binary), `.onnx` from `andyrdt/leela-chess-bt4-onnx` (for lczerolens). Both SHA-256s recorded in ADR-0001. Verified `config.yaml` matches the pinned architecture.
+- **BT4 GPU forward pass via lczerolens (ONNX) works.** Output heads: `policy (1, 1858)`, `wdl (1, 3)`, `mlh (1, ...)`. WDL on starting position W=0.190 D=0.644 L=0.166.
+- Installed Stockfish 16 via `apt install stockfish` (after enabling `universe` repo). Verified `python-chess` UCI invocation works (depth-12 analysis from start: +40 cp white).
+
+What surprised me:
+- `lczerolens.LczeroModel.from_path` only accepts `.onnx` or `.pt`, not Lc0's native `.pb.gz`. Sherman Siu's HF repo only has `.pb.gz`. Resolved by also pulling the pre-converted ONNX from `andyrdt/leela-chess-bt4-onnx` — same network, just ONNX-serialised.
+- **No recent Lc0 release ships a Linux binary** (v0.31.x – v0.32.x are Windows + Android only). Build from source is the only path. Deferred to its own focused task (~45 min).
+- uv's default resolver locks for ALL platforms (Windows, macOS, aarch64) — initial cu128 pin failed because no matching wheel exists for Windows. Fix: `[tool.uv.environments]` whitelist to just the two real targets.
+- PEP 440 quirk redux: even the CUDA index hosts the same version under both bare and local-version-suffixed names → still need explicit `+cu128` / `+cpu` qualifiers, just like the CPU side.
+- Box has Python 3.12 baseline but uv installed 3.11 transparently via `uv sync`. No special command needed.
+- Stockfish requires `apt add-apt-repository universe` on a fresh PyTorch container — not in default repos.
+
+Open questions / threads:
+- **Lc0 binary build:** when to do it. Cost ~45 min wall time including CUDA toolkit install. Not blocking Phase 1 design. Decide: now (session ~5) vs next session.
+- ADR-0001 + ADR-0002 + ADR-0003 `[initials]` placeholders still empty. User has not specified.
+- Friends' Chunk 4 progress unknown.
+- ONNX vs `.pb.gz` numerical parity: both pin to BT4-1024x15x32h-swa-6147500. ONNX is probably fp32 while training was fp16 — small numerical differences (~1e-4) possible. Will matter if we ever compare lczerolens (ONNX) outputs to Lc0 binary (`.pb.gz`) outputs for consistency. Worth a quick parity test in Phase 2.
+
+Next session goal:
+- Either: finish Lc0 build on remote (task #10), close the last Phase 0 exit criterion blocker; or
+- Start Phase 1 design while friends complete Chunk 4 (per CLAUDE.md §10, that requires a Phase 1 entry brief first).
 
 ---
 
