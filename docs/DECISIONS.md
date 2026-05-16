@@ -104,4 +104,45 @@ Cloud-provider choice (vast.ai vs RunPod vs Lambda vs Modal vs other) is deferre
 
 ---
 
-<!-- Append new ADRs below this line. Number sequentially: ADR-0003, ADR-0004, etc. -->
+### ADR-0003: Cloud GPU provider — RunPod Community Cloud, RTX 4090 default
+
+- **Date:** 2026-05-16
+- **Status:** Accepted
+- **Phase:** Phase 0 — Environment
+- **Decision-makers:** [initials]
+
+#### Context
+ADR-0002 locked the architectural pattern (local CPU + remote cloud GPU split) but deferred provider choice. Chunk 3 (Lc0 build + BT4 download) is next and needs a concrete target machine.
+
+#### Decision
+- **Provider:** RunPod.
+- **Default tier:** Community Cloud.
+- **Default GPU class:** RTX 4090 (24 GB VRAM).
+- **Persistent volume:** start at 100 GB, grow as needed.
+- **Higher-tier instances** (Secure Cloud, A100/H100) spun up ad-hoc for specific needs (long unattended runs, Phase 4 SAE training from scratch if the Fudan repo doesn't reproduce).
+
+#### Alternatives considered
+- **Modal:** strong fit for the Rule 3 "eval on every commit" pattern (serverless function model). Rejected as primary because it ties code to Modal's abstractions and reduces portability if the project ever moves to a friend's box. Worth reconsidering for the eval-CI subsystem specifically once that exists.
+- **vast.ai:** cheaper still, but spot-marketplace volatility is the wrong trade-off for reproducible eval runs.
+- **Lambda Labs:** good hardware, overkill cost-wise before Phase 4 SAE training.
+- **Paperspace, CoreWeave, Crusoe:** wrong fit (overkill or enterprise-oriented).
+- **RunPod Secure Cloud as default:** rejected — 2–3× cost without proportional benefit while Phases 0–3 are burst-style. Easy to spin up Secure ad-hoc when needed.
+- **RTX 3090:** functionally equivalent for current needs, marginally cheaper, but the 4090's ~1.5–2× speedup on inference is worth the small hourly delta.
+- **A100 40 GB:** defer until Phase 4 demonstrates need.
+
+#### Consequences
+- Concrete operational model: SSH-based dev loop, rsync code, persistent volume holds BT4 weights + compiled Lc0 binary + SAE caches.
+- Need a dev-loop convention (sync code → run job → fetch outputs). Defer to a script in Chunk 3.
+- Eval-set runs (Rule 3) eventually need an automated spin-up → run → capture → spin-down. Worth scripting under `scripts/` during Chunk 3 or early Phase 1.
+- **Checkpoint discipline is mandatory** for any run > ~1 hour due to Community Cloud reclamation risk. Build this into probe-training and SAE-training scripts from the start.
+- Cost ceiling for Phases 0–3 is small (a few USD per active day on Community Cloud). Phase 4 SAE training is the main cost watch-out and likely warrants spinning up Secure Cloud + A100 for the duration.
+- Lock-in is minimal — RunPod's SSH + Docker model means the project remains portable (friend's box, different cloud, etc.).
+
+#### References
+- ADR-0002 (local/remote split).
+- ADR-0001 (BT4 pin — weights live on the RunPod persistent volume from Chunk 3 onward).
+- PHASE_NOTES.md 2026-05-16 session log.
+
+---
+
+<!-- Append new ADRs below this line. Number sequentially: ADR-0004, ADR-0005, etc. -->

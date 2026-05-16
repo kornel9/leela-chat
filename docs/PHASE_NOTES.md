@@ -80,14 +80,14 @@ Bugs:
 
 Questions / open threads:
 - ADR-0001 + ADR-0002 `[initials]` fields not yet filled — user has not stated preferred initials.
-- **Cloud provider sub-decision** (vast.ai / RunPod / Lambda / Modal / other) — blocks Chunk 3. Write a follow-on ADR when chosen.
-- Dev-loop pattern for remote box: rsync + SSH vs. cloud-native IDE (e.g., Modal sandbox, RunPod's web terminal). Decide alongside provider pick.
+- ~~Cloud provider sub-decision~~ — RESOLVED 2026-05-16: RunPod Community Cloud, RTX 4090 default. See ADR-0003.
+- Dev-loop pattern for remote box: rsync + SSH vs. cloud-native IDE vs. mounted VS Code Remote. Decide in Chunk 3 when the RunPod box first comes up.
 - `python-chess` vs `chess` PyPI naming: `python-chess>=1.999,<2.0` is the legacy name. Both the legacy `python-chess==1.999` shim and modern `chess==1.11.2` are installed; the runtime `import chess` resolves to 1.11.2. Probably worth simplifying to just `chess` in `pyproject.toml` to drop the redundant shim — non-urgent.
 - Possible CLAUDE.md update needed: explicit §15 documenting which subsystems run local vs remote. Defer until first remote run lands and the boundary is concrete.
 
 Next session goal:
-- Cloud provider pick + write follow-on ADR.
-- Then Chunk 2 (full repo skeleton: `leela_chat/` package tree, `tests/` tree, README stub, smoke-test script as a `.py` for CLAUDE.md §7 `uv run python -m leela_chat.scripts.smoke_test`).
+- Chunk 2 (full repo skeleton: `leela_chat/` package tree, `tests/` tree, README stub, smoke-test script as a `.py` for CLAUDE.md §7 `uv run python -m leela_chat.scripts.smoke_test`).
+- Then Chunk 3 (provision RunPod RTX 4090 Community instance per ADR-0003; mirror venv with CUDA torch wheel; download BT4 + sha256sum → fill ADR-0001; install Lc0 with `--verbose-move-stats`; install Stockfish).
 
 ---
 
