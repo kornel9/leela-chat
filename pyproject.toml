@@ -27,6 +27,10 @@ dev = [
 [tool.uv]
 package = false
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
 # CPU-only torch wheels — this laptop will never have a GPU.
 # Remote GPU machine will override this index when it gets a venv.
 # torchvision is pinned to the same index so its compiled ops (nms, etc.) match

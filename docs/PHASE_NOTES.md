@@ -24,7 +24,7 @@
 - [ ] Lc0 compiled with CUDA backend, `--verbose-move-stats` produces parseable output — **on remote GPU box per ADR-0002**
 - [ ] Stockfish callable via python-chess
 - [ ] BT4 network downloaded, SHA-256 hashed, recorded in DECISIONS.md (ADR-0001) — **on remote GPU box per ADR-0002**
-- [ ] Repo skeleton committed (matches CLAUDE.md §5 structure) — partial; pyproject.toml + .gitignore + .python-version + notebooks/ landed, full package tree deferred to Chunk 2
+- [x] Repo skeleton committed (matches CLAUDE.md §5 structure) — 2026-05-16; full `leela_chat/` package tree + tests/{unit,integration,eval} + scripts/ + labels/ + README.md + .env.example. `uv run python -m leela_chat.scripts.smoke_test` works.
 - [ ] 50 eval positions written in `tests/eval/eval_positions.yaml` with YAML schema validated
 
 ### Chunk plan
@@ -86,8 +86,34 @@ Questions / open threads:
 - Possible CLAUDE.md update needed: explicit §15 documenting which subsystems run local vs remote. Defer until first remote run lands and the boundary is concrete.
 
 Next session goal:
-- Chunk 2 (full repo skeleton: `leela_chat/` package tree, `tests/` tree, README stub, smoke-test script as a `.py` for CLAUDE.md §7 `uv run python -m leela_chat.scripts.smoke_test`).
-- Then Chunk 3 (provision RunPod RTX 4090 Community instance per ADR-0003; mirror venv with CUDA torch wheel; download BT4 + sha256sum → fill ADR-0001; install Lc0 with `--verbose-move-stats`; install Stockfish).
+- Chunk 3 (provision RunPod RTX 4090 Community instance per ADR-0003; mirror venv with CUDA torch wheel; download BT4 + sha256sum → fill ADR-0001; install Lc0 with `--verbose-move-stats`; install Stockfish).
+- Possibly Chunk 4 (first 10 eval positions in the YAML), authored locally — no GPU needed.
+
+---
+
+#### 2026-05-16 (continued) — Phase 0 Chunk 2 done
+
+What I did:
+- Created the full `leela_chat/` package tree per CLAUDE.md §5: `engine/`, `network/`, `features/`, `probes/`, `labels/`, `extractors/`, `handlers/`, `classifier/`, `llm/` (+ `llm/prompts/`), `validator/`, `conversation/`, `eval/`, `cli/`, `scripts/`. All with `__init__.py`.
+- `leela_chat/__init__.py` configures loguru once (stderr handler, INFO level, colored format) per CLAUDE.md §6 logging conventions.
+- Mirrored the notebook smoke test as `leela_chat/scripts/smoke_test.py` so `uv run python -m leela_chat.scripts.smoke_test` (CLAUDE.md §7) actually works. Verified: passes.
+- Created `tests/{unit,integration,eval}/`. `tests/eval/eval_positions.yaml` has the schema documented in comments + empty `positions: []` list (no real positions yet — that's Chunk 4; the schema-in-comments preserves Rule 3's "never remove" while still showing what an entry looks like).
+- Added `README.md` (short intro pointing at CLAUDE.md + docs/), `.env.example` (ANTHROPIC_API_KEY, OPENAI_API_KEY, HF_TOKEN), top-level `scripts/` and `labels/` dirs (with `.gitkeep`).
+- `pyproject.toml`: added `[tool.pytest.ini_options]` (testpaths, asyncio_mode=auto).
+- Verified: `pytest --collect-only` reads config from pyproject.toml and reports "0 items" cleanly. `from leela_chat import logger` resolves.
+
+What surprised me:
+- CLAUDE.md §5 layout doesn't list `leela_chat/scripts/` as a subpackage but CLAUDE.md §7 specifies `uv run python -m leela_chat.scripts.smoke_test` as a command — so it has to exist as a Python package. Resolved by creating it; top-level `scripts/` stays for one-off non-package scripts. Worth noting in a CLAUDE.md §5 update later, but the §5 layout vs §7 commands mismatch is a single line, not a structural issue.
+
+Bugs:
+- (none)
+
+Questions / open threads:
+- Empty top-level `scripts/` and `labels/` dirs currently held by `.gitkeep` — replace those once real files land.
+- `leela_chat/llm/prompts/` also `.gitkeep`-held — first handler prompt (Phase 1) will displace it.
+
+Next session goal:
+- Provision the RunPod box (ADR-0003), mirror venv with CUDA torch wheel, run smoke test there, download BT4, fill ADR-0001's SHA-256. Optionally start Chunk 4 (eval positions) locally in parallel.
 
 ---
 
