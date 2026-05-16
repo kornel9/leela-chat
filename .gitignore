@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# uv / venv
+.venv/
+uv.lock.bak
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Project data (per CLAUDE.md §5)
+data/
+weights/
+logs/
+
+# Secrets
+.env
+.env.local
+
+# OS / editor / agent local state
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.claude/
