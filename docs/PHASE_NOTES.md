@@ -400,6 +400,47 @@ Open questions / threads (carryover):
 - BT4's no-history input may also affect some positions even after the loader swap — Fudan and lc0-binary both run cold-no-history but produce sensible values; revisit whether `LczeroBoard(fen)` differs in its history-plane defaults from what BT4 was trained on.
 
 Next session goal:
-- Adopt Fudan's TransformerLens loader. Run `examples/weight_conversion.py` on the pod (after installing TransformerLens + its dependency closure). Produce `BT4.pt`. Swap `load_bt4()` to load via `HookedTransformer.from_pretrained_no_processing()` or equivalent. Swap `extract_network_inference()` to call the new model. Re-run the 20-position WDL cross-check against lc0 binary; require all 20 to agree within tolerance before re-declaring Chunk 4 done.
-- After Chunk 4 v2 is reliable: resume patch v3 steps 8-10.
+- See post-script below — Fudan-loader-swap attempt was made this session, hit deeper issues than expected. Next session: decide whether to keep digging into Fudan's loader, switch to lc0-subprocess inference, or file an issue with Fudan.
+
+---
+
+#### 2026-05-17 (cont., 5) — Fudan-loader-swap attempt; deferred to fresh session
+
+What I did (in-session investigation, no committed code):
+- Uploaded `update_research/repos/Leela-SAEs-main/` (Fudan repo, ~34 MB) to `/workspace/Leela-SAEs/` on the pod. `uv sync` succeeded with their pinned TransformerLens fork installed editable into a separate `.venv`.
+- Ran `examples/weight_conversion.py` against our BT4 ONNX (using the andyrdt file we already had). Conversion succeeded: 469 parameters loaded, `BT4.pt` (1.3 GB) saved to `/workspace/weights/BT4-1024x15x32h-swa-6147500/BT4.pt`. Symlinked into `/path/to/models/lc0/BT4.pt` (the hardcoded path their `loading_from_pretrained.py` expects).
+- Wrote a 20-position WDL cross-check using `HookedTransformer.from_pretrained_no_processing("lc0/BT4-1024x15x32h", dtype=torch.float32)` and inlined `get_wdl_from_model` (their `chess_utils` package has a broken import chain — `lm_saes.backend.language_model` imports `SearchlessChessBehavioralCloningTokenizer` from `transformer_lens.components`, which doesn't exist there — so importing `chess_utils.move` fails before you can use anything).
+
+What I found:
+- The HookedTransformer load logs **two missing weight-keys filled with zero tensors**: `pos_embed.W_pos` and `policy_head.promotion_weight`.
+- `pos_embed.W_pos` is a **red herring**: HookedTransformer.py line 458 has `if not self.cfg.is_leela_chess_model: ... else: residual = embed`, so the leela path skips pos_embed addition entirely. The zero tensor is never used.
+- `policy_head.promotion_weight` is a real name mismatch: `weight_conversion.py` produces `policy_head.promotion.weight` (with a dot), but HookedTransformer expects `policy_head.promotion_weight` (underscore). This breaks promotion-policy encoding but shouldn't affect WDL.
+- **WDL output is wrong on 16 of 20 positions, even on the starting position** (Fudan reports W0.01/D0.02/L0.97 from White's perspective; correct is W0.19/D0.64/L0.17). The error is not the pos_embed warning, and not the promotion-key mismatch — something in the `value_head` pipeline is off, but I haven't pinpointed it. Possibly another weight name mismatch, possibly a shape/transpose difference in the value head between what `weight_conversion.py` extracts and what HookedTransformer's `ValueHead` expects.
+
+Realistic next-session plan to debug Fudan path (~3-8 hours):
+1. Diff the state_dict keys between (a) what `weight_conversion.py` outputs and (b) what `HookedTransformer` `state_dict()` returns after a fresh init. Find every name mismatch.
+2. Read Fudan's `ValueHead`, `PolicyHead`, `MLHHead` implementations in `TransformerLens/transformer_lens/components/leela_*.py` to see exact shapes/transposes expected.
+3. Patch `weight_conversion.py` (or write a small post-processor) to align key names + shapes.
+4. Re-run the 20-position cross-check; require all 20 to agree with lc0 binary within tolerance.
+5. Once correct, integrate into our `leela_chat/network/__init__.py` (probably by vendoring or pinning Fudan's TransformerLens fork as a project dependency).
+6. Update `extract_network_inference()` to use the new model.
+
+Alternative paths to consider for next session:
+- **lc0 subprocess for inference (Chunk 4 v2 today, defer hooks)**: refactor `extract_network_inference()` to spawn lc0 binary via python-chess's UciProtocol with WDL_mu score-type, parse the output. Correct WDL today, but no PyTorch hook access — Phase 3 (probes) will need to revisit the loader question separately.
+- **File an issue with Fudan**: ask the authors directly how they intend `weight_conversion.py` + `HookedTransformer.from_pretrained_no_processing("lc0/BT4-1024x15x32h")` to produce correct WDL. They may have a setup step we're missing that takes 5 minutes when you know it.
+- **Stay on BT4 forever**: BT4 + Fudan SAEs is the right long-term pin (per the v3 patch and the Fudan README — JacklE0niden/lc0-BT4-tc and lc0-BT4-lorsa). The loader question is solvable, just not in one session of unfamiliar-codebase debugging.
+
+What's preserved + what isn't:
+- `BT4.pt` (1.3 GB) at `/workspace/weights/BT4-1024x15x32h-swa-6147500/BT4.pt` — will survive pod restart since `/workspace` persists.
+- `/workspace/Leela-SAEs/` directory with their venv — will likely survive pod restart.
+- `/path/to/models/lc0/BT4.pt` symlink — won't survive pod restart (rebuild from `setup_pod.sh` follow-up if we keep this path).
+
+Carryover open questions (still valid):
+- ADR-0001 through ADR-0005 `[initials]` placeholders still empty.
+- Friends' Chunk 4 (eval positions) progress still unknown.
+- Patch v3 steps 8-10 (BIBLE.md edits, ADR-0006/7/8 drafts, delete the inbox patch) deferred until Chunk 4 inference is reliable.
+- All 9 patch-v3 open questions still valid (see "Open questions for the project" earlier in this file).
+
+Next session goal:
+- Decide: keep debugging Fudan's loader (3-8h fresh-context dive), OR ship lc0-subprocess Chunk 4 v2 (~30 min, correct WDL, hook-access deferred), OR file Fudan issue and wait. Whichever path: produce a written design proposal first, get sign-off, then execute.
 
