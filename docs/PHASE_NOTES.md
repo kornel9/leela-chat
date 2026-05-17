@@ -11,9 +11,9 @@
 ## Current Status
 
 - **Phase:** 1 — Network-First Chat MVP
-- **Active chunk:** Chunk 4 — first extractor (BT4 forward pass via lczerolens)
+- **Active chunk:** Chunk 5 (BLOCKED on friends' eval positions) and Chunk 6 (CLI — unblocked, can run in parallel)
 - **Last session:** 2026-05-17
-- **Next session goal:** Chunk 4 — implement `extract_network_inference()` in `leela_chat/extractors/network_inference.py`. Loads the BT4 ONNX into `LczeroModel`, runs one forward pass, returns the populated `NetworkInferenceResult`. Needs the remote GPU box (or CPU fallback on the laptop for shape-only smoke).
+- **Next session goal:** Chunk 6 — CLI REPL + one-shot `ask --fen ... --question ...` subcommand. Pure local Python, no GPU needed for the wiring (handler call is stubbed until Chunk 5). Or, if friends' eval positions land, jump straight to Chunk 5.
 
 ---
 
@@ -328,4 +328,31 @@ Open questions / threads:
 
 Next session goal:
 - Chunk 4 — implement `extract_network_inference()` in `leela_chat/extractors/network_inference.py`. Loads BT4 ONNX into `lczerolens.LczeroModel`, runs one forward pass, extracts top-N policy moves + WDL + MLH + eval_cp. Best done on the remote GPU box; CPU on the laptop works for shape-only smoke if needed.
+
+---
+
+#### 2026-05-17 (cont., 3) — Phase 1 Chunk 4 done + pod-state remediation
+
+What I did:
+- Step 0 (API probe on the pod): confirmed `LczeroModel.from_onnx_path()` is the right loader. BT4 returns three output heads: `policy` (1×1858 raw logits), `wdl` (1×3 softmaxed, side-to-move perspective), `mlh` (1×1, plies). `LczeroBoard(fen)` builds from a FEN; `decode_move(idx)/encode_move(move, us)` convert between policy index ↔ chess.Move. No CP helper in lczerolens 0.4 — implemented Lc0's UCI formula ourselves.
+- Implemented `leela_chat/network/__init__.py` (`load_bt4()` — picks CUDA when available, eval mode, moves to device).
+- Implemented `extract_network_inference()` in `leela_chat/extractors/network_inference.py`. Pydantic gains `moves_left_plies` alongside `moves_left_estimate` (full moves = plies ÷ 2) per user's "both fields" choice. WDL is flipped to White-perspective for Black-to-move so the `WDL` model is always White-perspective per its docstring. Policy is masked to legal moves, numerically-stable softmax over them, top-N sorted descending.
+- Wrote `leela_chat/scripts/smoke_test_extractor.py` — loads BT4, asserts WDL sum ≈ 1, eval near 0 at startpos, top-N overlaps known openings, side_to_move flips correctly for Black-to-move FEN.
+- **First smoke test passed but eval_cp showed an anomaly**: +11 cp at startpos, +7 cp after 1.e4 — but chess intuition says 1.e4 retains an edge, so the drop was suspicious.
+- **Investigated via `lc0 --verbose-move-stats` comparison on the pod.** Root WL values matched exactly between extractor (q=+0.016) and lc0 (root WL=-0.01573 from Black = +0.01573 from White), confirming the inference path is correct. **CP formula was the bug** — my code used the older `centipawn_2018` constants (290.680623072 / 1.548090806), but Lc0 v0.32's default `centipawn` formula is `90 * tan(1.5637541897 * wl)`. Three-line patch in `network_inference.py`. After fix: extractor reports +3 startpos / +2 after 1.e4, matching lc0 within rounding. The "+11→+7" anomaly was the legacy formula amplifying small Q differences.
+
+What surprised me:
+- **Pod restart wiped EVERYTHING outside /workspace.** `/workspace/bin/lc0` from Chunk 3 was gone; apt packages (stockfish, meson, ninja) were gone; CUDA was on disk but not on PATH. The persisted volume is `/workspace` only, but even some sub-dirs (`/workspace/bin`) didn't survive. The `.venv` inside `/workspace/leela-chat/` did persist. Lesson: RunPod stop/start is more destructive than expected — anything that needs to survive must (a) be in `/workspace/<a-real-app-dir>/` and (b) be rebuildable from a checked-in script.
+- Lc0 has FIVE CP score types (`centipawn`, `centipawn_2018`, `centipawn_2019`, `centipawn_with_drawscore`, `WDL_mu`). The 2018 formula is widely quoted in old docs but is no longer the default. Easy to grab the wrong one if you're reading historical sources.
+- BT4 outputs MLH ~99 full moves at startpos — far longer than human games, presumably reflecting Lc0 self-play training distribution.
+- BT4's `e7e5` policy after 1.e4 is **77.6%** — strongly opinionated towards the Open Game; Sicilian-via-c5 only gets 4.9%.
+
+Open questions / threads:
+- BT4's startpos eval (+3) is slightly higher than after 1.e4 (+2). Probably noise within rounding; flagged for re-check when we feed actual move history (the no-history input may explain the 1cp wobble).
+- `WhatIsLeelaSeeingFindings` (handler model) deliberately does NOT yet have `moves_left_plies`. Chunk 5 decides whether to surface plies to the LLM.
+- ADR-0001 through ADR-0005 `[initials]` placeholders still empty.
+- Friends' Chunk 4 (eval positions) progress still unknown.
+
+Next session goal:
+- Chunk 5 — first handler (`what_is_leela_seeing`). Wires extractor → handler → translation layer → validator end-to-end. **Blocked on ~10 `what_is_leela_seeing` eval positions from friends.** While waiting, Chunk 6 (CLI REPL + one-shot `ask` subcommand) is unblocked and could be done in parallel.
 
