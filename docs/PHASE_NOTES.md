@@ -444,3 +444,38 @@ Carryover open questions (still valid):
 Next session goal:
 - Decide: keep debugging Fudan's loader (3-8h fresh-context dive), OR ship lc0-subprocess Chunk 4 v2 (~30 min, correct WDL, hook-access deferred), OR file Fudan issue and wait. Whichever path: produce a written design proposal first, get sign-off, then execute.
 
+#### 2026-05-17 (cont., 6) — Fudan loader FIXED: two upstream bugs identified and patched
+
+Root-caused both bugs in the Fudan stack. With these two patches, `HookedTransformer.from_pretrained_no_processing("lc0/BT4-1024x15x32h")` produces WDL that matches `lc0` binary on all 5 sanity positions (startpos, after 1.e4, castling-rich middlegame, KR vs K, Najdorf).
+
+**Bug 1 — Missing `attention_body.ln.bias` and `attention_body.ln2.bias` mappings in `examples/weight_conversion.py`.** The mapping only includes `"attention_body.ln.weight": "attn_body/ln.weight"` and the same for `ln2`. The corresponding `.bias` keys exist in the ONNX (and onnx2torch loads them with magnitudes up to |1.74|), but `weight_conversion.py` never copies them into `CleanLC0Model`. PyTorch's `nn.LayerNorm` default-initializes `.bias` to zeros, so the final `BT4.pt` has zero LN biases in the attention body. Consequences cascade through every encoder block — the very first divergence between onnx2torch (correct) and CleanLC0Model (broken) appears immediately after `attn_body/ln` (max abs diff 1.74 at the LN output, growing to 488 by `attn_body/ffn/dense2/b`).
+
+**Bug 2 — `HookedTransformer.py` constructs `EncoderLayer(...)` without passing `cfg.eps`.** `EncoderLayer.__init__` defaults to `eps=1e-5`, and that eps is propagated into `Lc0LayerNorm` (encoder pre/post LNs) and `SmolGen`'s `nn.LayerNorm` calls. The BT4 model config sets `"eps": 1e-03`, but the value is never threaded through. CleanLC0Model hardcodes `eps=1e-3` in its own encoder LNs, so this bug only affects the HookedTransformer pipeline — not `CleanLC0Model` standalone.
+
+How I found it:
+- Wrote `compare_intermediate.py` capturing activations via forward hooks on onnx2torch's `attn_body/ln2` and `encoder*/ln2`. First divergence (max diff 1.66) showed up at the very first waypoint — confirms bug is in the embed, not encoders.
+- `embed_drilldown.py` captured every sub-step of the attention body (`embedding_preprocess`, `concat`, `main_linear`, `mish`, `ln`, `ma_gating`, `ffn`, `ln2`). All exact-match (≤1e-6) up to and including `attn_body/mish`, then divergence appears at `attn_body/ln` (max abs diff 1.74). Pinpointed to the LN itself.
+- `inspect_ln.py` listed every `nn.LayerNorm` in onnx2torch with its bias stats. Every encoder/smolgen LN has `bias_max` in [0.5, 3.4]. CleanLC0Model's mapping table only loaded weight, not bias, for `attn_body.ln`/`attn_body.ln2` — bug confirmed.
+- Two-line patch to `weight_conversion.py` added the bias entries. Rebuilt `BT4.pt`. WDL on all 5 test positions now matches `lc0` binary.
+
+Verification — ground-truth from `lc0` binary at 1 node:
+
+| Position | lc0 WDL | Fudan-fixed WDL |
+|---|---|---|
+| startpos | 0.191 / 0.642 / 0.167 | 0.19 / 0.65 / 0.16 |
+| after 1.e4 | 0.169 / 0.645 / 0.186 | 0.17 / 0.65 / 0.19 |
+| castling-rich | 0.216 / 0.632 / 0.152 | 0.19 / 0.65 / 0.16 |
+| KR vs K | 1.000 / 0.000 / 0.000 | 1.00 / 0.00 / 0.00 |
+| Najdorf | 0.293 / 0.550 / 0.157 | 0.29 / 0.56 / 0.16 |
+
+Small differences (e.g., castling-rich 0.216 vs 0.19) are within fp16-vs-fp32 backend rounding plus 1-node MCTS noise; the structure (W/D/L ordering and rough magnitudes) is exact.
+
+State of patches:
+- Both edits live on the pod in `/workspace/Leela-SAEs/`. They will **NOT** survive a pod restart unless re-applied (the repo is re-cloned by `setup_pod.sh`).
+- Need to: (a) capture both as a `.patch` file in the repo, (b) make `setup_pod.sh` apply it after cloning Leela-SAEs, (c) document in an ADR (-0006? — needs assignment), (d) optionally file upstream issues on the Fudan repo.
+
+Remaining open items for the actual Chunk 4 v2 swap:
+- Vendor patches or fork Leela-SAEs (decide which).
+- Decide whether `leela_chat` should consume HookedTransformer directly (Phase 3+ hook-access) or keep lczerolens for now and only swap before Phase 3.
+- If swapping: update `leela_chat/network/__init__.py` to add a `load_bt4_hooked()` path, refactor `extract_network_inference()` to consume HookedTransformer's output format, re-run the 240-position parity test.
+

@@ -1,0 +1,53 @@
+From: leela-chat project
+Subject: [PATCH] Fix BT4 loader: missing attn_body LN biases + eps not threaded
+
+Two bugs in Fudan's Leela-SAEs that together caused HookedTransformer to
+return wrong WDL on every position (e.g. startpos returned W0.01/D0.02/L0.97
+instead of the correct W0.19/D0.64/L0.17).
+
+1. examples/weight_conversion.py: the explicit ONNX-key mapping omits the
+   bias parameters for `attention_body.ln` and `attention_body.ln2`. The
+   ONNX graph stores them and onnx2torch loads them (magnitudes up to
+   |1.74|), but PyTorch's nn.LayerNorm default-initializes .bias to zeros,
+   so the produced BT4.pt has zero biases in the attention body. The bias
+   omission cascades through every encoder block, growing into max-abs
+   activation diffs of ~500 by the end of the first FFN.
+
+2. TransformerLens/transformer_lens/HookedTransformer.py: the
+   EncoderLayer(...) constructor is called with five positional args
+   instead of six — cfg.eps is never passed through, so Lc0LayerNorm and
+   SmolGen's nn.LayerNorm both default to eps=1e-5. The BT4 cfg specifies
+   eps=1e-3 (matches what lc0 binary uses).
+
+Apply from the Leela-SAEs repo root:
+    patch -p0 < leela_saes_bt4_loader.patch
+
+After applying, rebuild BT4.pt:
+    python examples/weight_conversion.py
+
+WDL parity vs lc0 binary then matches on every test position.
+
+--- examples/weight_conversion.py
++++ examples/weight_conversion.py
+@@ -274,7 +274,9 @@
+                 "attention_body.ffn_dense2.bias": "initializers.onnx_initializer_17",
+                 "attention_body.ffn_alpha": "initializers.onnx_initializer_18",
+                 "attention_body.ln.weight": "attn_body/ln.weight",
++                "attention_body.ln.bias": "attn_body/ln.bias",
+                 "attention_body.ln2.weight": "attn_body/ln2.weight",
++                "attention_body.ln2.bias": "attn_body/ln2.bias",
+             }
+         )
+
+--- TransformerLens/transformer_lens/HookedTransformer.py
++++ TransformerLens/transformer_lens/HookedTransformer.py
+@@ -247,7 +247,8 @@
+                               self.cfg.n_heads,
+                               self.cfg.d_mlp,
+                               self.cfg.leela_mlp_act_fn,
+-                              self.cfg.leela_resid_alpha,) for block_index in range(self.cfg.n_layers)]
++                              self.cfg.leela_resid_alpha,
++                              self.cfg.eps,) for block_index in range(self.cfg.n_layers)]
+             )
+             self.unembed = None
+

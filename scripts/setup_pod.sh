@@ -18,7 +18,9 @@
 #   3. Builds Lc0 (release/$LC0_VERSION) into /workspace/bin/lc0 if missing —
 #      source goes to /workspace/src/lc0 so it persists; only the binary
 #      copy step repeats on a wipe.
-#   4. Smoke-checks that lc0, stockfish, BT4 ONNX, and the project venv
+#   4. Applies in-house BT4-loader fixes to Fudan's Leela-SAEs checkout
+#      (patches/leela_saes_bt4_loader.patch) if present and not yet applied.
+#   5. Smoke-checks that lc0, stockfish, BT4 ONNX, and the project venv
 #      all work.
 
 set -euo pipefail
@@ -28,6 +30,11 @@ LC0_SRC=/workspace/src/lc0
 LC0_BIN=/workspace/bin/lc0
 BT4_ONNX=/workspace/weights/BT4-1024x15x32h-swa-6147500/BT4-1024x15x32h-swa-6147500.onnx
 VENV_PY=/workspace/leela-chat/.venv/bin/python
+SAES_DIR=/workspace/Leela-SAEs
+SAES_PATCH=/workspace/leela-chat/scripts/patches/leela_saes_bt4_loader.patch
+# Sentinel line introduced by the patch — we test for it to know if the
+# patch is already applied (avoids re-applying and erroring out).
+SAES_PATCH_SENTINEL='"attention_body.ln.bias": "attn_body/ln.bias"'
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 
@@ -81,7 +88,22 @@ else
   log "  lc0 built and copied to $LC0_BIN"
 fi
 
-# 4. Smoke checks -----------------------------------------------------------
+# 4. Apply Fudan Leela-SAEs BT4-loader patch --------------------------------
+# Two upstream bugs (see scripts/patches/leela_saes_bt4_loader.patch) cause
+# wrong WDL on every position. Without these fixes the HookedTransformer
+# load path is unusable. If Leela-SAEs isn't on this pod (yet), skip silently.
+
+if [ -d "$SAES_DIR" ] && [ -f "$SAES_PATCH" ]; then
+  if grep -q "$SAES_PATCH_SENTINEL" "$SAES_DIR/examples/weight_conversion.py" 2>/dev/null; then
+    log "Leela-SAEs BT4-loader patch already applied"
+  else
+    log "applying Leela-SAEs BT4-loader patch"
+    (cd "$SAES_DIR" && patch -p0 < "$SAES_PATCH")
+    log "  patched. Remember to rebuild BT4.pt via examples/weight_conversion.py."
+  fi
+fi
+
+# 5. Smoke checks -----------------------------------------------------------
 
 log "verifying lc0"
 "$LC0_BIN" --help >/dev/null
