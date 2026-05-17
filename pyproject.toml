@@ -51,6 +51,10 @@ environments = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Project uses ``package = false`` (uv won't install ``leela_chat`` into the
+# venv). Adding the repo root to pythonpath lets pytest import ``leela_chat``
+# directly from the source tree.
+pythonpath = ["."]
 
 # torch + torchvision indexes per ADR-0002 (local CPU laptop vs remote
 # CUDA box split). Selection is driven by the platform_release markers in

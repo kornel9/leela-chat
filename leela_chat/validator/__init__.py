@@ -11,16 +11,34 @@ Per CLAUDE.md §2 Rule 2:
 > 3. Log the failure
 > 4. Never show an unvalidated response to the user
 
-Per ADR-0005 G1.3: this validator is **strict mechanical only** — legality and
-JSON-grounding. Semantic plausibility checks ("does this argument hold?") live
-in the eval grader's LLM-as-judge, not on the live path.
+Per ADR-0005 G1.3 the validator is **strict mechanical only** — legality and
+JSON-grounding. Semantic plausibility ("does this argument actually hold?")
+lives in the eval grader's LLM-as-judge, not on the live path.
 
-Implementation is deferred to Phase 1 Chunk 3. This module defines the
-function signature and re-exports the result types.
+Phase 1 scope: legality + numeric grounding. Feature-firing checks
+(``unknown_feature``) come online in Phase 4 when SAEs land — the validator
+function will grow a ``firings`` kwarg then.
+
+Known v1 limitations (deliberate — tightened as the system matures):
+
+- Bare pawn-push SAN ("e4", "d5") is NOT extracted. The disambiguation cost
+  versus square references in prose ("controls e5", "the d-file") is too high.
+  The prompt template instructs the LLM to use full SAN (with disambig, capture,
+  or promotion suffix) for pawn moves that could be confused with squares.
+- Plain unsigned integers ("2200 elo") are NOT grounding-checked. Only signed
+  decimals ("+0.42", "-1.5") and percentages ("28%") trigger grounding so we
+  avoid flagging benign references to ratings, piece counts, move numbers, etc.
+- Figurine ("♘f3"), lowercase ("nf3"), and non-English piece-letter
+  notations are NOT recognised; they pass silently. The prompt enforces
+  standard English SAN.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
+
+import chess
+from loguru import logger
 
 from leela_chat.validator.types import ErrorKind, ValidationError, ValidationResult
 
@@ -32,6 +50,31 @@ __all__ = [
 ]
 
 
+_SAN_RE = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"(?:"
+    r"O-O-O[+#]?"                                                # queenside castle
+    r"|O-O[+#]?"                                                  # kingside castle
+    r"|[KQRBN][a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#]?"          # piece move
+    r"|[a-h]x[a-h][1-8](?:=[QRBN])?[+#]?"                         # pawn capture
+    r"|[a-h][1-8]=[QRBN][+#]?"                                    # pawn promotion (no capture)
+    r")"
+    r"(?![A-Za-z0-9])"
+)
+
+_UCI_RE = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"([a-h][1-8][a-h][1-8][qrbn]?)"
+    r"(?![A-Za-z0-9])"
+)
+
+# Signed decimal: explicit + or - required so we don't sweep up every integer in
+# prose like "2200 elo" or "5 pieces".
+_SIGNED_NUMBER_RE = re.compile(r"(?<![\w.])([+\-]\d+(?:\.\d+)?)(?!\w)")
+# Percentage: trailing % required.
+_PERCENT_RE = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?)\s*%")
+
+
 def validate_response(
     response_text: str,
     *,
@@ -39,6 +82,8 @@ def validate_response(
     findings: dict[str, Any],
 ) -> ValidationResult:
     """Validate an LLM response for legality + JSON-grounding.
+
+    Pure function — safe to call repeatedly on the same inputs.
 
     Args:
         response_text: The raw prose from the LLM.
@@ -49,9 +94,162 @@ def validate_response(
             findings model). Used to ground-check any numbers in the response.
 
     Returns:
-        Validation result with ``ok`` and (if not ok) a list of errors.
-
-    Raises:
-        NotImplementedError: implementation is in Phase 1 Chunk 3.
+        Frozen ``ValidationResult`` — ``ok=True`` with empty ``errors`` on pass,
+        else ``ok=False`` with one or more ``ValidationError`` entries.
     """
-    raise NotImplementedError("Implemented in Phase 1 Chunk 3.")
+    errors: list[ValidationError] = []
+    errors.extend(_check_legality(response_text, fen))
+    errors.extend(_check_grounding(response_text, findings))
+    result = ValidationResult(ok=not errors, errors=errors)
+    if not result.ok:
+        logger.warning(
+            f"validator: {len(errors)} error(s) "
+            f"(first: {errors[0].kind} '{errors[0].span}')"
+        )
+    return result
+
+
+# --- Legality ---------------------------------------------------------------
+
+
+def _check_legality(response_text: str, fen: str) -> list[ValidationError]:
+    board = chess.Board(fen)
+    errors: list[ValidationError] = []
+    seen: set[str] = set()
+
+    for match in _SAN_RE.finditer(response_text):
+        san = match.group(0)
+        if san in seen:
+            continue
+        seen.add(san)
+        if not _is_legal_san(san, board):
+            errors.append(ValidationError(
+                kind="illegal_move",
+                detail=f"SAN move '{san}' is not legal on the position.",
+                span=san,
+            ))
+
+    for match in _UCI_RE.finditer(response_text):
+        uci = match.group(1)
+        if uci in seen:
+            continue
+        seen.add(uci)
+        if not _is_legal_uci(uci, board):
+            errors.append(ValidationError(
+                kind="illegal_move",
+                detail=f"UCI move '{uci}' is not legal on the position.",
+                span=uci,
+            ))
+    return errors
+
+
+def _is_legal_san(san: str, board: chess.Board) -> bool:
+    try:
+        board.parse_san(san)
+    except ValueError:
+        # python-chess raises InvalidMoveError / IllegalMoveError /
+        # AmbiguousMoveError (all subclasses of ValueError). Any failure is a
+        # legality failure for our purposes — the LLM shouldn't produce
+        # ambiguous SAN either.
+        return False
+    return True
+
+
+def _is_legal_uci(uci: str, board: chess.Board) -> bool:
+    try:
+        move = chess.Move.from_uci(uci)
+    except ValueError:
+        return False
+    return move in board.legal_moves
+
+
+# --- Grounding --------------------------------------------------------------
+
+
+def _check_grounding(
+    response_text: str, findings: dict[str, Any],
+) -> list[ValidationError]:
+    flat_values = _flatten_numerics(findings)
+    errors: list[ValidationError] = []
+    seen: set[str] = set()
+
+    for match in _SIGNED_NUMBER_RE.finditer(response_text):
+        span = match.group(0)
+        if span in seen:
+            continue
+        seen.add(span)
+        value = float(match.group(1))
+        if not _is_grounded(value, flat_values, is_percent=False):
+            errors.append(ValidationError(
+                kind="ungrounded_eval",
+                detail=f"Signed number '{span}' is not present in findings within tolerance.",
+                span=span,
+            ))
+
+    for match in _PERCENT_RE.finditer(response_text):
+        span = match.group(0)
+        if span in seen:
+            continue
+        seen.add(span)
+        value = float(match.group(1))
+        if not _is_grounded(value, flat_values, is_percent=True):
+            errors.append(ValidationError(
+                kind="ungrounded_eval",
+                detail=f"Percentage '{span}' is not present in findings within tolerance.",
+                span=span,
+            ))
+    return errors
+
+
+def _flatten_numerics(obj: Any, out: set[float] | None = None) -> set[float]:
+    """Walk ``obj`` recursively and collect every numeric leaf as a float.
+
+    Bools are filtered: Python's ``bool`` subclasses ``int``, so without this
+    guard ``True`` / ``False`` would pollute the set as 1.0 / 0.0 and cause
+    spurious grounding matches.
+    """
+    if out is None:
+        out = set()
+    if isinstance(obj, bool):
+        return out
+    if isinstance(obj, (int, float)):
+        out.add(float(obj))
+        return out
+    if isinstance(obj, dict):
+        for v in obj.values():
+            _flatten_numerics(v, out)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            _flatten_numerics(v, out)
+    return out
+
+
+def _is_grounded(value: float, flat_values: set[float], *, is_percent: bool) -> bool:
+    """Check if ``value`` (with unit conversions) is in ``flat_values``.
+
+    Evals are stored in findings as centipawns (``eval_cp: 42``) but the LLM
+    typically cites them in pawn units ("+0.42"). Likewise WDL is stored as
+    0-1 probabilities (``white_wins: 0.45``) but often cited as "45%". We
+    enumerate the obvious equivalent representations before flagging.
+
+    Tolerance: 10% relative or 0.02 absolute, whichever is larger — lenient
+    enough to absorb LLM rounding ("+0.4" vs eval_cp=42) without making
+    every number a free pass.
+    """
+    candidates: list[float] = [value]
+    if is_percent:
+        candidates.append(value / 100.0)
+    else:
+        if abs(value) < 25.0 and not value.is_integer():
+            # Eval cited in pawn units → match a cp finding.
+            candidates.append(value * 100.0)
+        if abs(value) >= 10.0:
+            # Eval cited in cp form → match a pawn-unit finding.
+            candidates.append(value / 100.0)
+
+    for cand in candidates:
+        for fv in flat_values:
+            tol = max(abs(fv) * 0.10, 0.02)
+            if abs(cand - fv) <= tol:
+                return True
+    return False

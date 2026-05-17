@@ -11,9 +11,9 @@
 ## Current Status
 
 - **Phase:** 1 — Network-First Chat MVP
-- **Active chunk:** Chunk 3 — Validator implementation (next)
+- **Active chunk:** Chunk 4 — first extractor (BT4 forward pass via lczerolens)
 - **Last session:** 2026-05-17
-- **Next session goal:** Chunk 3 — implement legality + JSON-grounding checks in `leela_chat/validator/__init__.py` with synthetic-data unit tests.
+- **Next session goal:** Chunk 4 — implement `extract_network_inference()` in `leela_chat/extractors/network_inference.py`. Loads the BT4 ONNX into `LczeroModel`, runs one forward pass, returns the populated `NetworkInferenceResult`. Needs the remote GPU box (or CPU fallback on the laptop for shape-only smoke).
 
 ---
 
@@ -301,4 +301,31 @@ Open questions / threads:
 
 Next session goal:
 - Chunk 3 — implement validator (legality + JSON-grounding) in `leela_chat/validator/__init__.py`. Pure local Python with synthetic test data, no API calls.
+
+---
+
+#### 2026-05-17 (cont., 2) — Phase 1 Chunk 3 done
+
+What I did:
+- Implemented `leela_chat/validator/__init__.py` per CLAUDE.md §2 Rule 2 + ADR-0005 G1.3 (strict mechanical only).
+  - SAN regex catches piece moves (`Nf3`, `Nbd2`, `Bc4`), pawn captures (`exd5`), promotions (`a8=Q`), and castling (`O-O`, `O-O-O`) with optional `+`/`#`. Bare pawn pushes (`e4`, `d5`) are deliberately NOT extracted — too easy to collide with square references in prose. Documented as a known limitation.
+  - UCI regex catches `[a-h][1-8][a-h][1-8][qrbn]?`.
+  - Legality via `board.parse_san()` / `chess.Move.from_uci() in board.legal_moves`. `ValueError` catches all three python-chess parse failures (Invalid/Illegal/Ambiguous).
+  - Numeric grounding extracts signed decimals (`+0.42`, `-1.5`) and percentages (`28%`). Plain integers (`2200 elo`) are skipped. Unit conversions both ways: cp ↔ pawn-units (`+0.42` matches `eval_cp=42`), pct ↔ probability (`45%` matches `wdl.white_wins=0.45`). Tolerance: 10% relative or 0.02 absolute, whichever is larger.
+  - Boolean values in findings are filtered before grounding (Python bool subclasses int — without the guard, `True`/`False` would pollute the numeric set as 1.0/0.0).
+- Wrote 27 unit tests in `tests/unit/test_validator.py` covering legality (legal/illegal SAN, legal/illegal UCI, castling, promotion, captures, dedup), grounding (cp form, pawn-unit form, percentage matching pct, percentage matching probability, ungrounded numbers, empty findings, nested-list walking, dedup, bool guard), and combined cases (clean response, mixed error kinds, frozen Pydantic shape). All pass.
+- Added `pythonpath = ["."]` to `[tool.pytest.ini_options]` in pyproject.toml so pytest can import `leela_chat` despite `package = false`.
+
+What surprised me:
+- python-chess's `parse_san` is lenient about missing `+` annotation — `"a8=Q"` parses fine even when the move actually gives check. Good for the validator (LLM doesn't get punished for forgetting the suffix).
+- The bool guard in `_flatten_numerics` matters: without it, a stray `True`/`False` in findings would make every `+1.0`/`+0.0` in responses falsely pass grounding. The test catches the regression.
+
+Open questions / threads:
+- v1 grounding only extracts numbers with explicit sign or `%`. If real LLM outputs cite eval as bare integers ("eval 42"), we'll see false negatives. Revisit after we see real Chunk 5 outputs against eval positions.
+- Bare pawn-push SAN (`e4`, `d5`) skipped — the prompt template (v1.md) instructs the LLM to use full SAN or context-rich phrasing. If the model still emits bare squares as moves, we'll need a disambiguator (e.g., extract bare squares only when preceded by "plays "/"considers ").
+- ADR-0001 through ADR-0005 `[initials]` placeholders still empty.
+- Friends' Chunk 4 progress still unknown.
+
+Next session goal:
+- Chunk 4 — implement `extract_network_inference()` in `leela_chat/extractors/network_inference.py`. Loads BT4 ONNX into `lczerolens.LczeroModel`, runs one forward pass, extracts top-N policy moves + WDL + MLH + eval_cp. Best done on the remote GPU box; CPU on the laptop works for shape-only smoke if needed.
 
