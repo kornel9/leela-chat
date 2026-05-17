@@ -1,0 +1,48 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.coach-message a {
+  color: var(--foreground);
+  text-decoration: underline;
+}
+
+.coach-message code {
+  background: var(--foreground);
+  color: var(--background);
+  padding: 1px 2px;
+  border-radius: 5px
+}
+
+.coach-message ul,
+.coach-message ol {
+  margin-left: 0.25rem;
+  padding-left: 0.75rem;
+  margin-bottom: 10px;
+}
+
+.coach-message ul {
+  list-style-type: square;
+}
+
+.coach-message ol {
+  list-style-type: decimal;
+}

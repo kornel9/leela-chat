@@ -32,4 +32,11 @@ Thumbs.db
 *.swp
 *.swo
 *~
-update_research/
+
+# Reference materials (update_research/) — committed by default for
+# backup + Claude-Code context (private repo, see update_research/README.md
+# and CLAUDE.md §12). Excluded: pre-built binary executables shipped
+# inside vendored reference repos (Linux-specific blobs, useless on other
+# machines, push individual files near GitHub's >50 MB warn threshold).
+update_research/**/stockfish-*-x86-64-*
+update_research/**/*.exe

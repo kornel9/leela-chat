@@ -131,9 +131,13 @@ leela-chat/
 ├── weights/                    # gitignored — Lc0 nets, SAE weights, probes
 ├── labels/                     # versioned text — feature label DB
 ├── logs/                       # gitignored — every analysis logged
+├── update_research/            # Full text of cited papers + source of reference repos
+│   ├── README.md               # — purpose, structure, hygiene rules
+│   ├── pdfs/                   # — paper PDFs (`lastname_year_short-title.pdf`)
+│   └── repos/                  # — full source of reference repos (no .git/ inside)
 └── docs/
     ├── BIBLE.md                # Strategic vision (read for "why")
-    ├── PRIOR_WORK.md           # Papers, repos, datasets reference
+    ├── PRIOR_WORK.md           # Papers, repos, datasets reference (curated index)
     ├── DECISIONS.md            # Architecture decision records
     └── PHASE_NOTES.md          # Per-phase notes, current phase tracker
 ```
@@ -452,6 +456,8 @@ Detail and per-chunk work items belong in `docs/PHASE_NOTES.md`, not here.
 
 **Read for "what we learned":** `docs/PHASE_NOTES.md` — per-phase retrospectives, current chunk, surprises.
 
+**Read for "the full text":** `update_research/` — full PDFs of cited papers and complete source of reference repos. Use this when `docs/PRIOR_WORK.md` (the curated index) points you to something but you need the actual paper section, an algorithm derivation, or to see exactly how the original authors implemented a step. **Be selective** — read the abstract / intro / a targeted section, not the whole paper. `docs/PRIOR_WORK.md` is always the entry point; descend into `update_research/` only when you need depth. See `update_research/README.md` for the folder's conventions.
+
 **For specific subsystems** (topic pointers — find by heading in each file):
 
 | Topic | Where to look |
@@ -467,6 +473,7 @@ Detail and per-chunk work items belong in `docs/PHASE_NOTES.md`, not here.
 | Existing chess products (for differentiation) | PRIOR_WORK: "Existing chess analysis products" |
 | Datasets for probe/SAE training | PRIOR_WORK: "Tier 5 — Datasets" |
 | Community help when stuck | PRIOR_WORK: "Community resources and forums" (Lc0 Discord first) |
+| Full text of any cited paper or repo | `update_research/pdfs/` for PDFs, `update_research/repos/` for source. Start from PRIOR_WORK.md to find the right reference; only descend into `update_research/` when you need depth beyond the curated annotation. |
 
 **Starred items in PRIOR_WORK.md** (⭐, ⭐⭐, ⭐⭐⭐) are the highest-leverage entries — adopt or read them first when entering a new phase.
 

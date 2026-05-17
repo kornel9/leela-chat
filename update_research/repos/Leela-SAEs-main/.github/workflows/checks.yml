@@ -1,0 +1,109 @@
+name: Checks
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+    paths:
+      - "**" # Include all files by default
+      - "!.devcontainer/**"
+      - "!.vscode/**"
+      - "!.git*"
+      - "!*.md"
+      - "!.github/**"
+      - ".github/workflows/checks.yml" # Still include current workflow
+  pull_request:
+    branches:
+      - main
+      - dev
+    paths:
+      - "**"
+      - "!.devcontainer/**"
+      - "!.vscode/**"
+      - "!.git*"
+      - "!*.md"
+      - "!.github/**"
+      - ".github/workflows/checks.yml"
+  # Allow this workflow to be called from other workflows
+  workflow_call:
+    inputs:
+      #  Requires at least one input to be valid, but in practice we don't need any
+      dummy:
+        type: string
+        required: false
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  type-checks:
+    if: "!startsWith(github.event.head_commit.message, 'bump:')"
+    name: Type Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: "true"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install the project
+        run: uv sync --all-extras --dev
+
+      - name: Type check
+        run: uv run basedpyright .
+
+  ruff:
+    if: "!startsWith(github.event.head_commit.message, 'bump:')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/ruff-action@v1
+
+  unit-tests:
+    if: "!startsWith(github.event.head_commit.message, 'bump:')"
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: "true"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install the project
+        run: uv sync --dev
+
+      - name: Run unit tests
+        run: uv run pytest tests/unit
+
+  distributed-tests:
+    if: "!startsWith(github.event.head_commit.message, 'bump:')"
+    name: Distributed Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: "true"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install the project
+        run: uv sync --dev
+
+      - name: Run distributed tests
+        run: uv run pytest tests/distributed
