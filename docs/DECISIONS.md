@@ -198,4 +198,40 @@ Pin Lc0 to **v0.32.1** (released 2025-11-23, the latest stable as of build date)
 
 ---
 
-<!-- Append new ADRs below this line. Number sequentially: ADR-0005, ADR-0006, etc. -->
+### ADR-0005: LLM model selection — Opus 4.7 for eval/prod, Sonnet 4.6 for iteration
+
+- **Date:** 2026-05-17
+- **Status:** Accepted
+- **Phase:** Phase 1 — Network-First Chat MVP
+- **Decision-makers:** [initials]
+
+#### Context
+CLAUDE.md §4 pins LLM provider to Anthropic Claude (primary) / OpenAI (fallback) but leaves the specific model unspecified. Phase 1 needs a concrete pin for both the iteration loop (frequent calls during prompt design — cost matters, speed matters) and the production / eval-set path (correctness matters, hallucinations are project-killers per CLAUDE.md §8).
+
+#### Decision
+Two-tier model selection driven by a flag on the LLM client:
+
+- **Iteration mode (prompt design, exploratory testing):** Claude **Sonnet 4.6** (`claude-sonnet-4-6`). ~$3/1M input, ~$15/1M output. Fast feedback loop while tuning prompts.
+- **Eval / production mode (eval-set runs, live user queries):** Claude **Opus 4.7** (`claude-opus-4-7`). ~$15/1M input, ~$75/1M output. The model the eval set is scored against; the model live users get answers from.
+
+The flag (e.g. `LLM_MODE=iter|prod` env var or CLI option) defaults to `prod`. Iteration mode must be explicitly opted into.
+
+#### Alternatives considered
+- **Opus only (production from day one):** rejected — prompt-design iteration is many calls per insight; Opus cost ramps fast during exploratory work.
+- **Sonnet only (for cost):** rejected — CLAUDE.md §8 pitfall is explicit: *"hallucination risk is nonlinear in model strength."* The model the eval set is graded against must be the same as the production model. Sonnet's hallucination rate is meaningfully higher.
+- **GPT-4 / OpenAI primary:** rejected — CLAUDE.md §4 already pins Anthropic as primary. OpenAI remains the fallback if Anthropic API is down.
+
+#### Consequences
+- **Cost ceiling (estimated):** eval-set run of 150 calls (50 positions × 3 handlers) on Opus ≈ $12. Daily personal use (~20 calls) on Opus ≈ $1.60. Iteration in Sonnet during a heavy prompt-tuning session ≈ $1–3.
+- **Prompt portability:** prompts must work on both models. Sonnet-specific tricks (if any) can't enter the production prompt. Test prompts in both modes before merging.
+- **Eval-set baseline lock-in:** baseline scores on the eval set are recorded against Opus. Switching production model later invalidates the baseline — would be a separate ADR.
+- **LLM client API surface:** the client wrapper has to accept a mode flag and route to the appropriate model. Minor extra code.
+
+#### References
+- CLAUDE.md §4 (LLM provider pinning).
+- CLAUDE.md §8 "LLM pitfalls" — *"Using a weaker LLM in production to save money."*
+- Phase 1 Entry Brief G1.2 (this session).
+
+---
+
+<!-- Append new ADRs below this line. Number sequentially: ADR-0006, ADR-0007, etc. -->

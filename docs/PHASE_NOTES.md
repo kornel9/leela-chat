@@ -10,10 +10,10 @@
 
 ## Current Status
 
-- **Phase:** 0 — Environment and Foundations
-- **Active chunk:** Chunk 1 — lczerolens smoke test runs on this machine
-- **Last session:** 2026-05-16
-- **Next session goal:** Complete Chunk 1 smoke test (`lczerolens/maia-1100` load + forward pass + policy shape) and commit `notebooks/00_smoke_test.ipynb`.
+- **Phase:** 1 — Network-First Chat MVP
+- **Active chunk:** Chunk 1 — design (Pydantic schemas, prompt template, validator interface, CLI sketch)
+- **Last session:** 2026-05-17
+- **Next session goal:** Finish Chunk 1 design then move into Chunk 2 (Anthropic SDK wrapper + .env loading + caching scaffold).
 
 ---
 
@@ -224,5 +224,58 @@ _Decisions or shortcuts I took that I should reconsider later._
 _At the end of each phase, write a short retrospective: what worked, what didn't, what I'd do differently, what I learned that should change CLAUDE.md or the bible._
 
 ### Phase 0 retrospective
-_(empty until end of phase)_
+_(empty until end of phase — note: driver-side criteria all done as of 2026-05-17; only friends' 50 eval positions outstanding. Full retro deferred until those land and Phase 0 formally exits.)_
+
+---
+
+## Phase 1 — Network-First Chat MVP
+
+### Exit criteria (from CLAUDE.md §11)
+- [ ] 30 eval positions pass on all 3 handlers (`what_is_leela_seeing`, `why_this_move`, `did_you_consider`)
+- [ ] Zero hallucinated moves in last 100 interactions
+- [ ] <30 s end-to-end latency
+- [ ] You personally find it useful for your own games
+
+### Locked Phase 1 decisions (2026-05-17, from Phase 1 Entry Brief)
+- **G1.1** First handler = `what_is_leela_seeing` (simplest extractors, proves end-to-end pipeline fast).
+- **G1.2** Two-tier LLM: Sonnet 4.6 for iteration, Opus 4.7 for eval + production. See **ADR-0005**.
+- **G1.3** Validator = strict mechanical only (legality + JSON-grounding). Semantic judgment moved to eval grader, not the live path.
+- **G1.4** Anthropic prompt caching enabled from day one.
+- **G1.5** CLI = REPL + one-shot `ask --fen ... --question ...` subcommand. The one-shot is what the eval grader will call.
+
+### Chunk plan (per Phase 1 Entry Brief)
+| Chunk | What | Eval positions needed? |
+|---|---|---|
+| 1 | Design: handler JSON schemas (Pydantic), prompt template structure, validator interface, CLI sketch | No |
+| 2 | Anthropic SDK wrapper + .env loading + prompt-caching scaffold | No |
+| 3 | Validator implementation (legality + JSON-grounding) + unit tests on synthetic data | No |
+| 4 | First extractor (forward pass against BT4 ONNX, return Pydantic of policy+wdl+mlh+top-N) | No |
+| 5 | First handler (`what_is_leela_seeing`) wiring it all together | **Yes — ~10 of this handler** |
+| 6 | CLI REPL + one-shot subcommand | No |
+| 7 | Eval grader (reads `eval_positions.yaml`, runs handler, scores `must_mention`/`must_not_mention` + LLM-as-judge) | Yes |
+| 8 | Handler #2 (`why_this_move`) | **Yes — ~10 of this handler** |
+| 9 | Handler #3 (`did_you_consider`) | **Yes — ~10 of this handler** |
+| 10 | Polish + Phase 1 exit verification | Yes — 30+ across all 3 |
+
+Chunks 1–4 + 6 are pure infrastructure and proceed in parallel with friends' authoring.
+
+### Session log
+
+#### 2026-05-17 — Phase 1 entry brief delivered + decisions locked
+
+What I did:
+- Delivered Phase 1 Entry Brief per CLAUDE.md §10. Reading list R1.1–R1.4, tooling T1.1–T1.4, go/no-go G1.1–G1.5, chunking proposed.
+- User accepted all G1.x recommendations: first handler = `what_is_leela_seeing`, Sonnet-iter/Opus-prod, strict validator, prompt caching on, REPL + one-shot CLI.
+- Wrote **ADR-0005** pinning LLM model selection.
+- Updated CLAUDE.md §1 current-phase pointer and §4 pinned-versions LLM row.
+- Friends' Chunk 4 authoring continues; user told them to prioritize 10 `what_is_leela_seeing` positions first to unblock Chunk 5 the moment it's ready.
+
+Open questions / threads:
+- ADR-0001 + ADR-0002 + ADR-0003 + ADR-0004 + ADR-0005 `[initials]` placeholders still empty.
+- T1.1 Anthropic API key — pending user confirmation. Needed before Chunk 2.
+- Reading R1.1–R1.4 on user's schedule.
+- Pod currently stopped; not needed until Chunk 4 (BT4 GPU forward passes).
+
+Next session goal:
+- Finish Chunk 1 (design files) and move into Chunk 2 (Anthropic SDK wrapper).
 

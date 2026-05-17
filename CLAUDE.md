@@ -14,7 +14,7 @@
 
 **Target user:** the project owner (a 2000+ player) for personal use, then strong-player friends, then maybe a public alpha. Quality bar: 2200+ player should approve. GM utility is aspirational, not v1.
 
-**Current phase:** `Phase 0 — Environment and Foundations`. Track current phase in `docs/PHASE_NOTES.md`. Update at the start of every work session.
+**Current phase:** `Phase 1 — Network-First Chat MVP`. Track current phase in `docs/PHASE_NOTES.md`. Update at the start of every work session.
 
 ---
 
@@ -87,7 +87,7 @@ USER → CONVERSATION MANAGER → CLASSIFIER → HANDLER → EXTRACTOR(S) → LE
 | Lc0 version | tagged release recorded in `docs/DECISIONS.md` |
 | Pytorch | matches CUDA driver version, pinned in `pyproject.toml` |
 | lczerolens | pinned in `pyproject.toml`; v0.4.0+ |
-| LLM provider | Anthropic Claude (primary); OpenAI as fallback |
+| LLM provider | Anthropic Claude — `claude-opus-4-7` (eval/prod) + `claude-sonnet-4-6` (iteration); OpenAI as fallback. See ADR-0005. |
 | Logging | `loguru` |
 | Data validation | `pydantic` |
 | Tests | `pytest` + `pytest-asyncio` |
