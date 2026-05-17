@@ -1,6 +1,13 @@
 """Network loaders + move-index encoding for the Lc0 BT4 model.
 
-- ``load_bt4`` — thin wrapper around ``lczerolens.LczeroModel.from_onnx_path``.
+- ``load_bt4`` — load BT4 via the vendored Fudan TransformerLens fork. Returns
+  a ``HookedTransformer`` (so Phase 3+ hook access "just works"). Reads from
+  the hardcoded ``/path/to/models/lc0/BT4.pt`` checkpoint that the vendored
+  ``loading_from_pretrained.py`` expects — typically a symlink to the real
+  ``BT4.pt`` produced by ``leela_chat._vendor.bt4_weight_conversion``.
+- ``load_bt4_lczerolens`` — legacy loader (lczerolens). Known broken for BT4
+  inference on ~3-5% of positions (onnx2torch translation of smolgen ops); kept
+  for cross-checks and for non-BT4 models like Maia.
 - ``encode_legal_move`` — correct 1858-element policy-index lookup using the
   vendored ``leela_chat.network.uci_to_idx`` tables (replaces
   ``lczerolens.LczeroBoard.encode_move`` which has a castling bug; see
@@ -9,34 +16,92 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import chess
 import torch
-from lczerolens import LczeroModel
 from loguru import logger
 
 from leela_chat.network.uci_to_idx import uci_to_idx as _UCI_TO_IDX
 
-__all__ = ["encode_legal_move", "load_bt4"]
+if TYPE_CHECKING:
+    # Heavy import; only used for type hints. Real import happens lazily
+    # inside ``load_bt4`` so callers that never touch the BT4 path don't
+    # pay the cost.
+    from transformer_lens import HookedTransformer
+
+__all__ = ["encode_legal_move", "load_bt4", "load_bt4_lczerolens"]
 
 
 def load_bt4(
+    *,
+    device: str | torch.device | None = None,
+    dtype: torch.dtype = torch.float32,
+) -> "HookedTransformer":
+    """Load the BT4 network as a HookedTransformer via the vendored Fudan fork.
+
+    The vendored ``loading_from_pretrained.py`` looks for the checkpoint at
+    ``/path/to/models/lc0/BT4.pt`` (hardcoded upstream — we did not rewrite
+    it because it keeps our vendored copy bit-identical to upstream modulo
+    the two BT4 patches). On a pod this is normally a symlink to the real
+    file at ``/workspace/weights/.../BT4.pt``. Build the .pt with
+    ``python -m leela_chat._vendor.bt4_weight_conversion`` after editing
+    ``DEFAULT_ONNX_PATH``/``DEFAULT_OUTPUT_PT`` in that file.
+
+    Args:
+        device: Target device. ``None`` picks CUDA if available, else CPU.
+            BT4 needs ~1.3 GB so CPU works but is very slow.
+        dtype: Weight dtype. ``float32`` matches the converter's output.
+            ``float16`` halves memory but introduces rounding vs ``lc0``.
+
+    Returns:
+        ``HookedTransformer`` in eval mode on the chosen device. Forward
+        pass returns a 3-tuple ``(policy_logits, wdl, mlh)`` — see
+        ``leela_chat.extractors.network_inference`` for how to consume it.
+    """
+    # Triggers the sys.path hack so ``transformer_lens`` resolves to the
+    # vendored copy. The noqa silences "unused import" — the import is
+    # the side effect.
+    from leela_chat import _vendor  # noqa: F401
+    from transformer_lens import HookedTransformer
+
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    logger.info(f"loading BT4 (HookedTransformer) on {device} dtype={dtype}")
+    model = HookedTransformer.from_pretrained_no_processing(
+        "lc0/BT4-1024x15x32h",
+        dtype=dtype,
+    )
+    model.eval()
+    model.to(device)
+    return model
+
+
+def load_bt4_lczerolens(
     onnx_path: str | Path,
     device: str | torch.device | None = None,
-) -> LczeroModel:
-    """Load the BT4 network from a local ONNX file.
+):
+    """Legacy loader: BT4 via lczerolens / onnx2torch.
+
+    Known broken for some BT4 inputs (~3-5% disagreement vs ``lc0`` binary
+    on a 240-position parity test; the bug lives in onnx2torch's translation
+    of smolgen-attention operators). Kept for cross-checks against the
+    HookedTransformer path and for non-BT4 lczerolens models like Maia.
+    For BT4 inference, prefer :func:`load_bt4`.
 
     Args:
         onnx_path: Path to the BT4 ONNX file pinned in ADR-0001.
         device: Target device. ``None`` picks CUDA if available, else CPU.
 
     Returns:
-        ``LczeroModel`` in eval mode on the chosen device.
+        ``lczerolens.LczeroModel`` in eval mode on the chosen device.
     """
+    from lczerolens import LczeroModel  # lazy
+
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
     path = str(Path(onnx_path).expanduser().resolve())
-    logger.info(f"loading BT4 from {path} on {device}")
+    logger.info(f"loading BT4 from {path} on {device} (lczerolens legacy path)")
     model = LczeroModel.from_onnx_path(path)
     model.eval()
     model.to(device)

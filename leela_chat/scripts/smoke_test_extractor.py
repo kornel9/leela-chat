@@ -2,21 +2,23 @@
 
 Run: ``uv run python -m leela_chat.scripts.smoke_test_extractor``
 
-Loads BT4 (from ``$LEELA_BT4_ONNX`` or the default pod path), runs the
-extractor on (a) the starting position and (b) the position after 1.e4,
-then asserts a handful of sanity checks. Anything weird — wdl doesn't
-sum to ~1, eval is far from zero at start, top moves aren't recognisable
-openings, side_to_move flipping breaks — surfaces immediately.
+Loads BT4 via the HookedTransformer path and runs the extractor on (a) the
+starting position, (b) the position after 1.e4, and (c) a castling-rich
+middlegame. Asserts WDL sums to ~1, eval near zero at start, top moves are
+recognisable openings, the WDL flip works for Black-to-move, and castling
+shows up in the policy on (c).
 
-This is the first end-to-end exercise of the full inference path:
-``chess.Board → LczeroBoard → BT4 → policy/wdl/mlh → masked softmax →
-Pydantic findings``. Catches regressions in lczerolens API, ONNX
-loading, device handling, the WDL flip for Black-to-move, and the CP
-formula.
+This is the end-to-end exercise of the full BT4 inference path:
+``chess.Board -> LeelaBoard.lcz_features -> HookedTransformer -> (policy,
+wdl, mlh) -> masked softmax -> Pydantic findings``. Catches regressions in
+the vendored TransformerLens, ONNX-loader, device handling, the WDL flip
+for Black-to-move, the CP formula, and the castling-encoding fix.
+
+Requires ``/path/to/models/lc0/BT4.pt`` to exist (typically a symlink to
+the converted .pt produced by ``leela_chat._vendor.bt4_weight_conversion``).
 """
 from __future__ import annotations
 
-import os
 import sys
 
 import chess
@@ -24,12 +26,6 @@ from loguru import logger
 
 from leela_chat.extractors.network_inference import extract_network_inference
 from leela_chat.network import load_bt4
-
-DEFAULT_BT4_PATH = (
-    "/workspace/weights/BT4-1024x15x32h-swa-6147500/"
-    "BT4-1024x15x32h-swa-6147500.onnx"
-)
-BT4_PATH = os.environ.get("LEELA_BT4_ONNX", DEFAULT_BT4_PATH)
 
 
 def assert_in_range(name: str, value: float, lo: float, hi: float) -> None:
@@ -57,7 +53,7 @@ def report(label: str, result) -> None:
 
 
 def main() -> int:
-    model = load_bt4(BT4_PATH)
+    model = load_bt4()
 
     # --- Starting position ---
     board_start = chess.Board()

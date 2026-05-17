@@ -479,3 +479,33 @@ Remaining open items for the actual Chunk 4 v2 swap:
 - Decide whether `leela_chat` should consume HookedTransformer directly (Phase 3+ hook-access) or keep lczerolens for now and only swap before Phase 3.
 - If swapping: update `leela_chat/network/__init__.py` to add a `load_bt4_hooked()` path, refactor `extract_network_inference()` to consume HookedTransformer's output format, re-run the 240-position parity test.
 
+#### 2026-05-17 (cont., 7) — Chunk 4 v2 done: vendored Fudan TL, swapped extractor
+
+Picked vendoring (option 2 of four — see session log for the four options I considered) over editable install / GitHub fork / adapter pattern. The decisive criteria: pin-everything matches existing project philosophy, no external runtime dependencies (no GitHub, no pod-specific filesystem), patches show up as normal code in our git history, and Fudan's repo could be deleted/changed at any time without affecting us. Honest second choice was the GitHub fork (cleanest upstream-PR path), but we can do that separately later.
+
+What got committed:
+- `leela_chat/_vendor/transformer_lens/` — 77 .py files (~900 KB) copied from `update_research/repos/Leela-SAEs-main/TransformerLens/transformer_lens/`. Upstream MIT LICENSE preserved verbatim. Provenance + local mods recorded in `leela_chat/_vendor/VENDOR.md`.
+- `leela_chat/_vendor/bt4_weight_conversion.py` — the ONNX→.pt converter from Fudan's `examples/`, with the missing-LN-biases fix applied directly (and noted in-file).
+- `leela_chat/_vendor/__init__.py` — sys.path hack (pip-style) so `from transformer_lens import HookedTransformer` resolves to the vendored copy. Side-effect-only module; idempotent on re-import.
+- Both BT4-loader patches applied directly to the vendored code (no `.patch` overlay): (a) `attention_body.ln.bias` / `ln2.bias` added to the explicit mapping in `bt4_weight_conversion.py`, (b) `cfg.eps` threaded into `EncoderLayer(...)` construction in `HookedTransformer.py`.
+- Trimmed eager imports in vendored `transformer_lens/__init__.py` to skip modules we don't use that pull in deps we'd rather not require: `SVDInterpreter` (needs typeguard), `HookedEncoder`/`HookedEncoderDecoder` (BERT-style, irrelevant), `head_detector`, `patching` (Phase 6 thing), `train` (needs wandb). Each is still individually importable as `from transformer_lens.<mod> import X` — only the top-level shortcut is removed.
+- Removed `from matplotlib.cm import ScalarMappable` from `transformer_lens/components/leela_features.py` (unused in our code path; avoids pulling matplotlib).
+- Removed two leftover debug `print()` calls in vendored upstream (`state_dict.keys()` dump on every model load, and `"advanced embedding for BT4"` chatter).
+- `pyproject.toml` — added runtime deps: einops, jaxtyping, beartype, fancy-einsum, transformers, better-abc, accelerate, sentencepiece, rich, typeguard. Kept lczerolens too (used by `load_bt4_lczerolens` for non-BT4 lczerolens models like Maia, and as a second-opinion cross-check).
+- `leela_chat/network/__init__.py` — `load_bt4()` now returns a `HookedTransformer` (the primary path). Old lczerolens loader renamed `load_bt4_lczerolens` and marked legacy. No ONNX path arg — the vendored `loading_from_pretrained.py` reads from the hardcoded `/path/to/models/lc0/BT4.pt` (kept upstream's hardcode to stay bit-identical).
+- `leela_chat/extractors/network_inference.py` — refactored. Input is now built via `LeelaBoard.from_fen(fen, history_synthesis=True).lcz_features(no_history=False)` instead of `LczeroBoard.encode_move`. Forward call is `model(tensor) -> (policy_logits, wdl, mlh)` (HookedTransformer signature) instead of `model(lc_board) -> dict`.
+- `leela_chat/scripts/smoke_test_extractor.py` — updated to use new `load_bt4()` signature (no path arg). All three smoke checks pass on pod (startpos / 1.e4 / castling-rich middlegame).
+- `tests/integration/test_bt4_parity.py` (new, 28 cases) — for each of 14 fixed positions (openings, midgames, endgames, castling-rich, kr-vs-k, kpvk, kbnk-zugzwang, tactical white + tactical black) checks (a) our WDL per-channel within 0.05 of lc0 binary's WDL and that the argmax channel matches, (b) our top-policy move equals lc0's 1-node best move (or at worst lc0's move is in our top-3). Auto-skips when CUDA absent or `LEELA_CHAT_LC0_BIN`/`LEELA_CHAT_LC0_WEIGHTS` env vars unset.
+- `pyproject.toml` — registered `integration` pytest marker.
+
+Verification on pod:
+- `uv run python -m leela_chat.scripts.smoke_test_extractor` passes.
+- `LEELA_CHAT_LC0_BIN=... LEELA_CHAT_LC0_WEIGHTS=... uv run pytest tests/integration/test_bt4_parity.py -v` — **28/28 pass** in 48 s.
+- `uv run pytest tests/unit` — 27/27 pass (validator unchanged).
+
+Carryover (out of scope for this commit):
+- File upstream PR to OpenMOSS/Leela-SAEs with both patches. The `scripts/patches/leela_saes_bt4_loader.patch` from the previous commit is the portable form; or we just push them straight to upstream as two separate small PRs.
+- `scripts/setup_pod.sh` still includes the runtime patch step for `/workspace/Leela-SAEs/`. Now obsolete for our purposes (we ship a vendored copy), but harmless if Leela-SAEs is still cloned on the pod for upstream PR work. Leave for now; revisit if it causes confusion.
+- Patch v3 steps 8–10 (BIBLE.md edits, ADR-0006/7/8 drafts, delete `docs/_inbox/`) still deferred.
+- Friends' Chunk 4 eval positions still TBA.
+

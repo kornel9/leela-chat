@@ -24,16 +24,18 @@ our ``eval_cp`` matches what users see from ``lc0`` directly.
 from __future__ import annotations
 
 import math
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import chess
 import numpy as np
 import torch
-from lczerolens import LczeroBoard, LczeroModel
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
 from leela_chat.network import encode_legal_move
+
+if TYPE_CHECKING:
+    from transformer_lens import HookedTransformer
 
 
 class MoveCandidate(BaseModel):
@@ -109,15 +111,15 @@ _CP_TAN_FACTOR = 1.5637541897
 def extract_network_inference(
     board: chess.Board,
     *,
-    model: LczeroModel,
+    model: "HookedTransformer",
     top_n: int = 5,
 ) -> NetworkInferenceResult:
     """Run one BT4 forward pass and return policy/wdl/mlh as a structured result.
 
     Args:
         board: Position to evaluate.
-        model: Loaded ``lczerolens.LczeroModel`` (use
-            ``leela_chat.network.load_bt4``). Already on the target device.
+        model: Loaded ``HookedTransformer`` from
+            :func:`leela_chat.network.load_bt4`. Already on the target device.
         top_n: How many top-policy moves to include in ``top_moves``.
 
     Returns:
@@ -127,14 +129,29 @@ def extract_network_inference(
         return ``top_moves=[]`` and continue with whatever WDL/MLH/eval the
         network produces for the terminal position.
     """
-    lc_board = LczeroBoard(board.fen())
+    # Lazy imports — keeps module import cheap for callers that never run
+    # inference (e.g. test_validator.py imports the Pydantic types here).
+    from leela_chat import _vendor  # noqa: F401  (sys.path hack side effect)
+    from transformer_lens.components.leela_features import LeelaBoard
+
+    # Build BT4's 112-channel input via Fudan's LeelaBoard. history_synthesis
+    # fills the 7-position history with copies of the current position when
+    # the real history isn't available — this is what HookedTransformer's
+    # tokenizer does internally and what lc0 binary effectively does for a
+    # fresh `position fen` UCI command. no_history=False so the history
+    # planes are actually filled.
+    lb = LeelaBoard.from_fen(board.fen(), history_synthesis=True)
+    feats = lb.lcz_features(no_history=False)
+    # (B, 112, 8, 8) float32, on the model's device.
+    device = next(model.parameters()).device
+    x = torch.from_numpy(feats).to(dtype=torch.float32, device=device).unsqueeze(0)
 
     with torch.no_grad():
-        out = model(lc_board)
+        policy_logits_t, wdl_t, mlh_t = model(x)
 
-    policy_logits = out["policy"].cpu().numpy()[0]   # (1858,) raw logits
-    wdl_raw = out["wdl"].cpu().numpy()[0]            # (3,) softmaxed, side-to-move perspective
-    mlh_plies = float(out["mlh"].cpu().numpy()[0, 0])
+    policy_logits = policy_logits_t.cpu().numpy()[0]   # (1858,) raw logits
+    wdl_raw = wdl_t.cpu().numpy()[0]                   # (3,) softmaxed, side-to-move perspective
+    mlh_plies = float(mlh_t.cpu().numpy()[0, 0])
 
     us = board.turn
     legal_moves = list(board.legal_moves)
