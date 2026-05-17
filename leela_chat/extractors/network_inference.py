@@ -33,6 +33,8 @@ from lczerolens import LczeroBoard, LczeroModel
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
+from leela_chat.network import encode_legal_move
+
 
 class MoveCandidate(BaseModel):
     """One legal move with the network's policy weight for it.
@@ -139,7 +141,11 @@ def extract_network_inference(
 
     top_moves: list[MoveCandidate] = []
     if legal_moves:
-        indices = np.array([lc_board.encode_move(mv, us) for mv in legal_moves])
+        # NB: We deliberately use leela_chat.network.encode_legal_move (vendored
+        # leela-interp tables) instead of lc_board.encode_move(mv, us) — the
+        # lczerolens encoder has a castling bug (king-target UCIs map to wrong
+        # policy indices). See leela_chat/network/uci_to_idx.py header.
+        indices = np.array([encode_legal_move(board, mv) for mv in legal_moves])
         legal_logits = policy_logits[indices]
         # Numerically-stable softmax over legal indices only.
         legal_logits = legal_logits - legal_logits.max()

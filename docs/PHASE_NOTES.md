@@ -372,3 +372,34 @@ Open questions / threads:
 Next session goal:
 - Chunk 5 — first handler (`what_is_leela_seeing`). Wires extractor → handler → translation layer → validator end-to-end. **Blocked on ~10 `what_is_leela_seeing` eval positions from friends.** While waiting, Chunk 6 (CLI REPL + one-shot `ask` subcommand) is unblocked and could be done in parallel.
 
+---
+
+#### 2026-05-17 (cont., 4) — castling-encoding fix; lczerolens/onnx2torch BT4 bug uncovered
+
+What I did:
+- Spot-checked the v3 patch's leela-interp claims, ran a parity test between `lczerolens.LczeroBoard.encode_move()` and the vendored `leela-interp` `uci_to_idx` tables over 242 legal moves across 11 diverse positions: **240/242 match. 2 mismatches were both castling moves.** Verified the disagreement against BT4 on the pod by reading raw policy logits at the disputed indices — confirmed lczerolens's `encode_move()` returns the wrong policy slot for king-target castling UCIs (`e1g1`, `e1c1`, `e8g8`, `e8c8`). The network's actual castling probability lives at the rook-target indices, which lczerolens's `decode_move()` correctly inverts but `encode_move()` misses.
+- Vendored `leela-interp/src/leela_interp/core/uci_to_idx.py` (SHA-1 `34c3f5c7e1b9968fa46ace7b3b7b89b0a2a670b2`) to `leela_chat/network/uci_to_idx.py` with an attribution header documenting source, license (GPL-3, same class as our existing GPL deps), the bug it works around, and known knight-underpromotion limitation.
+- Added `encode_legal_move(board, move)` to `leela_chat/network/__init__.py` using the vendored tables. Patched `extract_network_inference()` to use it instead of `lc_board.encode_move(mv, us)`. Extended `smoke_test_extractor.py` with a castling-rich middlegame regression test that asserts O-O or O-O-O appears in the top-N.
+- **DEEPER bug uncovered while preparing to commit the castling fix:** the eval_cp on the castling-rich middlegame came back as `-1542` (i.e. White dead-lost) while every other engine on the same position says `+14` to `+49` cp (slight White edge). Cross-checked 20 diverse positions: lczerolens via the andyrdt third-party ONNX disagrees with lc0 binary (using the same `.pb.gz` weights, hash-verified) on **12 of 20 positions**. lczerolens's WDL output is polarized to extremes (`0/0/1`, `1/0/0`, `0/1/0`) for most non-opening positions, while lc0 binary produces sensible intermediate values. Self-converted ONNX via `lc0 leela2onnx` produces **identical broken output** to the andyrdt ONNX — so the third-party export isn't the villain. lczerolens 0.4.0 also doesn't accept `.pb.gz` via `from_path()` (raises `NotImplementedError`). The bug is somewhere in the `lczerolens / onnx2torch / PyTorch` runtime — likely in how BT4's smolgen-attention or attention-policy operators get translated by `onnx2torch`. T82 (older architecture, no smolgen) is what published interp work (Jenner, Cruz) uses successfully — they don't hit this bug.
+
+What surprised me:
+- The smoke test from Chunk 4 v1 passed on cherry-picked positions (startpos + after-1.e4 + castling-rich-middlegame). The first two happen to fall in lczerolens's "works" zone. The third only just got added as part of the castling regression — and it's exactly the position that surfaced the deeper inference bug. The 3-position smoke test was insufficient; the real cross-check needs to be a 20-position-vs-lc0-binary WDL comparison.
+- The `--verbose-move-stats` Lc0 binary on the pod (from setup_pod.sh) was load-bearing for this diagnosis. Without it, we'd still believe the extractor works.
+- **Fudan ships their pretrained Transcoders/Lorsas specifically for BT4-1024x15x32h** (per their README and the JacklE0niden/lc0-BT4-tc + JacklE0niden/lc0-BT4-lorsa HuggingFace repos). Switching to T82 to sidestep the smolgen bug would lose Fudan integration entirely — the project's single biggest Phase 4 accelerator. So BT4 stays.
+- **Fudan has a known-working PyTorch path for BT4 that bypasses `onnx2torch` entirely:** `examples/weight_conversion.py` in the Leela-SAEs repo converts the ONNX into a TransformerLens-compatible `BT4.pt`, then uses TransformerLens `HookedTransformer` at runtime. Their reasoning-pathway code runs on this loader daily in published work. This is the swap plan for next session (or now).
+
+Status of Chunk 4 deliverables:
+- Castling encoding fix: ✅ correct in isolation, committed in the next commit. The vendored `uci_to_idx` table is right regardless of which forward-pass library we use; the fix is independent of the inference-path bug.
+- `extract_network_inference()` end-to-end: ❌ produces unreliable WDL/eval_cp for most non-opening positions. Cannot be relied upon by handlers downstream until the inference-path swap lands.
+- Smoke test: now includes castling regression. Needs to be expanded to a 20-position WDL-vs-lc0-binary cross-check before we declare Chunk 4 done again.
+
+Open questions / threads (carryover):
+- ADR-0001 through ADR-0005 `[initials]` placeholders still empty.
+- Friends' Chunk 4 (eval positions) progress still unknown.
+- Patch v3 steps 8-10 (BIBLE.md edits, ADR-0006/7/8 drafts, delete the inbox patch) still deferred.
+- BT4's no-history input may also affect some positions even after the loader swap — Fudan and lc0-binary both run cold-no-history but produce sensible values; revisit whether `LczeroBoard(fen)` differs in its history-plane defaults from what BT4 was trained on.
+
+Next session goal:
+- Adopt Fudan's TransformerLens loader. Run `examples/weight_conversion.py` on the pod (after installing TransformerLens + its dependency closure). Produce `BT4.pt`. Swap `load_bt4()` to load via `HookedTransformer.from_pretrained_no_processing()` or equivalent. Swap `extract_network_inference()` to call the new model. Re-run the 20-position WDL cross-check against lc0 binary; require all 20 to agree within tolerance before re-declaring Chunk 4 done.
+- After Chunk 4 v2 is reliable: resume patch v3 steps 8-10.
+

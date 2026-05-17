@@ -115,6 +115,26 @@ def main() -> int:
             f"  PASS eval_cp grew after 1.e4: {res_start.eval_cp} -> {res_black.eval_cp}"
         )
 
+    # --- Castling regression test ---
+    # Pre-castling-fix (Chunk 4 v1), our extractor read castling policy from
+    # the wrong index due to a lczerolens encode_move bug. BT4 strongly favors
+    # O-O-O in this position; if our extractor is wired correctly, O-O-O should
+    # appear in the top-N at a non-trivial policy_pct.
+    board_castle = chess.Board(
+        "r3k2r/pppqbppp/2np1n2/4p3/4P3/2NPBN2/PPPQ1PPP/R3K2R w KQkq - 4 8"
+    )
+    res_castle = extract_network_inference(board_castle, model=model, top_n=10)
+    report("castling-rich middlegame (White to move, both sides can castle)", res_castle)
+
+    castling_sans = {mv.san for mv in res_castle.top_moves if mv.san in {"O-O", "O-O-O"}}
+    if not castling_sans:
+        raise AssertionError(
+            "Castling regression: neither O-O nor O-O-O in top-10 despite "
+            "BT4 favoring it on this position (idx 97 had highest castling logit "
+            "in the upstream probe)."
+        )
+    logger.success(f"  PASS castling appears in top-10: {castling_sans}")
+
     logger.success("smoke test passed")
     return 0
 
