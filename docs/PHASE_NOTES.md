@@ -15,6 +15,8 @@
 - **Last session:** 2026-05-17
 - **Next session goal:** Chunk 6 — CLI REPL + one-shot `ask --fen ... --question ...` subcommand. Pure local Python, no GPU needed for the wiring (handler call is stubbed until Chunk 5). Or, if friends' eval positions land, jump straight to Chunk 5.
 
+> **Pod state caveat:** RunPod stop/start cycles wipe everything outside `/workspace` (apt packages, `/workspace/bin/lc0`, `/usr/local/cuda-12.8/bin` PATH). Run `ssh runpod 'bash /workspace/leela-chat/scripts/setup_pod.sh'` after every pod restart — idempotent, takes ~30s on warm restart and ~10 min on first build of Lc0.
+
 ---
 
 ## Phase 0 — Environment and Foundations
@@ -346,6 +348,10 @@ What surprised me:
 - Lc0 has FIVE CP score types (`centipawn`, `centipawn_2018`, `centipawn_2019`, `centipawn_with_drawscore`, `WDL_mu`). The 2018 formula is widely quoted in old docs but is no longer the default. Easy to grab the wrong one if you're reading historical sources.
 - BT4 outputs MLH ~99 full moves at startpos — far longer than human games, presumably reflecting Lc0 self-play training distribution.
 - BT4's `e7e5` policy after 1.e4 is **77.6%** — strongly opinionated towards the Open Game; Sicilian-via-c5 only gets 4.9%.
+
+Remediation (committed separately):
+- Added `scripts/setup_pod.sh` — idempotent pod bootstrap. Installs apt packages, adds CUDA to PATH (and `/root/.bashrc`), builds Lc0 v0.32.1 into `/workspace/src/lc0` then copies binary to `/workspace/bin/lc0` only if missing. Smoke-checks lc0, stockfish, BT4 ONNX, and the venv. Run on every fresh pod with `ssh runpod 'bash /workspace/leela-chat/scripts/setup_pod.sh'`.
+- Lc0 v0.32.1 rebuilt on the pod with cuda-fp16 backend. Same version as the previous build (ADR-0004 still valid). Binary at `/workspace/bin/lc0`. Source preserved at `/workspace/src/lc0`.
 
 Open questions / threads:
 - BT4's startpos eval (+3) is slightly higher than after 1.e4 (+2). Probably noise within rounding; flagged for re-check when we feed actual move history (the no-history input may explain the 1cp wobble).
