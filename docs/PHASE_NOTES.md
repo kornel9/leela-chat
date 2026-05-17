@@ -11,9 +11,9 @@
 ## Current Status
 
 - **Phase:** 1 — Network-First Chat MVP
-- **Active chunk:** Chunk 1 — design (Pydantic schemas, prompt template, validator interface, CLI sketch)
+- **Active chunk:** Chunk 3 — Validator implementation (next)
 - **Last session:** 2026-05-17
-- **Next session goal:** Finish Chunk 1 design then move into Chunk 2 (Anthropic SDK wrapper + .env loading + caching scaffold).
+- **Next session goal:** Chunk 3 — implement legality + JSON-grounding checks in `leela_chat/validator/__init__.py` with synthetic-data unit tests.
 
 ---
 
@@ -278,4 +278,27 @@ Open questions / threads:
 
 Next session goal:
 - Finish Chunk 1 (design files) and move into Chunk 2 (Anthropic SDK wrapper).
+
+---
+
+#### 2026-05-17 (cont.) — Phase 1 Chunks 1 and 2 done
+
+What I did:
+- Chunk 1 (design): wrote Pydantic schemas (`extractors/network_inference.py`, `handlers/what_is_leela_seeing.py` — `NetworkInferenceResult`, `MoveCandidate`, `WDL`, `WhatIsLeelaSeeingFindings`), v1 prompt template (`llm/prompts/what_is_leela_seeing/v1.md`, ~3.9 KB), validator types + signature (`validator/types.py`, `validator/__init__.py`), CLI sketch (`cli/__main__.py` — argparse with REPL default + `ask` subcommand). All stubs raise `NotImplementedError`. `python -m leela_chat.cli --help` and `ask --help` display correctly.
+- Chunk 2 (Anthropic SDK wrapper): added `anthropic` 0.102.0 + `python-dotenv` 1.2.2 to deps. Wrote `llm/client.py` (LLMMode enum, LLMResponse Pydantic with cache telemetry, LLMClient.translate() with `cache_control:ephemeral` on system block), `llm/env.py` (loads .env from project root via python-dotenv), `scripts/smoke_test_llm.py` (one call per mode against real API).
+- Smoke test passes: Sonnet 4.6 81+33 tokens (~$0.0007), Opus 4.7 115+33 tokens (~$0.004). Both `stop=end_turn`. Cache hits 0 at current prompt size — that's expected, the system prompt (~1000 tokens) is below the cache-engagement minimum (Opus 4.7: 4096, Sonnet 4.6: 2048). Wiring is forward-looking; caching engages naturally as prompts grow with more handlers and few-shot examples.
+
+What surprised me:
+- The claude-api skill flagged the cacheable-prefix minimum explicitly — without that, the `cache_control` would have looked broken when telemetry showed 0 hits. The skill content is load-bearing for this kind of thing; worth invoking it any time we touch Anthropic SDK code.
+- Anthropic SDK is at 0.102.0 — major version still 0.x but the API surface is stable; using `>=0.40,<1.0` as the pin range.
+- `cache_creation_input_tokens` and `cache_read_input_tokens` are both reported as 0 (not absent) when caching doesn't engage. Defensive `getattr(usage, ..., 0) or 0` in the client handles either case.
+
+Open questions / threads:
+- **Adaptive thinking on Opus 4.7:** currently off in our client (translation is mechanical). The claude-api skill recommends `thinking: {type: "adaptive"}` for "anything remotely complicated." Revisit in Chunk 5 once we see actual handler outputs against eval positions.
+- **Prompt cache engagement:** monitor token counts as prompts grow. Once system + JSON schema exceed 2048 tokens, Sonnet will start caching; 4096 for Opus. Likely happens during Chunk 5 once we add few-shot examples.
+- ADR-0001 through ADR-0005 still have `[initials]` placeholders.
+- Friends' Chunk 4 progress still unknown.
+
+Next session goal:
+- Chunk 3 — implement validator (legality + JSON-grounding) in `leela_chat/validator/__init__.py`. Pure local Python with synthetic test data, no API calls.
 
