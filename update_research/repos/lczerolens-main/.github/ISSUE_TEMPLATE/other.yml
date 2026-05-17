@@ -1,0 +1,42 @@
+name: Other
+description: Detail an issue.
+title: "[Other] "
+labels: ["other"]
+projects: []
+assignees:
+  - Xmaster6y
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this issue!
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A shortline description of the issue.
+      placeholder: Key insights about the issue.
+    validations:
+      required: true
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      description: What category does the issue belong to?
+      options:
+        - New Feature
+        - Improvement
+        - Bug Fix
+        - Documentation
+        - Other
+      default: 4
+    validations:
+      required: true
+  - type: textarea
+    id: tasks
+    attributes:
+      label: Tasks
+      description: List of tasks to implement the feature.
+      value: |
+        * [ ] Code is documented
+        * [ ] Utilities and class tests are written

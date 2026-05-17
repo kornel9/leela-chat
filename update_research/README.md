@@ -39,3 +39,12 @@ Whichever form makes the file easy to find when grepping for a paper name. Pick 
 See CLAUDE.md §12 "Pointers to Deeper Context" — the rule is: consult `update_research/` when the project's own code + `docs/PRIOR_WORK.md` don't go deep enough. Read **selectively** (abstract / intro / a specific section for papers; README + the relevant module for repos). Avoid reading entire papers when a targeted section would do — context window is finite, and most chunks of most papers aren't load-bearing for the current task.
 
 `docs/PRIOR_WORK.md` should always be the entry point — it tells you which paper is relevant for what. Only then descend into `update_research/` if you need the actual content.
+
+## Known issues
+
+Two zip files in `repos/` are **corrupted downloads** that failed to extract (`End-of-central-directory signature not found`). They've been kept on disk so you remember to replace them; re-download from GitHub when needed:
+
+- `repos/feature-circuits-main.zip` — Marks et al., "Sparse Feature Circuits" (Phase 7 reference). Re-download: <https://github.com/saprmarks/feature-circuits>.
+- `repos/lczero-training-master.zip` — Lc0 network training pipeline (89 MB; we don't retrain in this project, so reference-only). Re-download: <https://github.com/LeelaChessZero/lczero-training>.
+
+Until they're replaced, those zips don't contribute usable content. You can ignore them when looking for material to read.

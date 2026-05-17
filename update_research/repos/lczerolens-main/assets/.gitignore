@@ -1,0 +1,4 @@
+*
+!.gitignore
+!resolve-tests-assets.sh
+!resolve-demo-assets.sh

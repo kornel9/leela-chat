@@ -1,0 +1,90 @@
+site_name: Llamascopium
+site_url: https://llamascopium.readthedocs.io
+repo_url: https://github.com/OpenMOSS/Llamascopium
+
+theme:
+  name: material
+  font:
+    text: IBM Plex Sans
+    code: IBM Plex Mono
+  features:
+    - content.code.copy
+    - content.footnote.tooltips
+
+plugins:
+  - search
+  - gen-files:
+      scripts:
+        - scripts/gen_ref_pages.py
+  - literate-nav:
+      nav_file: SUMMARY.md
+  - section-index
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            show_source: true
+            heading_level: 2
+            show_root_heading: true
+            show_root_full_path: false
+            docstring_style: google
+            merge_init_into_class: true
+            show_submodules: false
+            show_signature_annotations: true
+            separate_signature: true
+            signature_crossrefs: true
+            unwrap_annotated: true
+            modernize_annotations: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            members_order: source
+            extensions:
+              - griffe_pydantic
+  - glightbox
+
+nav:
+  - Home: index.md
+  - Train SAEs: train-saes.md
+  - Sparse Dictionaries:
+      - Overview: models/overview.md
+      - Sparse Autoencoder: models/sae.md
+      - Transcoder: models/transcoder.md
+      # - Cross Layer Transcoder: models/clt.md
+      - Low-Rank Sparse Attention: models/lorsa.md
+  - Analyze SAEs: analyze-saes.md
+  - Distributed Guidelines: distributed-guidelines.md
+  - Key Concepts: concepts.md
+  - Style Guide: style-guide.md
+  - Code Reference: reference/
+
+markdown_extensions:
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - attr_list
+  - md_in_html
+  - pymdownx.blocks.caption
+  - pymdownx.arithmatex:
+      generic: true
+  - admonition
+  - pymdownx.details
+  - pymdownx.blocks.caption
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - footnotes
+  - abbr
+  - pymdownx.snippets
+
+extra_javascript:
+  - javascripts/katex.js
+  - https://unpkg.com/katex@0/dist/katex.min.js
+  - https://unpkg.com/katex@0/dist/contrib/auto-render.min.js
+
+extra_css:
+  - https://unpkg.com/katex@0/dist/katex.min.css
+  - assets/extra.css

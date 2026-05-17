@@ -40,3 +40,6 @@ Thumbs.db
 # machines, push individual files near GitHub's >50 MB warn threshold).
 update_research/**/stockfish-*-x86-64-*
 update_research/**/*.exe
+# Windows NTFS "downloaded from internet" metadata sidecars — appear when
+# copying files from Windows to WSL; pure noise. Delete on disk too.
+*:Zone.Identifier
