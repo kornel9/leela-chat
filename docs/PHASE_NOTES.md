@@ -209,7 +209,17 @@ Next session goal (after Phase 1 brief):
 
 _Things I notice but don't have time to answer right now. Capture them so they don't get lost._
 
-- (none yet)
+_Items 1–9 below moved here from `docs/_inbox/PRIOR_WORK_UPDATE_v3.md` on 2026-05-17 as part of the v3 patch merge._
+
+1. **History-stripped Leela variant.** Cruz, Jenner, and `leela-interp` all use single-board-state finetunes of Leela. BT4 takes 8-position history. Phase 6 patching against BT4 needs either (a) a similar history-stripping finetune of BT4, or (b) careful experimental design controlling for history-plane noise.
+2. **Behavioral tests in eval grader.** Lovering's behavioral-test methodology should be considered for the eval grader in PHASE_NOTES.md Chunk 7. Phase 3 exit criterion currently uses AUC>0.9 (encoding); a complementary "concept used correctly in N positions" behavioral metric might be worth adding. See ADR-0007.
+3. **MCTS-vs-network signal split.** Lovering finding that MCTS discovers concepts first formalizes a Phase 2 design question: when handlers cite "Leela sees X," does X come from the policy network or from MCTS visits/values? Worth distinguishing in the JSON schema.
+4. **Two more attention head taxonomies.** Davis & Sukthankar (chess GPT-2) and Cruz (Leela history-stripped) both produce attention-head taxonomies. Neither targets BT4 with smolgen. Phase 3 or Phase 6 may benefit from deriving a BT4-specific taxonomy; `leela-interp/tools/piece_movement_heads.py` is the methodology template.
+5. **Maia-2 vs Maia-1 integration choice.** Maia-2 is the unified skill-aware successor; Tang et al. uses it. Worth deciding which to integrate when Phase 6 needs a "how would a player rated X see this?" reference.
+6. **Adversarial eval-position acceptance criteria.** `superhuman-ai-consistency` generators produce positions with mechanical ground truth but not authored against handler intent. Worth deciding whether they go in `tests/eval/eval_positions.yaml` (Rule 3 protected) or a separate `tests/eval/consistency_positions.yaml`.
+7. **JSON-schema forward compatibility.** Cruz's "multiple move sequences" finding suggests `WhatIsLeelaSeeingFindings` should accommodate an `alternate_lines` field even if Phase 1 doesn't populate it.
+8. **Custom python-chess fork in leela-interp.** `leela-interp` pins `chess @ git+https://github.com/ejnnr/python-chess.git`. If we vendor `core/uci_to_idx.py`, do we also need that fork's specific extensions, or does mainline `chess==1.11.2` suffice? Worth verifying during Chunk 4 vendoring.
+9. **Branch-pin durability in lczero-planning.** `lczero-planning` pins `lczerolens` at the `patching` rev and `nnsight` at Poupart's `Xmaster6y/nnsight` fork's `modules` rev. If we adopt as Phase 4 fallback, are those branches still maintained? Verify before depending.
 
 ---
 

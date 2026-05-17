@@ -202,19 +202,27 @@ If you adopt nothing else, these seven items cut years off the project:
 
 **Where it fits:** Tier 2 alternative to OpenMOSS for Phase 4. Don't use both — pick one. OpenMOSS is more chess-aligned; sparsify is more LLM-aligned.
 
-### Jenner et al. "Evidence of Learned Look-Ahead" code
+### leela-interp (Jenner et al.) ⭐⭐
 
 - **Paper:** arXiv 2406.00877 (NeurIPS 2024)
-- **Code:** referenced in the paper (search "Erik Jenner learned look-ahead chess" on GitHub)
-
-**What it gives you:**
-- Activation patching infrastructure for Lc0 (T82 net)
-- Specific probes for "Leela's predicted move 2 plies ahead" (~92% accuracy)
-- Methodology for proving causal mechanisms in Leela
-
-**Where it fits:**
-- Phase 2 / Phase 3 reference: how to do activation patching cleanly on Leela.
-- Phase 6 inspiration: their patching technique is your counterfactual analysis primitive.
+- **Repo:** `github.com/leela-interp/leela-interp` (also project page at `https://leela-interp.github.io/`)
+- **License:** GPL-3 — same as our existing GPL-3 deps (Lc0, python-chess); subprocess/API isolation already part of our deployment model.
+- **Python:** 3.10+ compatible; our 3.11 pin works.
+- **Stack:** nnsight 0.2.\*, zarr, einops, onnx2torch, scikit-learn, custom python-chess fork (`ejnnr/python-chess`). The custom python-chess fork is worth noting — used for the 1858 move encoding.
+- **What it gives you (concrete modules):**
+  - `core/lc0.py` — Lc0 model wrapper
+  - `core/leela_board.py` — 112-channel input encoding (the format your CLAUDE.md §8 pitfall list explicitly warns about reimplementing)
+  - `core/nnsight.py` — nnsight integration for Lc0 (resolves the Tier 3 "investigate whether nnsight supports Leela" question; see Correction 3)
+  - `core/uci_to_idx.py` — **the canonical 1858-element move vector mapping. CLAUDE.md §8 lists "Changing the 1858-element move vector mapping" as an explicit pitfall.** This file is the existing, working implementation. Vendor candidate.
+  - `core/forward_pass_implementation.py` — Lc0 forward pass tied to nnsight hooks
+  - `tools/activations.py` — activation capture
+  - `tools/attention.py` — attention pattern utilities
+  - `tools/patching.py` — activation patching (Phase 6 starter code)
+  - `tools/probing.py` — linear probing on Leela (Phase 3 starter code)
+  - `tools/piece_movement_heads.py` — named-attention-head analysis methodology (template for BT4-specific head taxonomy work in Phase 3 / Phase 6)
+  - `scripts/probing.py`, `run_global_patching.py`, `run_single_head.py`, `make_puzzles.py`, `make_corruptions.py` — reproducer scripts
+- **Puzzle dataset:** `interesting_puzzles.pkl` available at the FigShare link in the README. ~22k puzzles solvable by Leela but hard for weaker engines (same dataset Cruz's follow-up uses).
+- **Model variant caveat:** the default `lc0.onnx` provided is the **history-stripped finetune** Cruz also uses, not stock BT4. Phase 6 patching against BT4 needs either a history-stripping finetune or careful experimental design that controls for history-plane noise. Already on the open-questions list.
 
 ### SAELens
 
@@ -230,6 +238,58 @@ If you adopt nothing else, these seven items cut years off the project:
 - Search Anthropic's GitHub orgs (`anthropics/`) for the "Towards Monosemanticity" companion code.
 - **What it provides:** Reference implementations of dictionary learning, feature visualization, evaluation metrics.
 - **Where it fits:** Reference for what "good" SAE evaluation looks like.
+
+### superhuman-ai-consistency / rl_testing (Fluri, Paleka, Tramèr — ETHZ) ⭐⭐
+
+- **Paper:** *Evaluating Superhuman Models with Consistency Checks*, arXiv 2306.09983
+- **Repo:** `github.com/ethz-privsec/superhuman-ai-consistency` (also: `github.com/luk-s/rl-testing-experiments` for the chess-only subset)
+- **License:** MIT ✓
+- **Stack:** Python 3.8 (compat work needed for our 3.11 pin), python-chess, asyncssh for remote engine, networkx, numpy, scipy, wandb
+- **Subject engine:** Leela Chess Zero. Their experiments use Lc0 `release/0.29` and T-net `807785`; not BT4. Methodology and parser code transfer; specific positions don't.
+- **What it provides — the two big-ticket items:**
+  1. **`rl_testing/mcts/tree_parser.py`** (588 lines). Parses Lc0's `--verbose-move-stats` token stream into `TreeInfo` / `NodeInfo` Python objects backed by networkx graphs. Per-node attribute map: `N` (visits), `P` (policy), `WL` (W−L), `D` (draw), `M` (moves-left), `Q`, `U`, `S`, `V`, `T` (is_terminal). Token grammar: `TREE INFO` / `START TREE` / `END TREE` / `START NODE:` / `END NODE` / `POSITION:` / per-node and per-edge attribute lines. Exactly the data structure your Phase 2 chunk plan calls for.
+  2. **`rl_testing/engine_generators/relaxed_uci_protocol.py`** — an `ExtendedAnalysisResult` and `RelaxedUciProtocol` that subclass python-chess's `UciProtocol` to consume Lc0's tree-info tokens directly, rather than scraping `info string` lines. This is the right boundary for our `leela_chat/engine/` module.
+- **What it also provides — Phase 0 / Phase 8 adversarial eval-set generators:**
+  - `experiments/recommended_move_invariance_testing.py` — positions where the recommended move should be stable under controlled perturbations.
+  - `experiments/transformation_invariance_testing.py` — supports `rot90`, `rot180`, `rot270`, `flip_diag`, `flip_anti_diag`, `flip_hor`, `flip_vert`, `mirror`. Any chess AI must evaluate transformed boards identically; positions where Leela doesn't are objective eval-set fodder with mechanical ground truth.
+  - `experiments/evolutionary_algorithms/evolutionary_algorithm_distributed_oracle_queries_async.py` — evolutionary search for positions where Leela disagrees with itself most strongly. A goldmine for Phase 6 `why_is_my_move_wrong` eval positions.
+  - `data/create_forced_moves_database.py` — generator for positions with a single legal move (those positions must evaluate identically before and after the forced move).
+- **Where it fits:** Phase 0 / Phase 8 (adversarial eval positions with mechanical ground truth), Phase 2 (MCTS parser — the time savings of this entire prior-work review), Phase 6 (evolutionary algorithm for `why_is_my_move_wrong` eval positions).
+- **Caveats:** Python 3.8, Lc0 0.29, T-net 807785 — none are blockers. Pinned old deps (chess 1.9.4 + python-chess 1.999, numpy 1.23) push toward "port" rather than "vendor."
+- **ADR:** ADR-0006 captures vendor-vs-port choice.
+
+### lczero-planning (Poupart — ENS de Lyon) ⭐
+
+- **Paper:** arXiv 2406.04028 — *Contrastive Sparse Autoencoders for Interpreting Planning of Chess-Playing Agents*
+- **Repo:** `github.com/yp-edu/lczero-planning` (cite Poupart, 2024); project page `https://yp-edu.github.io/publications/lczero-planning`
+- **License:** MIT ✓
+- **Stack:** Python ≥3.9, poetry-managed. Uses `lczerolens` (Poupart's own library, pinned to the `patching` git rev), nnsight (Poupart's fork at `Xmaster6y/nnsight`, `modules` rev), pydantic 2.x ✓, loguru ✓, wandb. **Stack-aligned with this project's choices in CLAUDE.md §4 and §6.**
+- **README warning:** *"Not a stable codebase."* Take seriously; it's a research repo, not a library.
+- **What it gives you — the only Lc0-specific SAE training pipeline in the prior-work inventory:**
+  - **`scripts/sae_training/train_regular.py`** + **`train_contrastive.py`** + **`train_buffer.py`** — regular and contrastive SAE training for Lc0.
+  - **`scripts/sae_utils/sae.py`** + **`buffer_training.py`** — SAE model + activation-buffer training loop.
+  - **`scripts/datasets/make_activations_datasets.py`** + **`make_features_dataset.py`** + **`make_trajectories_dataset.py`** + **`convert_tcec_dataset.py`** — full dataset pipeline including TCEC games.
+  - **`scripts/sae_analysis/`** — analysis utilities.
+  - **`scripts/play/raw_matchmaking.py`** — engine-vs-engine matchmaking with activation collection.
+  - HuggingFace Spaces demo at `huggingface.co/spaces/lczero-planning/demo`.
+- **Where it fits:**
+  - **Phase 4 fallback path (major):** CLAUDE.md §10 Phase 4 currently says: *"if Fudan's code doesn't reproduce in 2 weeks, fall back to OpenMOSS or sparsify."* That fallback list should be reordered with `lczero-planning` as **Option A** because it's already Leela-shaped. OpenMOSS and sparsify both require porting work. ADR-0008 captures this.
+  - **Phase 4 trajectory datasets:** if you ever want activation-collection over Lc0 game trajectories rather than single positions, `make_trajectories_dataset.py` is the closest existing reference.
+  - **Phase 6:** the contrastive SAE framing (pairs of game trajectories) maps onto Phase 6 differential analysis — already noted in v2; lczero-planning is the concrete code.
+- **Caveats:** poetry not uv; requires pinning translation to your `pyproject.toml`. The lczerolens "patching" branch and Poupart-fork nnsight "modules" branch are specific, possibly out-of-sync with mainline now. Verify branch availability before adopting.
+
+### Tang et al. — Skill-Adaptation SAEs on Maia-2 ⭐
+
+- **Title:** *Understanding Skill Adaptation in Transformers Using Sparse Autoencoders: Chess as a Model System*
+- **Status:** Under review at ICLR 2024 (anonymous submission)
+- **Code:** `https://anonymous.4open.science/r/chess-sae-3C06/` — check license on de-anonymization
+- **Subject model:** Maia-2 (the unified skill-aware successor to Maia-1100/1300/etc. — ResNet backbone + skill-aware transformer with skill embeddings injected into attention queries).
+- **What it does:** Trains SAEs on Maia-2's skill-modulated residual stream, identifies latent features that fire on interpretable chess concepts, performs mediated interventions on those SAE features to elicit higher- or lower-skill play in the same position.
+- **Why it matters:** Closest existing experimental template for the coaching aspiration. Their "push a feature, model plays better/worse on the same board" is structurally the Phase 6 counterfactual experiment for `why_is_my_move_wrong` and "what would a 2400 player see here?" handlers.
+- **Where it fits:**
+  - **Phase 4 fallback option B:** if Fudan no-goes AND lczero-planning is also blocked, this paper's pipeline is the next-closest methodology (Maia-2, not BT4 — architecture differs). Use the *methodology*, not the weights.
+  - **Phase 6:** mediated SAE intervention protocol is the template.
+- **Caveats:** Maia-2 ≠ BT4 (ResNet+transformer hybrid vs. pure transformer with smolgen). Methodology transfers; weights and feature dictionary do not.
 
 ---
 
@@ -249,7 +309,8 @@ General-purpose libraries you can adapt to Lc0.
 - **Repo:** `github.com/ndif-team/nnsight`
 - **License:** MIT ✓
 - **What it does:** modern PyTorch model introspection and manipulation. Backed by NDIF (National Deep Inference Fabric). Clean intervention syntax: `with model.trace(input) as tracer:`.
-- **Where it fits:** Phase 6 activation patching, counterfactual ablation. Cleaner API than raw PyTorch hooks for complex interventions. Supported by lczerolens.
+- **Where it fits:** Phase 6 activation patching, counterfactual ablation. Cleaner API than raw PyTorch hooks for complex interventions.
+- **Integration with Lc0:** **nnsight is the supported interp library for Lc0.** Working glue: `leela_interp.core.nnsight` (see `leela-interp` entry above). Use this pattern rather than reimplementing PyTorch hooks against `lczerolens.LczeroModel` directly. lczerolens supports nnsight as well, but `leela-interp`'s wrapper is the more battle-tested path through Jenner's published patching experiments.
 
 ### captum
 
@@ -275,6 +336,30 @@ General-purpose libraries you can adapt to Lc0.
 - **Site:** `neuronpedia.org`
 - **What it does:** public database of SAE features for various LLMs with visualizations.
 - **Where it fits:** **inspiration for your Phase 5 labeling UI.** Their interface design is exactly what your labeling tool should aspire to.
+
+### alphasae (Pavan Yellow / pavanyellow)
+
+- **Repo:** `github.com/pavanyellow/alphasae`
+- **License:** Apache 2.0 ✓
+- **Stack:** torch + numpy + tqdm + wandb (4 dependencies total)
+- **What it does:** Trains a small AlphaZero on Othello 6x6, captures Layer-2 residual stream activations (3M examples), trains 25 SAEs across a 5×5 grid of L1 penalty × feature count `[1..5] × [256, 512, 1024, 2048, 4096]`. Includes a static HTML feature browser at `vis/feature_vis.html`. Training time: 1–30 min per SAE on an RTX 4090.
+- **Why it's worth keeping:** *Not* a production dependency. Reference implementation only.
+  - **Phase 4 pedagogical:** Read `sae/trainer.py` *before* fighting with OpenMOSS, Fudan, or lczero-planning. It's small enough to fit in your head.
+  - **Phase 5 UX inspiration:** The static HTML feature browser is a working example of "click a feature, see top-activating positions" — minimum-viable version of the labeling tool.
+- **What it does NOT do:** chess. Lc0. BT4. Transcoders. Lorsas. Not a Fudan substitute.
+
+### alphatology (J. Forde — companion to Lovering Hex paper)
+
+- **Repo:** `github.com/jzforde/alphatology` (cite Forde, 2022)
+- **License:** MIT ✓
+- **Subject domain:** AlphaZero on Hex, not chess.
+- **What it gives you:** the actual code behind the Lovering Hex AlphaZero paper (see "Research — Concept probing methodology" entry). Modules:
+  - `detect.py`, `encode.py`, `generate.py` — probe + behavioral-test pipeline.
+  - `probing.py` — linear probe training.
+  - `positive.py`, `negative.py` — generators for concept-positive and concept-negative example positions.
+  - `templates/concepts.py`, `templates/positive.py`, `templates/negative.py`, `templates/neighbors.py`, `templates/probing.py` — concept-template generators (Hex-specific: bridge, edge, ladder, dead cells, etc.).
+  - Slurm-job scaffolding (less relevant for RunPod).
+- **Where it fits:** **Phase 3 reference read.** The Hex-specificity is real — none of the concept templates port to chess directly. But the pattern (positive examples + negative examples + behavioral test as a triplet) is exactly the methodology Phase 3 should follow. Read once during Phase 3 design to internalize the pattern; do not vendor.
 
 ---
 
@@ -454,6 +539,15 @@ The papers you build directly on. Read all of them before Phase 4.
 - **arXiv:** 2411.18895, **Venue:** NeurIPS 2024
 - **What it does:** SAE evaluation methodology on chess (and Othello) models. Shows board-state properties (piece locations) are recoverable from SAE features at >99% accuracy.
 - **Why critical:** methodological template for evaluating your own (or Fudan's) SAE features. Read their eval design before judging Phase 4 success.
+- **Companion code:** `github.com/adamkarvonen/SAE_BoardGameEval` (no LICENSE file present in repo — check before vendoring). Python 3.11 ✓, Pydantic 2.x ✓, nnsight 0.3.7, transformer_lens 1.17.0.
+- **Targets ChessGPT and OthelloGPT, not Lc0.** Methodology transfers; the actual hookups don't.
+- **Reusable pieces for Phase 4:**
+  - `circuits/eval_sae_as_classifier.py` — supervised SAE quality metric (the paper's contribution).
+  - `circuits/eval_board_reconstruction.py` — board-state recovery from SAE features.
+  - `circuits/full_pipeline.py` + `circuits/full_pipeline_walkthrough.ipynb` — end-to-end SAE eval pipeline.
+  - `circuits/sae_training/` — p-annealing training (the paper's other contribution).
+  - **Pretrained chess SAEs on HuggingFace** (`adamkarvonen/chess_saes`, including `chess-trained_model-layer_5-2024-05-23.zip`). Useful as comparison baselines even though they're on ChessGPT, not BT4 — you can run the same probe questions against both and compare quality scores.
+- **Where it fits:** Phase 4 evaluation methodology reference. Adopt the eval design, not the code wholesale.
 
 ### Toshniwal et al. — "Chess as a Testbed for Language Model State Tracking"
 
@@ -472,6 +566,29 @@ The papers you build directly on. Read all of them before Phase 4.
 - **arXiv:** 2406.04028
 - **Author:** Yoann Poupart (the lczerolens author)
 - **Why included:** the maintainer of your foundation library has a chess SAE paper. Read it for methodology and for understanding what lczerolens was built to support.
+- **Companion code:** `github.com/yp-edu/lczero-planning` (see separate Tier 2 entry below). The paper and the repo together are the closest existing model for the Phase 4 / Phase 6 work — Lc0-specific SAE training plus the paired-trajectory framing that maps onto your Phase 6 differential analysis.
+
+### Cruz — "Understanding the learned look-ahead behavior of chess neural networks" ⭐
+
+- **arXiv:** 2505.21552 (May 2025)
+- **Author:** Diogo Cruz (Pivotal)
+- **What it does:** Direct follow-up to Jenner et al. Extends look-ahead analysis from move 3 to moves 5 and 7. Three findings:
+  1. Look-ahead behavior is **highly position-dependent**.
+  2. The network considers **multiple move sequences simultaneously**, not just the principal variation.
+  3. Specific attention heads respond preferentially to longer-term future moves.
+- **Why it matters:**
+  - **Phase 6:** Settles a design question for the `did_you_consider` handler — the network *does* hold multiple lines simultaneously. Extracting alternate-line activations is real signal.
+  - **Phase 7:** Empirical support for the Fudan reasoning-pathway framing.
+- **Model-variant note:** Cruz uses Jenner's history-stripped Leela finetune, same as `leela-interp`. Not BT4.
+- **Feasibility signal:** Whole study ran on **RTX 3070Ti in 2 days total** — Phase 6 patching does not require A100 time.
+
+### Davis & Sukthankar — "Decoding Chess Mastery"
+
+- **Authors:** Davis & Sukthankar (UCF) — same authors as the Davis MDPI paper already in PRIOR_WORK.md.
+- **Subject model:** Toshniwal et al.'s LCB (GPT-2 small, 12L × 12H). **Not Lc0.**
+- **What it does:** Direct Logit Attribution per layer — finds early layers select moves the final layer ranks highly. Attention-pattern taxonomy.
+- **Where it fits:** Phase 2 (or late Phase 1) — methodological reference for a `policy_layer_trajectory` extractor. Phase 3 — attention-pattern taxonomy as priors (though derived on GPT-2 chess, not BT4).
+- **Caveats:** Smaller, weaker model. Methodology over specific findings.
 
 ### Anthropic / DeepMind chess research blog posts
 
@@ -613,6 +730,8 @@ If you train your own SAEs in Phase 4, read these.
 - **arXiv:** 2406.04093
 - OpenAI's top-k SAE methodology. Alternative to L1-based sparsity.
 - **Why useful:** top-k SAEs avoid some training pathologies.
+- **Companion code:** `github.com/openai/sparse_autoencoder` (MIT ✓, OpenAI 2023). Targets GPT-2 small; uses `transformer_lens`. Files: `sparse_autoencoder/model.py` (k-sparse SAE), `train.py`, `paths.py` (pretrained model paths), `kernels.py` (custom CUDA kernels), `explanations.py`, plus a `sae-viewer/` TypeScript/React feature browser.
+- **Where it fits:** Phase 4 algorithm reference. The k-sparse architecture and training metrics are reusable as algorithm references; the actual hookup code targets GPT-2 not Lc0. If you train your own Phase 4 SAEs and choose k-sparse over JumpReLU or L1, this is the cleanest reference. **Do not adopt the GPT-2 hookup wholesale** — start from `lczero-planning` which is already Leela-shaped.
 
 ### Anthropic — "Circuits Updates" on SAE feature labeling
 
@@ -670,6 +789,20 @@ For Phase 3.
 - **EMNLP 2019**
 - Control tasks for ensuring probes measure representation quality, not their own capacity.
 - **Why critical:** your shuffled-labels sanity check (v2 bible §7.4) IS this methodology. Read for rigor.
+
+### Lovering, Forde et al. — "Evaluation Beyond Task Performance: Analyzing Concepts in AlphaZero in Hex" ⭐
+
+- **Venue:** NeurIPS 2022
+- **Authors:** Lovering, Forde, Konidaris, Pavlick, Littman (Brown)
+- **Companion code:** `alphatology` (see Tier 3 entry above)
+- **Three findings that directly affect this project:**
+  1. **"MCTS discovers concepts before the neural network learns to encode them."** Empirical justification for Phase 2 (MCTS integration) sitting between Phase 1 and Phase 3.
+  2. **Short-term end-game concepts in *final* layers; long-term in *middle* layers.** Affects probe placement in Phase 3.
+  3. **"Probing performance alone is insufficient: information may be encoded but not used."** Motivates behavioral tests on top of probes. Should join Phase 3 mandatory reading.
+- **Where it fits:**
+  - **Phase 2:** MCTS-vs-network signal distinction.
+  - **Phase 3:** Required reading. Behavioral-test methodology informs handler design.
+  - **Phase 8:** "Evaluation beyond task performance" informs eval grader design.
 
 ---
 
@@ -743,6 +876,28 @@ You're not building in a vacuum. Understanding the landscape sharpens your diffe
 - **What it does:** pattern analysis across your games (weaknesses, time management).
 - **Why study:** adjacent product space. Not your target.
 
+### CoSMIC (OpenSI / University of Canberra)
+
+- **Paper:** *Unleashing Artificial Cognition: Integrating Multiple AI Systems*, ACIS 2024, arXiv 2408.04910
+- **Repo:** `github.com/TheOpenSI/CoSMIC` (production branch)
+- **License:** MIT ✓
+- **What it does:** Multi-service LLM router. Five base services — chess, vector DB, RAG, PyCapsule (Python code generation), generic QA — dispatched to by an LLM-based `QueryAnalyser`. Chess service is **Stockfish-only** (no Leela). Chess modules include `chess_qa_puzzle.py` (363 lines), `chess_qa_quality.py`, `chess_genfen.py`, and `chess_gencot.py` — the last performs chain-of-thought *generation* about a position, the canonical LLM-as-inventor pattern forbidden by CLAUDE.md §2 Rule 1.
+- **Why it's listed:**
+  - **Competitive intelligence:** another LLM-wrapped chess product. Local-LLM emphasis (Llama 3.1 via Ollama).
+  - **One useful read in `src/query_analyser/query_analyser.py`** — LLM-based routing logic and per-LLM-family prompt parameterization (`src/maps.py`, `src/query_analyser/user_prompt.py`) is structurally identical to your `CLASSIFIER → HANDLER` design (CLAUDE.md §3). 30-minute read during Phase 1 classifier design.
+- **Why it's not adopted:** No Leela, no network internals, no probes, no SAEs. The chess code is the architecture you reject.
+
+### chess-tutor (DVDAGames)
+
+- **Repo:** `github.com/DVDAGames/chess-tutor`
+- **License:** **None** (no LICENSE file in repo). Vendoring code is legally murky; treat as read-only reference.
+- **Stack:** Next.js 15.1.3 + React 19, `react-chessboard` + `chess.js`, Stockfish WASM client-side, OpenAI gpt-4o as both coach and opponent.
+- **What it does:** Beginner-targeted chess tutor. Pure LLM-as-inventor: gpt-4o is asked to "analyze the position and provide feedback."
+- **Why it's listed:**
+  - **Phase 8 UI mechanics reference:** `react-chessboard@4.7.2` + chess.js + Stockfish WASM is a validated client-side chess UI assembly. Worth knowing when Phase 8 web UI starts.
+  - **Wrong-audience example:** explicit beginner targeting; you target 2000+. Wrong-architecture example: LLM as analyzer, not translator.
+- **Why it's not adopted:** No license. Wrong target audience. Wrong architecture (violates Rule 1).
+
 ---
 
 ## Community resources and forums
@@ -796,7 +951,7 @@ To be clear about what you actually have to build:
 3. **The LLM translation layer.** System prompts, per-handler instruction templates, validation, fallback behavior. Conceptually simple, requires real iteration.
 4. **The differential analysis engine.** Run analysis on (position, position-after-user's-move), diff every signal, rank by magnitude, surface findings. Pieces exist; orchestration doesn't.
 5. **The output validator.** Confirms every move mentioned is legal, every eval cited is in JSON, no fabricated lines. Critical and non-obvious.
-6. **The MCTS tree extraction with eval trajectories.** Lc0 exposes per-visit info via verbose mode, but no library wraps this into a clean tree-with-eval-history Python object. You build this.
+6. **The MCTS tree extraction with eval trajectories.** Lc0 exposes per-visit info via verbose mode. The Fluri/Paleka/Tramèr `rl_testing` package (`superhuman-ai-consistency`, MIT, arXiv 2306.09983) contains a working parser — `rl_testing/mcts/tree_parser.py` (588 lines) backed by `relaxed_uci_protocol.py`. Decision pending: vendor with Python 3.11 / Lc0 v0.32.1 compat fixes, or clean-room port to our conventions. See ADR-0006.
 7. **The evaluation set and harness.** 200+ positions with expert-written expected-answer rubrics. Your chess expertise; nobody else can produce this.
 8. **The conversation manager.** Session state, history, position tracking. Standard engineering, specific to chess.
 9. **The user interface.** CLI first, web later. Frameworks exist; the work is chess board rendering and conversational UX.
@@ -841,6 +996,9 @@ To be clear about what you actually have to build:
 **Pin:**
 - BT4-1024x15x32h-swa-6147500 (record hash in DECISIONS.md)
 
+**Additions (v3 patch, Phase 0):**
+- `superhuman-ai-consistency` consistency-check scripts (forced-move, transformation-invariance) — adversarial eval-position generators with mechanical ground truth. Run once Lc0 v0.32.1 + BT4 are wired up.
+
 ### Phase 1 (network-first MVP)
 
 **Read:**
@@ -854,6 +1012,10 @@ To be clear about what you actually have to build:
 - python-chess for board/move handling
 - Frontier LLM API
 
+**Additions (v3 patch, Phase 1):**
+- **`leela-interp` `core/uci_to_idx.py` + `core/leela_board.py`** — vendor now during Chunk 4. Resolves CLAUDE.md §8 pitfalls about 1858 move mapping and 112-channel board encoding.
+- CoSMIC `src/query_analyser/query_analyser.py` — 30-minute read during classifier design. Reference for LLM-based routing pattern.
+
 ### Phase 2 (MCTS integration)
 
 **Read:**
@@ -863,6 +1025,11 @@ To be clear about what you actually have to build:
 **Adopt:**
 - python-chess engine wrapper for UCI
 - Stockfish for comparison handler
+
+**Additions (v3 patch, Phase 2):**
+- **`superhuman-ai-consistency / rl_testing.mcts.tree_parser`** — start here. Either vendor with Python 3.11 compat fixes or use as a clean-room port spec. Resolves ADR-0006.
+- Lovering, Forde et al. (Hex AlphaZero) — "MCTS discovers concepts before the network does" finding justifies Phase 2 sequencing.
+- Davis & Sukthankar "Decoding Chess Mastery" — DLA methodology for the `policy_layer_trajectory` handler.
 
 ### Phase 3 (concept probes)
 
@@ -876,6 +1043,11 @@ To be clear about what you actually have to build:
 - lczerolens probing notebook as starter
 - scikit-learn for logistic regression
 - Lichess puzzle DB for tactical labels
+
+**Additions (v3 patch, Phase 3):**
+- Lovering, Forde et al. — **required**. Behavioral-test methodology on top of probing.
+- **`alphatology`** — reference read for the positive/negative/behavioral-test pattern.
+- **`leela-interp/tools/probing.py` + `scripts/probing.py`** — starter code for Lc0 probing. Adapt to BT4 + your concept list.
 
 ### Phase 4 (sparse features)
 
@@ -897,6 +1069,14 @@ To be clear about what you actually have to build:
 - OpenMOSS Language-Model-SAEs or EleutherAI sparsify
 - Cloud A100 budget
 
+**Additions (v3 patch, Phase 4):**
+- Tang et al. (Skill Adaptation SAEs on Maia-2) — methodology fallback option C.
+- **`lczero-planning`** — Phase 4 fallback Option A if Fudan no-goes. **See ADR-0008 for ordering.**
+- **`SAE_BoardGameEval`** — Phase 4 evaluation methodology reference (`eval_sae_as_classifier.py`, `eval_board_reconstruction.py`). Pretrained chess SAEs on HF as comparison baseline.
+- **`openai/sparse_autoencoder`** — k-sparse SAE algorithm reference if training own SAEs.
+- `alphasae` repo — pedagogical reference (read `sae/trainer.py` before touching the others).
+- `awesome-sparse-autoencoders` — 30-minute triage at Phase 4 entry.
+
 ### Phase 5 (feature labeling)
 
 **Read:**
@@ -907,6 +1087,10 @@ To be clear about what you actually have to build:
 **Adopt:**
 - Build labeling tool (Jupyter or simple web UI)
 - Reference Neuronpedia for UX design
+
+**Additions (v3 patch, Phase 5):**
+- Tang et al. — feature taxonomy approach.
+- `alphasae` repo — `vis/index.html` as minimum-viable feature browser reference.
 
 ### Phase 6 (differential / counterfactual)
 
@@ -921,6 +1105,13 @@ To be clear about what you actually have to build:
 - Jenner et al. activation patching infrastructure
 - Maia models for human-vs-Leela differential
 
+**Additions (v3 patch, Phase 6):**
+- Cruz — **required**. Multiple move sequences finding is load-bearing for `did_you_consider`.
+- Tang et al. — mediated SAE intervention as Phase 6 counterfactual template.
+- **`leela-interp/tools/patching.py` + `scripts/run_global_patching.py` + `scripts/run_single_head.py`** — activation-patching primitives. Required reading alongside Heimersheim & Nanda and Hydra Effect.
+- **`leela-interp/tools/piece_movement_heads.py`** — methodology template for BT4-specific named-head taxonomy.
+- `superhuman-ai-consistency` evolutionary algorithm — once Phase 6 starts, run it to generate `why_is_my_move_wrong` eval positions where Leela is self-inconsistent.
+
 ### Phase 7 (reasoning pathways)
 
 **Read:**
@@ -932,6 +1123,9 @@ To be clear about what you actually have to build:
 - Fudan's reasoning pathway code (if released)
 - Visualization library (Plotly or D3 for graphs)
 
+**Additions (v3 patch, Phase 7):**
+- Cruz — supports Fudan reasoning-pathway framing with independent evidence.
+
 ### Phase 8 (polish and launch)
 
 **Read:**
@@ -941,6 +1135,10 @@ To be clear about what you actually have to build:
 **Adopt:**
 - Web framework (FastAPI + chessground.js)
 - Maia networks for "how would a human play" overlays
+
+**Additions (v3 patch, Phase 8):**
+- Lovering, Forde et al. — "evaluation beyond task performance" philosophy informs eval grader design.
+- chess-tutor — UI mechanics reference. No license, no vendoring; mechanics only.
 
 ---
 
@@ -964,6 +1162,19 @@ Critical if you ever want to commercialize or open-source.
 | nnsight | MIT ✓ | Use freely |
 | captum | BSD-3 ✓ | Use freely |
 | Anthropic SAE code | check repo | Verify before integrating |
+| superhuman-ai-consistency / rl_testing | MIT ✓ | Use freely, including commercial. Vendoring or porting both fine. |
+| leela-interp (Jenner) | GPL-3 | Same license class as Lc0 and python-chess; subprocess/API isolation already planned. No new obligation. |
+| lczero-planning (Poupart) | MIT ✓ | Use freely. Note pinned git revs for lczerolens and nnsight forks — verify before depending. |
+| SAE_BoardGameEval (Karvonen) | **None visible in repo root** | Check with author before vendoring code. Pretrained SAEs on HF are separately licensed (verify). |
+| alphatology (Forde) | MIT ✓ | Use freely. Reference read; no vendoring planned. |
+| openai/sparse_autoencoder | MIT ✓ | Use freely. Reference for k-sparse algorithm. |
+| alphasae-main | Apache 2.0 ✓ | Use freely, including commercial. |
+| awesome-sparse-autoencoders | Apache 2.0 ✓ | Use freely. |
+| chess-tutor | **None** | No LICENSE file. Read-only competitive intelligence; do not vendor code. |
+| CoSMIC | MIT ✓ | Use freely. Stockfish bundling carries GPL-3 obligations (already known). |
+| jax | Apache 2.0 ✓ | Not adopted; framework, not paper code. |
+| Skill Adaptation SAE repo (Tang) | unverified (anonymous) | Check on publication |
+| Cruz look-ahead follow-up code | unverified | Check arXiv/author homepage |
 
 **Architectural implication:** if you keep GPL components (Lc0, Stockfish, python-chess) as separate subprocess calls behind a thin API server, your application code can ship under any license. If you bundle python-chess source into a closed-source app, GPL-3 obligations apply.
 
@@ -984,6 +1195,7 @@ The field moves fast. Check these monthly.
 9. **Hugging Face chess SAE releases** — community uploads accumulate.
 10. **Erik Jenner follow-up work** — look-ahead paper had clear next steps.
 11. **Yoann Poupart publication stream** — lczerolens author, contrastive SAE author.
+12. **awesome-sparse-autoencoders** — `github.com/chrisliu298/awesome-sparse-autoencoders`. Apache 2.0 ✓. Curated paper-and-link list (24 papers, 8 blog posts; last commit ~Sep 2024). Already outdated relative to our stack (no Fudan 2026, no Cruz 2025). Useful as a monthly bookmark — re-scan at Phase 4 entry and on each Anthropic/EleutherAI release. The Gemma Scope, JumpReLU, and Kissane "Interpreting Attention Layer Outputs with SAEs" entries are Phase 4 / Phase 6 relevant and not yet in this PRIOR_WORK.md; worth 30-minute triage when Phase 4 starts.
 
 ---
 
@@ -1036,3 +1248,15 @@ The bible (`BIBLE.md`) was written assuming you'd build most pieces yourself. Wi
 - When a paper or repo is superseded by newer work, mark with a strikethrough rather than deleting.
 
 *Last updated: project start. Next review: end of Phase 0.*
+
+## Source locations on this machine
+
+The PDFs and extracted source repos referenced below live at:
+
+- `update_research/pdfs/` — several PDFs (filenames match titles)
+- `update_research/repos/` — extracted source repos from companion code zips
+- `update_research/patches/` — historical update patches (archive only)
+
+Claude Code can read these via Read and Bash. If asked to verify a claim
+about a paper or repo, look here first. If a file is missing, ask before
+assuming the claim is wrong.
