@@ -11,9 +11,9 @@
 ## Current Status
 
 - **Phase:** 1 — Network-First Chat MVP
-- **Active chunk:** Chunk 5 (BLOCKED on friends' eval positions) and Chunk 6 (CLI — unblocked, can run in parallel)
-- **Last session:** 2026-05-17
-- **Next session goal:** Chunk 6 — CLI REPL + one-shot `ask --fen ... --question ...` subcommand. Pure local Python, no GPU needed for the wiring (handler call is stubbed until Chunk 5). Or, if friends' eval positions land, jump straight to Chunk 5.
+- **Active chunk:** Chunk 6 (CLI REPL + one-shot `ask`). Chunk 5 done (with deliberate Rule-3 carve-out — see 2026-05-18 log entry).
+- **Last session:** 2026-05-18
+- **Next session goal:** Chunk 6 — CLI REPL + one-shot `ask --fen ... --question ...` subcommand. Builds on the now-working `translate_and_validate` pipeline; no longer needs handler stubs.
 
 > **Pod state caveat:** RunPod stop/start cycles wipe everything outside `/workspace` (apt packages, `/workspace/bin/lc0`, `/usr/local/cuda-12.8/bin` PATH). Run `ssh runpod 'bash /workspace/leela-chat/scripts/setup_pod.sh'` after every pod restart — idempotent, takes ~30s on warm restart and ~10 min on first build of Lc0.
 
@@ -508,4 +508,48 @@ Carryover (out of scope for this commit):
 - `scripts/setup_pod.sh` still includes the runtime patch step for `/workspace/Leela-SAEs/`. Now obsolete for our purposes (we ship a vendored copy), but harmless if Leela-SAEs is still cloned on the pod for upstream PR work. Leave for now; revisit if it causes confusion.
 - Patch v3 steps 8–10 (BIBLE.md edits, ADR-0006/7/8 drafts, delete `docs/_inbox/`) still deferred.
 - Friends' Chunk 4 eval positions still TBA.
+
+---
+
+#### 2026-05-18 — Chunk 5 end-to-end working; v1→v2 prompt refinement
+
+Deliberate Rule-3 carve-out for this chunk, agreed in-session: handler ships before friends' eval entries land. Friends author independently (have not seen Leela outputs), so the "eval author isn't biased by code" invariant of Rule 3 is preserved even though the temporal order inverts. When their batch arrives, Chunk 7 grader runs against Chunk 5 outputs and the source of any score gap (eval too strict / code wrong / both) gets diagnosed then. Documented in this entry so it doesn't read as silent rule-breaking later.
+
+What I did:
+- `handle_what_is_leela_seeing` implemented in `leela_chat/handlers/what_is_leela_seeing.py` — trivial projection from `extract_network_inference` output to `WhatIsLeelaSeeingFindings` (latter is a strict subset). Handler signature tightened: `model: object` → `model: "HookedTransformer"` (the comment was stale from before the Chunk 4 v2 swap). Added `HANDLER_NAME = "what_is_leela_seeing"` constant to avoid string repetition at call sites.
+- `templated_fallback(findings)` in the same module — mechanical render-from-Pydantic. Used only when LLM hallucinates twice (Rule 2 last resort). Grounded by construction (every number traces directly to findings); produces something readable if robotic. Verified on real findings via validator: passes.
+- `leela_chat/llm/translate.py` (new, ~190 lines) — orchestrator. `translate_and_validate(findings, question, *, handler_name, templated_fallback, prompt_version, mode, client)` runs the Rule-2 chain: attempt 1 normal → on fail, attempt 2 with validator errors appended ("Retry context" addendum) → on fail, templated fallback. Always returns a `ValidatedTranslation` with a `source` field (`llm` / `llm_retry` / `templated`) so callers know which path produced the text. Loads prompts from disk (`prompts/{handler}/v{N}.md`) so versioning bumps are file-only changes.
+- `leela_chat/scripts/smoke_test_handler.py` (new) — dev tool. Loads BT4 once, iterates a FIXTURES list of `(fen, question, comment)`, prints findings JSON + final response + latency + token telemetry per position. Defaults to ITER mode (Sonnet 4.6) for cheap iteration; `--prod` flag swaps to Opus 4.7. **NOT eval data** — these are throwaway smoke positions supplied by the user in this session.
+- 10 user-supplied dev fixtures spanning endgame / middlegame / opening / minor-piece / promotion / wild-melee / dead-lost-rook-endgame. 4 Black-to-move, 6 White-to-move. All validated as legal FENs (17-51 legal moves). NOT the eval set.
+- `tests/integration/test_translate_what_is_leela_seeing.py` (new) — 5 tests with mocked `LLMClient`: happy path, retry-success, templated-fallback after both LLM attempts fail, missing-handler error, missing-prompt-version error. All pass. Handler itself isn't exercised (would require BT4 + GPU) — smoke-tested on the pod instead.
+- Prompt **v1 → v2** after smoke surfaced one validation failure: Sonnet rounded `1.2%` policy values to `1%`, which the validator (correctly) flagged as ungrounded (closest finding 1.21, tolerance 0.12 → diff 0.21 fails). v2 tightens the precision rule: `policy_pct` must keep ≥1 decimal place; threshold phrasing (`under 1%`, `below 1%`) banned. WDL probabilities stay whole-number percentages (large enough to round safely). `eval_cp` cite as `+12 cp` or `+0.12` pawn units, either form acceptable.
+- `tests/eval/AUTHORING.md` (new) — kept as internal reference for what we'd want a well-designed eval entry to look like. NOT sent to friends per user decision (they author unguided to keep independence).
+- `.env.save` hygiene: deleted local + pod copies of a nano backup file containing an old (rotated-out?) Anthropic key. Expanded `.gitignore` from `.env` / `.env.local` to `.env*` with `!.env.example` exception so future backup variants (`.env.save`, `.env.bak`, `.env.tmp`, …) are covered. User flagged to rotate the old key (`sk-ant-api03-tz3umF...`) in the Anthropic console as standard hygiene since it sat in a 644-perm file for ~24h locally.
+- SSH config (`~/.ssh/config`) updated to new pod endpoint `213.192.2.68:40138` after a stop/restart cycle. Worth scripting a "fetch current endpoint from RunPod console" automation later if this keeps biting.
+
+Smoke test outcome:
+- **v1 prompt run (round 1):** 9/10 first-try-valid, 1/10 templated fallback (position 6 — Qf6/Qb6 cited as `1%` instead of `1.2%`). Validator caught it, Rule 2 fallback held, user saw a clean templated response.
+- **v2 prompt run (round 2):** 10/10 valid, 0 templated fallbacks. 1 of 10 (position 1) needed the stricter retry — first attempt cited `88%`, an apparent derived/composite statistic (likely `71 / (71+1) ≈ 88%` black wins among decisive games). Retry produced clean text. Net improvement vs v1: -1 templated, +1 retry.
+- Latency: all positions 4-12s end-to-end including translation. BT4 load amortizes at ~50s, hits once per process. Comfortably under Phase 1's 30s exit-criterion target.
+- Cost: ~$0.05 per full 10-position run on Sonnet. Cache engaged from call 2 onwards (1651 tokens cached on v2 prompt). Apparently Sonnet 4.6 caches below the 2048-token minimum we documented earlier — worth a `docs/DECISIONS.md` footnote but not urgent.
+
+What surprised me:
+- **Prompt caching engaged on a ~1700-token prefix.** Earlier PHASE_NOTES entry recorded the Anthropic-documented minimum as 2048 (Sonnet) / 4096 (Opus); we saw cache_read = 1651 from call 2 onward, both on v1 (1292) and v2 (1651). Either the minimums dropped, the docs are stale, or our prior reading was off. Caching is working unambiguously — token telemetry shows `cache_read_input_tokens` consistently nonzero after call 1.
+- **Sonnet's "derived statistics" failure mode** (position 1 v2 retry): the LLM occasionally computes composite percentages from the findings rather than citing the WDL values directly. `71 / (71 + 1) ≈ 0.98 → 98%` of decisive games — or maybe just a hallucinated `88%`, hard to tell without the first-attempt text in stdout. Validator caught it; retry fixed it. If this recurs across positions, a v3 anti-pattern banning composite calculations is the right fix. Not pressing — one occurrence out of 11 LLM calls.
+- The HookedTransformer "missing keys" warnings (`pos_embed.W_pos`, `policy_head.promotion_weight`) are now well-understood. `pos_embed.W_pos` is skipped via the `is_leela_chess_model` branch in `HookedTransformer.py`; `policy_head.promotion_weight` only affects underpromotions which our setups don't surface. Both harmless. Worth a comment somewhere if a future contributor trips on them.
+
+Open questions / threads:
+- **Derived-stat failure mode (Sonnet, occasional).** Recurrence rate unknown. If it shows up again in Chunk 8/9 handlers, add a v3 anti-pattern: "Cite WDL values exactly as in findings. Do not compute composite statistics (e.g., 'win rate among decisive games')."
+- **`setup_pod.sh` should delete `.env.save` defensively** the next time we revise it — covers the case where a user runs nano on `.env` during pod work.
+- **Pod-endpoint churn.** Every stop/restart issues a new SSH endpoint. Scripting a `runpod-update-ssh` helper that calls the RunPod API to fetch the current endpoint would save manual config edits. Defer until it bites a third time.
+- Carryover open from prior sessions: ADR-0001 through ADR-0005 `[initials]` placeholders still empty. Friends' eval positions still TBA. Patch v3 steps 8-10 (BIBLE.md edits, ADR-0006/7/8 drafts, delete `docs/_inbox/`) still deferred.
+
+Phase 1 exit-criteria status after this session:
+- [ ] 30 eval positions pass on all 3 handlers — blocked on friends; Chunk 5 unblocked itself by the carve-out
+- [x] Zero hallucinated moves in last 100 interactions — 11/11 LLM calls in v2 smoke run produced legal moves (with Rule 2's retry catching the one validation issue)
+- [x] <30 s end-to-end latency — max 11.48 s observed, well under
+- [ ] You personally find it useful for your own games — pending Chunk 6 (CLI) before you can actually use it interactively
+
+Next session goal:
+- Chunk 6 — CLI REPL + one-shot `ask --fen ... --question ...` subcommand. The one-shot is what Chunk 7's eval grader will call (so its output contract matters more than the REPL's). Wires conversation manager + classifier (trivial for now — single handler) + the existing `translate_and_validate` pipeline. No GPU/pod requirement for development; pod only needed when you actually want to run it against BT4.
 

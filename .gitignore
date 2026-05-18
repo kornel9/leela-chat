@@ -20,8 +20,8 @@ weights/
 logs/
 
 # Secrets
-.env
-.env.local
+.env*
+!.env.example
 
 # OS / editor / agent local state
 .DS_Store
