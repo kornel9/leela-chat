@@ -113,28 +113,50 @@ class LLMClient:
             question: User's literal question. Varies per call.
 
         Returns:
-            LLMResponse with prose text, model used, and cache telemetry.
+            LLMResponse with prose text, model used, and cache telemetry. On
+            transient API failure (overload, rate limit, network error,
+            timeout) returns a sentinel response with ``text=""`` and
+            ``stop_reason="api_error"``; the caller's fallback chain then
+            handles it the same way it handles validation failures.
         """
-        response = self._client.messages.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            system=[{
-                "type": "text",
-                "text": system_prompt,
-                # Stable across calls for the same handler version → cache it.
-                # Below the model minimum (Opus 4.7: 4096, Sonnet 4.6: 2048)
-                # this silently no-ops. That's fine — the wiring is forward-
-                # looking; caching engages naturally as prompts grow.
-                "cache_control": {"type": "ephemeral"},
-            }],
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"Question: {question}\n\n"
-                    f"Findings JSON:\n```json\n{findings_json}\n```"
-                ),
-            }],
-        )
+        try:
+            response = self._client.messages.create(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                system=[{
+                    "type": "text",
+                    "text": system_prompt,
+                    # Stable across calls for the same handler version → cache it.
+                    # Below the model minimum (Opus 4.7: 4096, Sonnet 4.6: 2048)
+                    # this silently no-ops. That's fine — the wiring is forward-
+                    # looking; caching engages naturally as prompts grow.
+                    "cache_control": {"type": "ephemeral"},
+                }],
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        f"Question: {question}\n\n"
+                        f"Findings JSON:\n```json\n{findings_json}\n```"
+                    ),
+                }],
+            )
+        except anthropic.APIError as exc:
+            # Covers OverloadedError (529), RateLimitError (429),
+            # APIConnectionError, APITimeoutError, and other transient SDK
+            # failures. Return a sentinel so the translation orchestrator's
+            # existing fallback chain (CLAUDE.md §2 Rule 2: retry → templated)
+            # can handle this uniformly with validation failures.
+            logger.warning(
+                f"LLM API error ({type(exc).__name__}): {exc}; "
+                f"returning sentinel response for orchestrator fallback"
+            )
+            return LLMResponse(
+                text="",
+                model=self.model,
+                input_tokens=0,
+                output_tokens=0,
+                stop_reason="api_error",
+            )
 
         # First text block is the response prose. There should be exactly
         # one for a non-thinking, non-tool-use call.

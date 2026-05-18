@@ -26,6 +26,8 @@ ErrorKind = Literal[
     "unknown_feature",      # feature label not in firings list (Phase 4+)
     "missing_findings",     # response references a field absent from findings JSON
     "format_violation",     # response violates structural rules (e.g., lists when prose required)
+    "api_error",            # LLM call itself failed (overload, rate limit, network) — orchestrator path
+    "empty_response",       # LLM returned no text content — defensive sentinel
 ]
 
 

@@ -55,12 +55,33 @@ def _mock_llm_response(text: str) -> LLMResponse:
     )
 
 
+def _api_error_response() -> LLMResponse:
+    """Build the sentinel LLMResponse the client returns on transient API failure."""
+    return LLMResponse(
+        text="",
+        model="claude-test-mock",
+        input_tokens=0,
+        output_tokens=0,
+        stop_reason="api_error",
+    )
+
+
 def _mock_client(responses: list[str]) -> MagicMock:
     """Build a mocked LLMClient that returns the given responses in order."""
     client = MagicMock()
     client.translate = MagicMock(
         side_effect=[_mock_llm_response(t) for t in responses]
     )
+    return client
+
+
+def _mock_client_mixed(responses: list[LLMResponse]) -> MagicMock:
+    """Build a mocked LLMClient returning pre-built LLMResponses in order.
+
+    Use this when you need to mix normal text responses with api_error sentinels.
+    """
+    client = MagicMock()
+    client.translate = MagicMock(side_effect=responses)
     return client
 
 
@@ -148,6 +169,123 @@ def test_both_attempts_invalid_falls_back_to_templated() -> None:
     assert "e4 (14.2%)" in result.text
     assert len(result.llm_responses) == 2
     assert client.translate.call_count == 2
+
+
+def test_first_api_error_retry_valid_returns_llm_retry_source() -> None:
+    """LLM API call fails on attempt 1, succeeds on retry. Retry uses base prompt."""
+    good_response = (
+        "Leela evaluates the position at +12 cp; W/D/L is 19% / 64% / 17%. "
+        "Leela prefers e4 (14.2%) over d4 (12.8%)."
+    )
+    client = _mock_client_mixed([
+        _api_error_response(),
+        _mock_llm_response(good_response),
+    ])
+
+    result = translate_and_validate(
+        findings=FIXED_FINDINGS,
+        question="What is Leela seeing?",
+        handler_name=HANDLER_NAME,
+        templated_fallback=templated_fallback,
+        prompt_version=PROMPT_VERSION,
+        client=client,
+    )
+
+    assert result.source == "llm_retry"
+    assert result.validation.ok is True
+    assert result.text == good_response
+    assert client.translate.call_count == 2
+
+    # API error on attempt 1 means the retry has no content to critique;
+    # it must use the BASE prompt unmodified, not the stricter retry prompt.
+    first_call_kwargs = client.translate.call_args_list[0].kwargs
+    second_call_kwargs = client.translate.call_args_list[1].kwargs
+    assert "## Retry context" not in second_call_kwargs["system_prompt"]
+    assert first_call_kwargs["system_prompt"] == second_call_kwargs["system_prompt"]
+
+
+def test_both_attempts_api_error_falls_back_to_templated() -> None:
+    """Both LLM calls fail with API error; orchestrator drops to templated."""
+    client = _mock_client_mixed([
+        _api_error_response(),
+        _api_error_response(),
+    ])
+
+    result = translate_and_validate(
+        findings=FIXED_FINDINGS,
+        question="What is Leela seeing?",
+        handler_name=HANDLER_NAME,
+        templated_fallback=templated_fallback,
+        prompt_version=PROMPT_VERSION,
+        client=client,
+    )
+
+    assert result.source == "templated"
+    assert result.validation.ok is False
+    # The last-attempt validation carries the api_error sentinel kind.
+    assert any(e.kind == "api_error" for e in result.validation.errors)
+    # Templated text is the mechanical render — verify the key fields landed.
+    assert "+12 cp" in result.text
+    assert "19% White" in result.text
+    assert "e4 (14.2%)" in result.text
+    assert client.translate.call_count == 2
+
+
+def test_content_failure_then_api_error_falls_back_to_templated() -> None:
+    """Attempt 1 fails validation, attempt 2 API-errors; templated kicks in."""
+    bad_response = "Top move is Nf6 with eval +50."  # illegal move + ungrounded
+    client = _mock_client_mixed([
+        _mock_llm_response(bad_response),
+        _api_error_response(),
+    ])
+
+    result = translate_and_validate(
+        findings=FIXED_FINDINGS,
+        question="What is Leela seeing?",
+        handler_name=HANDLER_NAME,
+        templated_fallback=templated_fallback,
+        prompt_version=PROMPT_VERSION,
+        client=client,
+    )
+
+    assert result.source == "templated"
+    assert result.validation.ok is False
+    assert any(e.kind == "api_error" for e in result.validation.errors)
+    # Attempt 1 was a content failure, so the retry SHOULD have used the
+    # stricter prompt (with "## Retry context") — even though attempt 2 then
+    # api-errored before producing anything.
+    second_call_kwargs = client.translate.call_args_list[1].kwargs
+    assert "## Retry context" in second_call_kwargs["system_prompt"]
+
+
+def test_empty_response_treated_as_failure() -> None:
+    """LLM returns empty text (e.g. refused); orchestrator retries."""
+    empty_response = LLMResponse(
+        text="",
+        model="claude-test-mock",
+        input_tokens=50,
+        output_tokens=0,
+        stop_reason="end_turn",
+    )
+    good_response = (
+        "Leela sees +12 cp, with 19% White / 64% Draw / 17% Black. Top move e4 (14.2%)."
+    )
+    client = _mock_client_mixed([empty_response, _mock_llm_response(good_response)])
+
+    result = translate_and_validate(
+        findings=FIXED_FINDINGS,
+        question="What is Leela seeing?",
+        handler_name=HANDLER_NAME,
+        templated_fallback=templated_fallback,
+        prompt_version=PROMPT_VERSION,
+        client=client,
+    )
+
+    assert result.source == "llm_retry"
+    assert result.validation.ok is True
+    # Empty response should retry with BASE prompt (nothing to critique).
+    second_call_kwargs = client.translate.call_args_list[1].kwargs
+    assert "## Retry context" not in second_call_kwargs["system_prompt"]
 
 
 def test_unknown_handler_name_raises() -> None:

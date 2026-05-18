@@ -28,9 +28,47 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from leela_chat.llm.client import LLMClient, LLMMode, LLMResponse
 from leela_chat.validator import ValidationResult, validate_response
+from leela_chat.validator.types import ValidationError
 
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
+
+
+def _validate_attempt(
+    resp: LLMResponse, *, fen: str, findings: dict
+) -> ValidationResult:
+    """Wrapper around ``validate_response`` that also handles non-content failures.
+
+    Three failure modes the orchestrator's fallback chain must treat
+    identically: validation failure, an empty text response, and an API-level
+    error (overload, rate limit, network). The validator alone can't see the
+    latter two — empty text passes legality and grounding trivially because
+    there's nothing to check. This helper synthesizes the appropriate
+    ``ValidationResult`` so the same retry/templated logic catches all three.
+    """
+    if resp.stop_reason == "api_error":
+        return ValidationResult(
+            ok=False,
+            errors=[ValidationError(
+                kind="api_error",
+                detail=(
+                    "LLM API call failed (overload, rate limit, or transient "
+                    "network error). See client.py warning log for the exact "
+                    "exception type."
+                ),
+                span="",
+            )],
+        )
+    if not resp.text:
+        return ValidationResult(
+            ok=False,
+            errors=[ValidationError(
+                kind="empty_response",
+                detail="LLM returned an empty response.",
+                span="",
+            )],
+        )
+    return validate_response(resp.text, fen=fen, findings=findings)
 
 
 class ValidatedTranslation(BaseModel):
@@ -110,7 +148,7 @@ def translate_and_validate(
         findings_json=findings_json,
         question=question,
     )
-    val1 = validate_response(resp1.text, fen=fen, findings=findings_dict)
+    val1 = _validate_attempt(resp1, fen=fen, findings=findings_dict)
     if val1.ok:
         return ValidatedTranslation(
             text=resp1.text,
@@ -122,18 +160,25 @@ def translate_and_validate(
         )
 
     logger.warning(
-        f"translate: attempt 1 failed validation "
-        f"({len(val1.errors)} error(s)); retrying with stricter prompt"
+        f"translate: attempt 1 failed ({_failure_summary(val1)}); retrying"
     )
 
-    # --- Attempt 2: stricter retry ---
-    stricter = _stricter_retry_prompt(system_prompt, val1)
+    # --- Attempt 2: retry ---
+    # On content failures (illegal_move / ungrounded_eval / ...), inject the
+    # validator's errors into a "Retry context" addendum so the LLM can
+    # self-correct. On API/empty failures there's nothing to tell the LLM
+    # about its previous output — retry with the base prompt unchanged so
+    # we don't pollute the cache key with addenda that don't apply.
+    if _is_call_failure(val1):
+        retry_prompt = system_prompt
+    else:
+        retry_prompt = _stricter_retry_prompt(system_prompt, val1)
     resp2 = client.translate(
-        system_prompt=stricter,
+        system_prompt=retry_prompt,
         findings_json=findings_json,
         question=question,
     )
-    val2 = validate_response(resp2.text, fen=fen, findings=findings_dict)
+    val2 = _validate_attempt(resp2, fen=fen, findings=findings_dict)
     if val2.ok:
         return ValidatedTranslation(
             text=resp2.text,
@@ -145,8 +190,8 @@ def translate_and_validate(
         )
 
     logger.warning(
-        f"translate: attempt 2 also failed validation "
-        f"({len(val2.errors)} error(s)); falling back to templated response"
+        f"translate: attempt 2 also failed ({_failure_summary(val2)}); "
+        f"falling back to templated response"
     )
 
     # --- Fallback: templated ---
@@ -159,6 +204,22 @@ def translate_and_validate(
         handler_name=handler_name,
         prompt_version=prompt_version,
     )
+
+
+def _is_call_failure(val: ValidationResult) -> bool:
+    """True if any error in ``val`` indicates a call-level failure.
+
+    "Call-level" = api_error or empty_response — failure modes where retrying
+    with a stricter content-correction prompt makes no sense because the
+    previous attempt produced no usable content to critique.
+    """
+    return any(e.kind in ("api_error", "empty_response") for e in val.errors)
+
+
+def _failure_summary(val: ValidationResult) -> str:
+    """Short telemetry-friendly string describing ``val.errors``."""
+    kinds = sorted({e.kind for e in val.errors})
+    return f"{len(val.errors)} error(s), kinds={kinds}"
 
 
 def _load_prompt(handler_name: str, version: int) -> str:
