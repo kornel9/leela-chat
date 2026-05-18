@@ -235,3 +235,106 @@ The flag (e.g. `LLM_MODE=iter|prod` env var or CLI option) defaults to `prod`. I
 ---
 
 <!-- Append new ADRs below this line. Number sequentially: ADR-0006, ADR-0007, etc. -->
+
+### ADR-0006: MCTS tree parser — source from `superhuman-ai-consistency`
+
+- **Date:** 2026-05-18
+- **Status:** Proposed (final option chosen at Phase 2 Chunk 1)
+- **Phase:** Phase 2 — MCTS Integration
+- **Decision-makers:** [initials]
+
+#### Context
+Phase 2's first hard engineering task is parsing Lc0's `--verbose-move-stats` output into a Python `MCTSNode` tree with per-node eval trajectories. PRIOR_WORK.md's earlier characterization ("no library wraps this") is no longer accurate. The `superhuman-ai-consistency` repo (Fluri/Paleka/Tramèr, MIT, arXiv 2306.09983) ships `rl_testing/mcts/tree_parser.py` (588 lines, networkx-backed) plus `rl_testing/engine_generators/relaxed_uci_protocol.py`, with a full Q/V/N/U/P/WL/D/M/S attribute map. It targets older Lc0 versions; some compat work is required against our pinned Lc0 v0.32.1 (ADR-0004).
+
+#### Decision
+**Defer the final option to Phase 2 Chunk 1**, but provisionally commit to **Option B — clean-room port** based on the patch v3 review.
+
+- **Option A — vendor with compat fixes.** Copy `rl_testing/mcts/` + `relaxed_uci_protocol.py` into `leela_chat/engine/`, patch Python 3.11 + Lc0 v0.32.1 + BT4 quirks, add unit tests. Adds `networkx` as a runtime dependency.
+- **Option B — clean-room port (recommended).** Treat their parser as a working spec; reimplement `leela_chat/engine/mcts.py` using our conventions (frozen Pydantic, `loguru`, CLAUDE.md §6 style). No heavyweight new dependency unless we want it.
+- **Option C — build from scratch without their reference.** Previously planned; now superseded — wastes weeks redoing published work.
+
+#### Alternatives considered
+- **Option A** rejected (provisionally) because their code style drifts from our Pydantic + loguru conventions; the port cost is bounded and small compared to the long-term maintenance cost of vendored code that doesn't match house style.
+- **Option C** rejected — superseded by their published work.
+
+#### Consequences
+- Phase 2 starts from a working reference, not a cold start. MCTS-parser cost ceiling shifts from weeks to roughly a chunk's worth of work.
+- `networkx` is NOT added as a dependency unless Option A is later chosen at Phase 2 entry.
+- Lc0 v0.32.1 `--verbose-move-stats` output format is the parse target — ADR-0004 stabilizes that.
+- Decision actually finalizes at Phase 2 Chunk 1; this ADR captures the option space so the call doesn't have to be re-researched then.
+
+#### References
+- PRIOR_WORK.md → `superhuman-ai-consistency` entry (added in patch v3).
+- ADR-0004 — Lc0 v0.32.1 pin.
+- BIBLE.md §6.1 — Phase 2 MCTS parser description (updated alongside this ADR).
+- arXiv 2306.09983 — Fluri/Paleka/Tramèr, "Evaluating Superhuman Models with Consistency Checks."
+
+---
+
+### ADR-0007: Phase 3 exit criteria — add behavioral-test metric
+
+- **Date:** 2026-05-18
+- **Status:** Proposed (applied at Phase 3 design entry, before any probe training)
+- **Phase:** Phase 3 — Concept Probes
+- **Decision-makers:** [initials]
+
+#### Context
+Current Phase 3 exit criterion is "70+ probes pass AUC>0.9" (BIBLE.md §7.7, CLAUDE.md §11). That measures whether a concept is *encoded* in the residual stream — necessary but not sufficient. Lovering, Forde et al. ("Evaluation Beyond Task Performance: AlphaZero in Hex," added to PRIOR_WORK.md in patch v3) show empirically that encoding without behavioral use is the dominant failure mode of probe-only methodologies. The pattern parallels CLAUDE.md §2 Rule 1 ("LLM never invents chess facts") one layer deeper: a probe that fires on a concept the network never uses to make decisions is interpretation theatre.
+
+#### Decision
+**Add a behavioral-test metric to Phase 3 exit criteria** in addition to the existing AUC>0.9 encoding gate. Provisional formulation:
+
+> For each ⭐ concept (the highest-priority subset of the ~100 probe targets per BIBLE.md §7.1), pass a behavioral test: in ≥5 positions where the concept is decisive, the probe firing must correlate with the expected handler output. Encoding-only probes (AUC>0.9 but no behavioral signal) are flagged as "detected but unused" and do NOT count toward the 70-probe exit gate.
+
+The N=5 floor and the exact "decisive" predicate get sharpened when the concept list lands in Phase 3 Chunk 1.
+
+#### Alternatives considered
+- **Option A — add behavioral tests (this decision).** Cost: ~5-10 hand-authored test positions per ⭐ concept. Catches encoding-without-use early.
+- **Option B — keep AUC-only, defer behavioral testing to Phase 8 eval framework.** Cheaper now, expensive later: by Phase 8, probe-driven handlers have already shipped. If their probes encode-but-don't-use, the eval grader can't distinguish that from prompt-or-translation failures. Rejected.
+
+#### Consequences
+- Phase 3 takes longer (behavioral-test authoring per ⭐ concept), but ships interpretation that survives Lovering's critique.
+- `alphatology` (PRIOR_WORK.md addition from patch v3) is the methodology template — a reference read, not a vendoring dependency.
+- ⭐ concept identification must precede probe training: the behavioral test is designed *first*, the probe trained *against* a known target predicate. This tightens Phase 3 Chunk 1's order of operations.
+- CLAUDE.md §11 Phase 3 exit criterion needs a wording update at Phase 3 entry to reflect this addition.
+
+#### References
+- PRIOR_WORK.md → Lovering, Forde et al. "Evaluation Beyond Task Performance" (patch v3 addition).
+- PRIOR_WORK.md → `alphatology` repo entry.
+- BIBLE.md §7.7 — Phase 3 exit criteria (updated alongside this ADR).
+- CLAUDE.md §2 Rule 1 — same anti-pattern at a different layer.
+
+---
+
+### ADR-0008: Phase 4 SAE fallback ordering — `lczero-planning` first if Fudan no-goes
+
+- **Date:** 2026-05-18
+- **Status:** Proposed (applied at Phase 4 week 2 — the Fudan go/no-go gate per CLAUDE.md §10)
+- **Phase:** Phase 4 — Sparse Features
+- **Decision-makers:** [initials]
+
+#### Context
+CLAUDE.md §10 Phase 4 go/no-go currently reads: *"if Fudan's code doesn't reproduce in 2 weeks, fall back to OpenMOSS or sparsify."* That ordering predates having `lczero-planning` (Poupart, arXiv 2406.04028, MIT) in hand. `lczero-planning` is *already Lc0-shaped* — uses `lczerolens`, `nnsight`, ships SAE training scripts targeting Leela networks specifically. OpenMOSS and `sparsify` both require porting work to get to Leela. The patch v3 review surfaced this gap.
+
+#### Decision
+**Reorder Phase 4 fallback to: `lczero-planning` → OpenMOSS → sparsify**, with Tang et al. (Skill Adaptation SAEs on Maia-2) as methodology-only Option D.
+
+The Fudan code path remains the first attempt per CLAUDE.md §10. Only the fallback ordering changes — the Fudan go/no-go gate at Phase 4 week 2 is unchanged.
+
+#### Alternatives considered
+- **Option A — `lczero-planning` → OpenMOSS → sparsify (this decision).** Recommended: already Lc0-shaped, MIT-licensed, smallest porting cost. Risk: Poupart's README says "not a stable codebase"; branch pins on `lczerolens` (`patching` rev) and `nnsight` (Poupart fork's `modules` rev) need verification at adoption time.
+- **Option B — keep OpenMOSS first** because of `lczero-planning`'s stability disclaimer. Rejected: the Lc0-shaped head start outweighs the stability risk, given the alternative is porting OpenMOSS to Leela ourselves.
+- **Option C — parallel-run `lczero-planning` + OpenMOSS in weeks 3-4 and pick whichever produces the first interpretable feature on BT4.** Rejected: doubles the workload during what should be focused fallback execution.
+
+#### Consequences
+- Phase 4 fallback path is shorter by an indeterminate amount of porting time if Fudan no-goes — `lczero-planning` may need only branch-pin verification and BT4-specific adaptation, not a wholesale port.
+- Carries risk if `lczero-planning`'s pinned forks (`lczerolens@patching`, Poupart-fork `nnsight@modules`) become unavailable or incompatible with our pinned `lczerolens >= 0.4.0`. **Verification gate before adopting:** confirm those branches still resolve, OR locate archived snapshots.
+- CLAUDE.md §10 Phase 4 go/no-go bullet needs updating when Phase 4 entry happens to reflect this fallback order.
+- PHASE_NOTES.md open question 9 ("Branch-pin durability in `lczero-planning`") is the gating verification this ADR points at.
+
+#### References
+- PRIOR_WORK.md → `lczero-planning` entry (added in patch v3).
+- PRIOR_WORK.md → Poupart, "Contrastive SAEs for Interpreting Planning" (arXiv 2406.04028).
+- CLAUDE.md §10 Phase 4 go/no-go.
+- PHASE_NOTES.md open question 9 — branch-pin durability.
+- BIBLE.md §8.1 — Phase 4 decision tree (updated alongside this ADR).

@@ -755,7 +755,9 @@ This log is what saves you in month 4 when you need to debug a regression. Compr
 
 ### 6.1 Parse `--verbose-move-stats` into MCTSNode tree
 
-This is the hard engineering of Phase 2. Lc0's verbose output dumps, per visited node, the visit count, Q-value, prior, and current best line. You parse this into:
+PRIOR_WORK.md's `superhuman-ai-consistency` entry (added 2026-05-18) now points at a working parser — `rl_testing/mcts/tree_parser.py` (588 lines, networkx-backed) plus `rl_testing/engine_generators/relaxed_uci_protocol.py`. The vendor-vs-clean-room-port decision is deferred to ADR-0006, applied at Phase 2 Chunk 1. The structure below is the target shape regardless of which sourcing option ADR-0006 lands on.
+
+Lc0's verbose output dumps, per visited node, the visit count, Q-value, prior, and current best line. You parse this into:
 
 ```python
 @dataclass
@@ -884,7 +886,8 @@ def concept_activations(board) -> list[ConceptFiring]:
 
 ### 7.7 Phase 3 exit criteria
 
-- 70+ probes pass the quality gate
+- 70+ probes pass the quality gate (AUC>0.9 encoding)
+- For each ⭐ concept (highest-priority subset of §7.1), pass a behavioral test: in ≥5 positions where the concept is decisive, the probe firing must correlate with the expected handler output. Encoding-only probes (AUC>0.9 but no behavioral signal) are flagged as "detected but unused" and do NOT count toward the 70-probe gate. See ADR-0007 and Lovering, Forde et al. (PRIOR_WORK.md).
 - `describe_position` produces outputs that a 2000+ player agrees with on 80% of eval positions
 - Every failed probe is documented with why it failed
 
@@ -908,7 +911,7 @@ def concept_activations(board) -> list[ConceptFiring]:
 - You want different layers covered
 - You want a different network
 
-**Recommendation:** spend 1 week trying to use Fudan's. If it works, integrate. If it doesn't, fall back to OpenMOSS Language-Model-SAEs or EleutherAI sparsify for training your own.
+**Recommendation:** spend 1 week trying to use Fudan's. If it works, integrate. If it doesn't, fall back in this order (per ADR-0008): (1) **`lczero-planning`** (Poupart, MIT) — already Lc0-shaped, smallest porting cost; (2) OpenMOSS Language-Model-SAEs; (3) EleutherAI sparsify. Tang et al. (Skill Adaptation SAEs on Maia-2) is a methodology-only Option D. **Verification gate before adopting `lczero-planning`:** confirm its pinned forks of `lczerolens` (the `patching` rev) and `nnsight` (Poupart's `modules` rev) still resolve — see PHASE_NOTES.md open question 9.
 
 ### 8.2 If using Fudan's SAEs
 
@@ -1134,7 +1137,7 @@ Diff types:
 - **Attention diff:** "Attention from king was on f7; now spread across kingside — king is exposed."
 - **Feature diff:** "King-safety feature fired weakly before (-0.2σ), strongly after (+2.4σ). Weak-g-file feature activated for the first time."
 - **Probe diff:** Similar for human-concept probes.
-- **PV diff:** "Line you'd have gotten with best move: X. Line you allowed: Y."
+- **PV diff:** Lines, **plural**. Per Cruz's look-ahead follow-up (PRIOR_WORK.md), Leela typically holds *multiple* candidate sequences per move-class at once, not a single PV — diff the set, not just the top continuation. Surface the top 2-3 lines on each side ("lines you'd have gotten with best move: X1, X2, X3; lines you allowed: Y1, Y2"), not just one. Cruz's finding makes this a load-bearing detail for `did_you_consider`-style handlers.
 
 ### 10.2 The counterfactual handler
 

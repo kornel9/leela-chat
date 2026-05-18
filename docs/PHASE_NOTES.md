@@ -542,7 +542,13 @@ Open questions / threads:
 - **Derived-stat failure mode (Sonnet, occasional).** Recurrence rate unknown. If it shows up again in Chunk 8/9 handlers, add a v3 anti-pattern: "Cite WDL values exactly as in findings. Do not compute composite statistics (e.g., 'win rate among decisive games')."
 - **`setup_pod.sh` should delete `.env.save` defensively** the next time we revise it — covers the case where a user runs nano on `.env` during pod work.
 - **Pod-endpoint churn.** Every stop/restart issues a new SSH endpoint. Scripting a `runpod-update-ssh` helper that calls the RunPod API to fetch the current endpoint would save manual config edits. Defer until it bites a third time.
-- Carryover open from prior sessions: ADR-0001 through ADR-0005 `[initials]` placeholders still empty. Friends' eval positions still TBA. Patch v3 steps 8-10 (BIBLE.md edits, ADR-0006/7/8 drafts, delete `docs/_inbox/`) still deferred.
+- Carryover open from prior sessions: ADR-0001 through ADR-0005 `[initials]` placeholders still empty. Friends' eval positions still TBA.
+
+Patch v3 cleanup completed in the same session as a follow-on:
+- ADR-0006 (MCTS parser sourcing, provisional Option B clean-room port), ADR-0007 (Phase 3 behavioral-test exit criterion addition), ADR-0008 (Phase 4 SAE fallback ordering with `lczero-planning` as Option A) all appended to `docs/DECISIONS.md`. Each is `Proposed`, applied at the corresponding phase entry — they capture the option space so the call doesn't have to be re-researched then.
+- BIBLE.md edits: §6.1 cross-refs ADR-0006 + names the `superhuman-ai-consistency` parser; §7.7 adds the behavioral-test exit bullet + cross-refs ADR-0007; §8.1 updates the fallback recommendation per ADR-0008 (lczero-planning → OpenMOSS → sparsify) + flags the branch-pin verification gate; §10.1 PV-diff bullet updated to "lines plural" per Cruz, load-bearing for `did_you_consider`.
+- Phase 8 §3.3 TransformerLens/nnsight wording referenced in the v3 patch does not correspond to a real BIBLE.md section in the current numbering — BIBLE.md has only one mention (§4.4 deferred-deps list). The substantive nnsight wording from Correction 3 already landed in PRIOR_WORK.md; no BIBLE.md edit warranted.
+- `docs/_inbox/` deleted. Provenance preserved in this session log + the ADR References sections.
 
 Phase 1 exit-criteria status after this session:
 - [ ] 30 eval positions pass on all 3 handlers — blocked on friends; Chunk 5 unblocked itself by the carve-out
