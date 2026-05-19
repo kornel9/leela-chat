@@ -23,12 +23,18 @@ from leela_chat.extractors.mcts_parser import (
     MCTSChild,
     MCTSFindings,
     MCTSTrajectoryPoint,
+    MCTSTrajectorySummary,
 )
 from leela_chat.extractors import mcts_trajectory as mt
 from leela_chat.extractors.mcts_trajectory import (
     DEFAULT_BUDGETS,
+    _compute_trajectory_summary,
+    _content_aware_downsample,
+    _detect_inflection_points,
+    _find_q_stabilized_visits,
     _group_live_stats_blocks,
     _select_milestone_snapshots,
+    _smooth_q,
     extract_mcts_trajectory,
 )
 
@@ -482,3 +488,249 @@ def test_single_budget_extract_mcts_caller_leaves_trajectory_empty():
         draw=0.6, moves_left=180.0, u=0.05, s=0.10, pv_san=[],
     )
     assert child.trajectory == []
+    assert child.trajectory_full == []
+    assert child.trajectory_selected == []
+    assert child.trajectory_summary is None
+
+
+# === C2: summary statistics, inflection-point detection, content-aware =====
+
+
+def _mk_point(nodes: int, visits: int, q: float) -> MCTSTrajectoryPoint:
+    return MCTSTrajectoryPoint(nodes_searched=nodes, visits=visits, q=q)
+
+
+def test_smooth_q_handles_boundaries():
+    """3-point moving average smoothing; boundaries use shrinking window."""
+    qs = [0.0, 0.6, 0.0, 0.6, 0.0]
+    smoothed = _smooth_q(qs, window=3)
+    assert len(smoothed) == 5
+    # Boundaries: half-window.
+    assert abs(smoothed[0] - 0.3) < 1e-9
+    assert abs(smoothed[-1] - 0.3) < 1e-9
+    # Middle: full window.
+    assert abs(smoothed[2] - 0.4) < 1e-9
+
+
+def test_detect_inflection_points_on_clean_peak_and_trough():
+    """A trajectory that rises to a peak, falls to a trough, rises again
+    should yield two inflections (the peak and the trough)."""
+    pts = [
+        _mk_point(100, 5, 0.10),
+        _mk_point(200, 10, 0.40),
+        _mk_point(300, 15, 0.70),   # peak (smoothed)
+        _mk_point(400, 20, 0.40),
+        _mk_point(500, 25, 0.10),   # trough
+        _mk_point(600, 30, 0.40),
+        _mk_point(700, 35, 0.60),
+    ]
+    infls = _detect_inflection_points(pts)
+    assert len(infls) == 2
+    # Peak before trough in visit-order.
+    assert infls[0].visits < infls[1].visits
+    # First inflection is the peak (high Q), second is the trough.
+    assert infls[0].q > infls[1].q
+
+
+def test_detect_inflection_points_filters_noise_below_threshold():
+    """Tiny Q oscillations < q_min are NOT inflections."""
+    pts = [
+        _mk_point(100, 5, 0.50),
+        _mk_point(200, 10, 0.51),   # tiny bump
+        _mk_point(300, 15, 0.50),
+        _mk_point(400, 20, 0.51),
+        _mk_point(500, 25, 0.50),
+    ]
+    infls = _detect_inflection_points(pts, q_min=0.10)
+    assert infls == []
+
+
+def test_detect_inflection_points_caps_at_max_count():
+    """A noisy trajectory with many local extrema is capped."""
+    # 12-point oscillating trajectory; each step crosses ±0.10.
+    pts = [
+        _mk_point(100 + i * 50, 5 + i, 0.5 + 0.15 * (-1) ** i)
+        for i in range(12)
+    ]
+    infls = _detect_inflection_points(pts, max_count=3, q_min=0.10)
+    assert len(infls) <= 3
+
+
+def test_find_q_stabilized_returns_first_anchor():
+    """Stabilization is the FIRST visit-count after which all subsequent
+    Q values stay within ±tol."""
+    pts = [
+        _mk_point(100, 10, 0.20),
+        _mk_point(200, 20, 0.80),   # not stable from here (next drops)
+        _mk_point(300, 30, 0.50),
+        _mk_point(400, 40, 0.85),   # stable from here onwards
+        _mk_point(500, 50, 0.87),
+        _mk_point(600, 60, 0.88),
+        _mk_point(700, 70, 0.86),
+    ]
+    visits = _find_q_stabilized_visits(pts, tol=0.05)
+    assert visits == 40
+
+
+def test_find_q_stabilized_returns_none_if_never_stable():
+    """If Q never settles within tol of any anchor for the rest of the
+    trajectory, returns None."""
+    pts = [
+        _mk_point(100, 10, 0.0),
+        _mk_point(200, 20, 0.5),
+        _mk_point(300, 30, 0.0),
+        _mk_point(400, 40, 0.5),
+    ]
+    assert _find_q_stabilized_visits(pts, tol=0.05) is None
+
+
+def test_compute_trajectory_summary_identifies_peak_and_trough():
+    """Summary correctly identifies max-Q and min-Q points and their
+    visit counts."""
+    pts = [
+        _mk_point(100, 5, 0.10),
+        _mk_point(200, 10, 0.30),
+        _mk_point(400, 20, 0.75),   # peak
+        _mk_point(600, 30, 0.45),
+        _mk_point(800, 40, -0.05),  # trough; q crosses zero
+        _mk_point(1000, 50, 0.10),
+    ]
+    summary = _compute_trajectory_summary(pts)
+    assert summary is not None
+    assert summary.q_first == 0.10
+    assert summary.q_last == 0.10
+    assert abs(summary.q_peak - 0.75) < 1e-9
+    assert summary.q_peak_at_visits == 20
+    assert abs(summary.q_trough - (-0.05)) < 1e-9
+    assert summary.q_trough_at_visits == 40
+    assert summary.q_crossed_zero is True
+    assert summary.block_count == 6
+    # Visit growth: deltas [5, 10, 10, 10, 10] -> mean 9.
+    assert abs(summary.visit_growth_rate - 9.0) < 1e-9
+
+
+def test_compute_trajectory_summary_empty_returns_none():
+    assert _compute_trajectory_summary([]) is None
+
+
+def test_compute_trajectory_summary_no_zero_crossing():
+    """All-positive Q → q_crossed_zero is False."""
+    pts = [_mk_point(i * 100, i * 10, 0.5 + 0.1 * i) for i in range(1, 5)]
+    summary = _compute_trajectory_summary(pts)
+    assert summary is not None
+    assert summary.q_crossed_zero is False
+
+
+def test_content_aware_downsample_includes_endpoints_and_extrema():
+    """Down-sample of 6 must include first, last, peak, trough, and
+    (when present) the stabilized point."""
+    pts = [
+        _mk_point(100, 5, 0.10),
+        _mk_point(200, 10, 0.30),
+        _mk_point(300, 15, 0.85),   # peak
+        _mk_point(400, 20, 0.50),
+        _mk_point(500, 25, -0.10),  # trough
+        _mk_point(600, 30, 0.30),
+        _mk_point(700, 35, 0.55),
+        _mk_point(800, 40, 0.55),   # stabilized (subsequent ±0.05)
+        _mk_point(900, 45, 0.57),
+        _mk_point(1000, 50, 0.56),
+    ]
+    selected = _content_aware_downsample(pts, target_n=6)
+    nodes = [p.nodes_searched for p in selected]
+    # Sorted ascending.
+    assert nodes == sorted(nodes)
+    # First / last present.
+    assert nodes[0] == 100
+    assert nodes[-1] == 1000
+    # Peak (visits=15) and trough (visits=25) present.
+    visits_in = {p.visits for p in selected}
+    assert 15 in visits_in
+    assert 25 in visits_in
+    # Stabilization visit present.
+    assert 35 in visits_in
+    # Total ≤ target_n.
+    assert len(selected) <= 6
+
+
+def test_content_aware_downsample_dedupes_endpoint_collisions():
+    """If the peak IS the first point (or last), no double-counting."""
+    pts = [
+        _mk_point(100, 5, 0.90),    # peak == first
+        _mk_point(200, 10, 0.50),
+        _mk_point(300, 15, 0.10),   # trough
+        _mk_point(400, 20, 0.30),
+        _mk_point(500, 25, 0.40),
+    ]
+    selected = _content_aware_downsample(pts, target_n=6)
+    nodes = [p.nodes_searched for p in selected]
+    assert nodes == sorted(nodes)
+    assert len(nodes) == len(set(nodes))  # no duplicates
+
+
+def test_content_aware_downsample_empty_returns_empty():
+    assert _content_aware_downsample([], target_n=6) == []
+
+
+def test_full_extractor_populates_all_three_trajectory_fields(monkeypatch, board):
+    """End-to-end: extract_mcts_trajectory populates trajectory_full,
+    trajectory_selected, trajectory_summary, and the legacy trajectory
+    field (which equals trajectory_selected)."""
+    cycle1 = _emit_cycle([("d8d4", 45, 0.85, 6.8)], root_visits=500)
+    cycle2 = _emit_cycle([("d8d4", 200, 0.92, 6.8)], root_visits=2500)
+    cycle3 = _emit_cycle([("d8d4", 500, 0.95, 6.8)], root_visits=5000)
+    cycle4 = _emit_cycle([("d8d4", 850, 0.96, 6.8)], root_visits=10000)
+
+    stub = _StubEngine([_make_search_result(
+        [cycle1, cycle2, cycle3, cycle4], bestmove_uci="d8d4",
+    )])
+
+    # v2 default: no budgets argument → content-aware sampling.
+    result = extract_mcts_trajectory(board, engine=stub)
+
+    rxd4 = result.children[0]
+    assert rxd4.uci == "d8d4"
+
+    # Full trajectory has every block (4 blocks).
+    assert len(rxd4.trajectory_full) == 4
+    assert [p.nodes_searched for p in rxd4.trajectory_full] == [500, 2500, 5000, 10000]
+
+    # Summary populated with sensible values.
+    assert rxd4.trajectory_summary is not None
+    assert rxd4.trajectory_summary.q_first == 0.85
+    assert abs(rxd4.trajectory_summary.q_last - 0.96) < 1e-4
+    assert abs(rxd4.trajectory_summary.q_peak - 0.96) < 1e-4
+    assert rxd4.trajectory_summary.block_count == 4
+
+    # Selected is a subset.
+    assert 0 < len(rxd4.trajectory_selected) <= 6
+
+    # Legacy trajectory field equals trajectory_selected.
+    assert rxd4.trajectory == rxd4.trajectory_selected
+
+
+def test_full_extractor_back_compat_when_budgets_provided(monkeypatch, board):
+    """When budgets= is passed (v1 contract), the legacy trajectory
+    field is populated by closest-snapshot per milestone — preserving
+    the v1 behaviour while trajectory_full / trajectory_summary still
+    populate from the dense capture."""
+    cycle1 = _emit_cycle([("d8d4", 45, 0.85, 6.8)], root_visits=500)
+    cycle2 = _emit_cycle([("d8d4", 200, 0.92, 6.8)], root_visits=2500)
+    cycle3 = _emit_cycle([("d8d4", 850, 0.96, 6.8)], root_visits=10000)
+
+    stub = _StubEngine([_make_search_result(
+        [cycle1, cycle2, cycle3], bestmove_uci="d8d4",
+    )])
+
+    result = extract_mcts_trajectory(
+        board, engine=stub, budgets=[500, 2500, 10000],
+    )
+
+    rxd4 = result.children[0]
+    # Legacy trajectory: 3 points (one per milestone).
+    assert len(rxd4.trajectory) == 3
+    assert [p.nodes_searched for p in rxd4.trajectory] == [500, 2500, 10000]
+    # Full trajectory: every block.
+    assert len(rxd4.trajectory_full) == 3
+    # Summary still populated.
+    assert rxd4.trajectory_summary is not None

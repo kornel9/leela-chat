@@ -72,23 +72,105 @@ _FIELD_RE = re.compile(
 class MCTSTrajectoryPoint(BaseModel):
     """One (nodes_searched, visits, q) sample for a single candidate.
 
-    Populated by :func:`extract_mcts_trajectory` (Chunk 6a) — the
-    multi-budget extractor that runs MCTS at several node budgets and
-    records each candidate's per-budget state. Methodology rationale
-    lives in ``docs/INTERPRETABILITY_NOTES.md`` §4.
+    Populated by :func:`leela_chat.extractors.mcts_trajectory.extract_mcts_trajectory`
+    (Chunk 6a v1+): the single-search live-stats extractor. Each
+    trajectory point is one snapshot of the *same continuous tree* at
+    a different point in its growth.
+
+    Methodology source-of-truth lives in
+    :mod:`leela_chat.extractors.mcts_trajectory` (module docstring),
+    not in INTERPRETABILITY_NOTES.md. The doc carries only the
+    cross-cutting prose contract.
     """
 
     nodes_searched: int = Field(
         ..., ge=0,
-        description="Engine's total search size at this checkpoint.",
+        description="Engine's total search size at this snapshot.",
     )
     visits: int = Field(
         ..., ge=0,
-        description="This candidate's visits at this checkpoint.",
+        description="This candidate's visits at this snapshot.",
     )
     q: float = Field(
         ..., ge=-1.0, le=1.0,
-        description="This candidate's Q at this checkpoint (side-to-move perspective).",
+        description="This candidate's Q at this snapshot (side-to-move perspective).",
+    )
+
+    model_config = ConfigDict(frozen=True)
+
+
+class MCTSTrajectorySummary(BaseModel):
+    """One-shot summary statistics of a candidate's intra-search trajectory.
+
+    Computed once over the candidate's full per-block sequence. Distils
+    the prose-relevant facts — where Q peaked, where it troughed, when
+    it stabilized, the inflection points — so handlers and prompts can
+    surface them without re-deriving from raw trajectory data.
+
+    Populated alongside ``MCTSChild.trajectory_full`` by the single-
+    search live-stats extractor (Chunk 6a v2+). See
+    :mod:`leela_chat.extractors.mcts_trajectory` module docstring for
+    methodology rationale (storage policy, content-aware down-sampling,
+    inflection-point detection).
+    """
+
+    q_first: float = Field(
+        ..., ge=-1.0, le=1.0,
+        description="Q at the first emit cycle the candidate appeared in.",
+    )
+    q_last: float = Field(
+        ..., ge=-1.0, le=1.0,
+        description="Q at search end (deepest snapshot).",
+    )
+    q_peak: float = Field(
+        ..., ge=-1.0, le=1.0,
+        description="Maximum Q observed across the trajectory.",
+    )
+    q_peak_at_visits: int = Field(
+        ..., ge=0,
+        description="The candidate's visit count when ``q_peak`` was observed.",
+    )
+    q_trough: float = Field(
+        ..., ge=-1.0, le=1.0,
+        description="Minimum Q observed across the trajectory.",
+    )
+    q_trough_at_visits: int = Field(
+        ..., ge=0,
+        description="The candidate's visit count when ``q_trough`` was observed.",
+    )
+    q_stabilized_at_visits: int | None = Field(
+        None, ge=0,
+        description=(
+            "First visit-count after which subsequent Q variation stays "
+            "within ±0.05 for the remainder of the trajectory. None if "
+            "Q never stabilizes."
+        ),
+    )
+    visit_growth_rate: float = Field(
+        ..., ge=0.0,
+        description=(
+            "Average visit increment per emit cycle the candidate was "
+            "present in. Higher = PUCT is committing visits to this move."
+        ),
+    )
+    q_crossed_zero: bool = Field(
+        ...,
+        description=(
+            "True if Q's sign changed at any point during the trajectory "
+            "— useful for narrating evaluation flips."
+        ),
+    )
+    inflection_points: list[MCTSTrajectoryPoint] = Field(
+        default_factory=list,
+        description=(
+            "Smoothed local maxima/minima of Q across the trajectory. "
+            "Filtered: only inflections with magnitude ≥ 0.05 from the "
+            "previous inflection are retained. Capped at ~5 points."
+        ),
+    )
+    block_count: int = Field(
+        ..., ge=0,
+        description="How many live-stats blocks this candidate was present in.",
     )
 
     model_config = ConfigDict(frozen=True)
@@ -162,11 +244,43 @@ class MCTSChild(BaseModel):
     trajectory: list[MCTSTrajectoryPoint] = Field(
         default_factory=list,
         description=(
-            "Multi-budget MCTS trajectory for this candidate, in budget-"
-            "ascending order. Populated by ``extract_mcts_trajectory`` "
-            "(Chunk 6a); empty when produced by single-budget "
-            "``extract_mcts``. Methodology in "
-            "``docs/INTERPRETABILITY_NOTES.md`` §4."
+            "Legacy / backward-compat alias for ``trajectory_selected``. "
+            "When ``extract_mcts_trajectory`` populates this child, this "
+            "field equals ``trajectory_selected`` (the content-aware "
+            "down-sample for prompt use). Empty when produced by single-"
+            "snapshot ``extract_mcts``. Chunks 1-5 callers and the 6a v1 "
+            "contract continue to read this field unchanged."
+        ),
+    )
+
+    trajectory_selected: list[MCTSTrajectoryPoint] = Field(
+        default_factory=list,
+        description=(
+            "Content-aware down-sampled selection (~5-8 points) for "
+            "prompt-facing serialization. Always includes first-visit, "
+            "last, q-peak, q-trough, q-stabilized when present. Remainder "
+            "fills from inflection points or even visit-spacing. See "
+            "``leela_chat.extractors.mcts_trajectory`` module docstring."
+        ),
+    )
+
+    trajectory_full: list[MCTSTrajectoryPoint] = Field(
+        default_factory=list,
+        description=(
+            "Every live-stats block this candidate was present in, in "
+            "block-order. Typically 20-100 points per 10k-node search. "
+            "Available for offline methodology validation and debug "
+            "runs; NOT serialized into the LLM prompt by default."
+        ),
+    )
+
+    trajectory_summary: "MCTSTrajectorySummary | None" = Field(
+        default=None,
+        description=(
+            "One-shot summary statistics (q-peak, q-trough, "
+            "q-stabilized-at, inflections, etc.) derived from "
+            "``trajectory_full``. None when produced by single-snapshot "
+            "``extract_mcts`` (no trajectory to summarize)."
         ),
     )
 

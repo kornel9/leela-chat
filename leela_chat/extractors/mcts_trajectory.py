@@ -120,6 +120,7 @@ from leela_chat.extractors.mcts_parser import (
     MCTSChild,
     MCTSFindings,
     MCTSTrajectoryPoint,
+    MCTSTrajectorySummary,
     _HEADER_RE,
     parse_verbose_move_stats,
 )
@@ -213,59 +214,316 @@ def _zero_point(nodes_searched: int) -> MCTSTrajectoryPoint:
     )
 
 
+# === C2: summary, inflection-point detection, content-aware down-sample ====
+
+
+# Maximum inflection points to retain. More than this indicates noise
+# dominating signal; we cap and log.
+_INFLECTION_MAX = 5
+
+# Minimum magnitude of Q change between consecutive inflections to
+# retain. Tuned against MCTS noise; tighten if false-positives appear in
+# integration tests.
+_INFLECTION_Q_MIN = 0.05
+
+# Stabilization window: subsequent Q variation ≤ this for the remainder
+# of the trajectory means "stabilized."
+_STABILIZATION_TOL = 0.05
+
+
+def _smooth_q(qs: list[float], *, window: int = 3) -> list[float]:
+    """Centered moving-average smoothing on Q values.
+
+    Window is clipped at boundaries (the first/last values use a
+    shrinking window). Robust to MCTS noise without distorting peak
+    locations significantly.
+    """
+    if not qs:
+        return []
+    half = window // 2
+    smoothed: list[float] = []
+    for i in range(len(qs)):
+        lo = max(0, i - half)
+        hi = min(len(qs), i + half + 1)
+        smoothed.append(sum(qs[lo:hi]) / (hi - lo))
+    return smoothed
+
+
+def _detect_inflection_points(
+    points: list[MCTSTrajectoryPoint],
+    *,
+    q_min: float = _INFLECTION_Q_MIN,
+    max_count: int = _INFLECTION_MAX,
+) -> list[MCTSTrajectoryPoint]:
+    """Find smoothed local maxima / minima of Q across the trajectory.
+
+    Returns the inflection points as `MCTSTrajectoryPoint`s drawn from
+    the input (not synthetic). Filtered so consecutive inflections
+    differ by at least ``q_min`` in magnitude. Capped at ``max_count``.
+
+    A trajectory with fewer than 3 points has no inflections (you need
+    a middle point to be a local extremum).
+    """
+    if len(points) < 3:
+        return []
+    qs = [p.q for p in points]
+    smoothed = _smooth_q(qs)
+    candidates: list[tuple[int, MCTSTrajectoryPoint]] = []
+    for i in range(1, len(smoothed) - 1):
+        prev, cur, nxt = smoothed[i - 1], smoothed[i], smoothed[i + 1]
+        is_max = cur > prev and cur > nxt
+        is_min = cur < prev and cur < nxt
+        if is_max or is_min:
+            candidates.append((i, points[i]))
+
+    # Magnitude filter: walk in order, only keep an inflection if its Q
+    # differs from the previous *retained* inflection (or the start) by
+    # at least q_min.
+    retained: list[MCTSTrajectoryPoint] = []
+    last_q = points[0].q
+    for _, point in candidates:
+        if abs(point.q - last_q) >= q_min:
+            retained.append(point)
+            last_q = point.q
+        if len(retained) >= max_count:
+            logger.debug(
+                f"_detect_inflection_points: capped at {max_count} "
+                f"(noise-dominated trajectory likely)"
+            )
+            break
+    return retained
+
+
+def _find_q_stabilized_visits(
+    points: list[MCTSTrajectoryPoint],
+    *,
+    tol: float = _STABILIZATION_TOL,
+) -> int | None:
+    """First visit-count after which subsequent Q variation stays within
+    ±``tol`` for the remainder of the trajectory.
+
+    "Subsequent" requires at least 2 points after the anchor; a single-
+    point suffix is trivially "stable" (equals itself) and isn't
+    informative — that's "we ran out of trajectory," not "Q settled."
+    Returns None if no anchor has ≥2 stable successors.
+    """
+    if len(points) < 3:
+        return None
+    # Anchor must have at least 2 subsequent points so "stayed stable"
+    # carries information. Iterate up to len(points) - 2.
+    for i in range(len(points) - 2):
+        anchor = points[i]
+        suffix = points[i:]
+        if all(abs(p.q - anchor.q) <= tol for p in suffix):
+            return anchor.visits
+    return None
+
+
+def _compute_trajectory_summary(
+    points: list[MCTSTrajectoryPoint],
+) -> MCTSTrajectorySummary | None:
+    """Build an :class:`MCTSTrajectorySummary` from a per-candidate full
+    trajectory. Returns None if ``points`` is empty.
+
+    Single pass over the sequence; cheap. Visit-growth-rate is the mean
+    of consecutive-visit increments where positive (negative deltas, if
+    they appear due to engine bookkeeping, are clamped to 0).
+    """
+    if not points:
+        return None
+    qs = [p.q for p in points]
+    visits = [p.visits for p in points]
+
+    q_peak_idx = qs.index(max(qs))
+    q_trough_idx = qs.index(min(qs))
+
+    deltas = [max(0, visits[i + 1] - visits[i]) for i in range(len(visits) - 1)]
+    growth = sum(deltas) / len(deltas) if deltas else 0.0
+
+    crossed_zero = any(
+        (qs[i] >= 0) != (qs[i + 1] >= 0) for i in range(len(qs) - 1)
+    )
+
+    return MCTSTrajectorySummary(
+        q_first=qs[0],
+        q_last=qs[-1],
+        q_peak=qs[q_peak_idx],
+        q_peak_at_visits=visits[q_peak_idx],
+        q_trough=qs[q_trough_idx],
+        q_trough_at_visits=visits[q_trough_idx],
+        q_stabilized_at_visits=_find_q_stabilized_visits(points),
+        visit_growth_rate=growth,
+        q_crossed_zero=crossed_zero,
+        inflection_points=_detect_inflection_points(points),
+        block_count=len(points),
+    )
+
+
+def _content_aware_downsample(
+    points: list[MCTSTrajectoryPoint],
+    *,
+    target_n: int = 6,
+    summary: MCTSTrajectorySummary | None = None,
+) -> list[MCTSTrajectoryPoint]:
+    """Select ~``target_n`` snapshots optimised for prose-relevance.
+
+    Priority (dedup-by-``nodes_searched``):
+    1. First-visit snapshot.
+    2. Last snapshot.
+    3. q-peak snapshot.
+    4. q-trough snapshot.
+    5. q-stabilized snapshot, if any.
+    6. Inflection-point snapshots (in order).
+    7. Filler points by even visit-domain spacing.
+
+    Returns snapshots in nodes-ascending order.
+    """
+    if not points:
+        return []
+    if summary is None:
+        summary = _compute_trajectory_summary(points)
+        if summary is None:
+            return []
+
+    # Index points by nodes_searched (the dedup key).
+    by_nodes: dict[int, MCTSTrajectoryPoint] = {p.nodes_searched: p for p in points}
+    picks: list[MCTSTrajectoryPoint] = []
+    seen: set[int] = set()
+
+    def add(p: MCTSTrajectoryPoint | None) -> None:
+        if p is None or p.nodes_searched in seen:
+            return
+        seen.add(p.nodes_searched)
+        picks.append(p)
+
+    # Priority 1-2: endpoints.
+    add(points[0])
+    add(points[-1])
+
+    # Priorities 3-5: peak / trough / stabilized — find the point whose
+    # visit count matches.
+    def find_at_visits(v: int) -> MCTSTrajectoryPoint | None:
+        for p in points:
+            if p.visits == v:
+                return p
+        return None
+
+    if len(picks) < target_n:
+        add(find_at_visits(summary.q_peak_at_visits))
+    if len(picks) < target_n:
+        add(find_at_visits(summary.q_trough_at_visits))
+    if len(picks) < target_n and summary.q_stabilized_at_visits is not None:
+        add(find_at_visits(summary.q_stabilized_at_visits))
+
+    # Priority 6: inflection points (already filtered).
+    for inflection in summary.inflection_points:
+        if len(picks) >= target_n:
+            break
+        add(inflection)
+
+    # Priority 7: filler by even visit-domain spacing.
+    remaining = target_n - len(picks)
+    if remaining > 0 and len(points) > len(picks):
+        # Pick remaining indices evenly spaced across the trajectory,
+        # skipping already-seen.
+        for i in range(1, len(points) - 1):
+            if len(picks) >= target_n:
+                break
+            if points[i].nodes_searched not in seen:
+                add(points[i])
+
+    # Return sorted by nodes_searched ascending.
+    return sorted(picks, key=lambda p: p.nodes_searched)
+
+
+def _build_full_trajectory_for_candidate(
+    uci: str,
+    findings_per_block: list[MCTSFindings],
+) -> list[MCTSTrajectoryPoint]:
+    """Walk every block; build the candidate's full per-block trajectory.
+
+    Skips blocks where the candidate isn't present (instead of zero-
+    filling) — for the full trajectory we report only data we actually
+    observed. The down-sample / summary handle the "absent at early
+    blocks" case via the visit-growth and first-visit logic.
+    """
+    trajectory: list[MCTSTrajectoryPoint] = []
+    for block in findings_per_block:
+        by_uci = {c.uci: c for c in block.children}
+        child = by_uci.get(uci)
+        if child is None:
+            continue
+        trajectory.append(MCTSTrajectoryPoint(
+            nodes_searched=block.total_nodes_searched,
+            visits=child.visits,
+            q=child.q,
+        ))
+    return trajectory
+
+
 def extract_mcts_trajectory(
     board: "chess.Board",
     *,
     engine: "Lc0Engine",
-    budgets: tuple[int, ...] | list[int] = DEFAULT_BUDGETS,
+    budgets: tuple[int, ...] | list[int] | None = None,
+    max_nodes: int | None = None,
+    target_selected_n: int = 6,
 ) -> MCTSFindings:
-    """Run one Lc0 search with live-stats; build a per-candidate
-    trajectory of the *same tree* at the requested visit milestones.
+    """Run one Lc0 search with live-stats; build a per-candidate dense
+    trajectory of the *same tree* plus summary statistics plus a
+    content-aware down-sample.
 
     Args:
         board: Position to analyse. Caller-owned; not mutated.
         engine: Live :class:`Lc0Engine` instance. Caller owns lifecycle.
-        budgets: Target visit milestones, in strictly-ascending order.
-            The deepest value is the actual node budget passed to Lc0;
-            shallower values are targets for picking intra-search
-            snapshots from the live-stats stream. Default
-            ``DEFAULT_BUDGETS``.
+        budgets: BACK-COMPAT. If provided, must be strictly ascending
+            positive milestones — the deepest is the search budget, and
+            ``trajectory_selected`` (and the legacy ``trajectory``
+            field) is populated by closest-snapshot-to-each-milestone,
+            preserving the v1 contract. If None (the v2 default),
+            ``trajectory_selected`` is populated by content-aware down-
+            sampling and the search runs to ``max_nodes`` or 10 000.
+        max_nodes: Override the search-depth node budget. Used only when
+            ``budgets`` is None. Defaults to 10 000.
+        target_selected_n: Target number of points in
+            ``trajectory_selected`` when using content-aware sampling.
+            Ignored if ``budgets`` is given. Default 6.
 
     Returns:
         :class:`MCTSFindings` from the *final* search state (deepest
-        snapshot), with each child's ``trajectory`` field populated
-        with one :class:`MCTSTrajectoryPoint` per requested milestone,
-        in milestone-ascending order. Candidates absent from a
-        particular snapshot get a zero-fill point at that milestone
-        (search hadn't reached them yet). When Lc0's emission cadence
-        misses a milestone entirely, the closest-snapshot rule applies
-        and the trajectory may have repeated values.
+        snapshot), with each child carrying ``trajectory_full`` (every
+        live-stats block this candidate was in), ``trajectory_summary``
+        (peak / trough / inflections / etc.), ``trajectory_selected``
+        (prompt-facing down-sample), and the legacy ``trajectory``
+        field set to ``trajectory_selected``.
 
     Raises:
-        ValueError: if ``budgets`` is empty, non-positive, or not
-            strictly ascending.
+        ValueError: if ``budgets`` is provided and is empty, non-
+            positive, or not strictly ascending.
     """
-    budgets_list = list(budgets)
-    if not budgets_list:
-        raise ValueError("budgets must be non-empty")
-    if any(b <= 0 for b in budgets_list):
-        raise ValueError("all budgets must be positive")
-    if any(b1 >= b2 for b1, b2 in zip(budgets_list, budgets_list[1:])):
-        raise ValueError("budgets must be strictly ascending")
+    # --- argument validation + search-budget resolution -----------------
+    budgets_list: list[int] | None = None
+    if budgets is not None:
+        budgets_list = list(budgets)
+        if not budgets_list:
+            raise ValueError("budgets must be non-empty when provided")
+        if any(b <= 0 for b in budgets_list):
+            raise ValueError("all budgets must be positive")
+        if any(b1 >= b2 for b1, b2 in zip(budgets_list, budgets_list[1:])):
+            raise ValueError("budgets must be strictly ascending")
+        search_budget = budgets_list[-1]
+    else:
+        search_budget = max_nodes if max_nodes is not None else 10_000
+        if search_budget <= 0:
+            raise ValueError("max_nodes must be positive")
 
-    max_budget = budgets_list[-1]
-
-    # One Lc0 search to the deepest milestone, with live-stats on.
+    # --- one Lc0 search; live-stats stream -------------------------------
     search_result = engine.analyse_verbose(
-        board, nodes=max_budget, log_live_stats=True,
+        board, nodes=search_budget, log_live_stats=True,
     )
 
-    # Split the streamed info-string lines into per-emit-cycle blocks.
     blocks = _group_live_stats_blocks(search_result.info_string_lines)
 
-    # Parse each block into MCTSFindings. The bestmove is only
-    # meaningful on the final block (engine's chosen move at search
-    # end); intermediate blocks pass bestmove_uci=None.
     findings_per_block: list[MCTSFindings] = []
     for i, block in enumerate(blocks):
         is_final = (i == len(blocks) - 1)
@@ -276,63 +534,87 @@ def extract_mcts_trajectory(
             search_complete=is_final and search_result.search_complete,
         ))
 
-    # Fallback: if live-stats produced no parseable blocks (Lc0 didn't
-    # emit, or only the end-of-search block came through and that block
-    # wasn't well-formed), fall through to a single end-of-search
-    # snapshot via the existing extractor.
+    # --- fallback: no parseable blocks ----------------------------------
     if not findings_per_block:
         logger.warning(
             "mcts_trajectory: no live-stats blocks parsed; "
             "falling back to single end-of-search snapshot"
         )
-        base = extract_mcts(board, engine=engine, nodes=max_budget)
+        base = extract_mcts(board, engine=engine, nodes=search_budget)
+        # If we got at least one Lc0Engine call's stats, synthesize a
+        # one-point trajectory for each child.
+        n_repeat = len(budgets_list) if budgets_list else max(1, target_selected_n)
         enriched_children: list[MCTSChild] = []
         for child in base.children:
+            single_point = MCTSTrajectoryPoint(
+                nodes_searched=base.total_nodes_searched,
+                visits=child.visits,
+                q=child.q,
+            )
+            full = [single_point]
+            selected = [single_point] * n_repeat
+            summary = _compute_trajectory_summary(full)
             enriched_children.append(child.model_copy(update={
-                "trajectory": [
-                    MCTSTrajectoryPoint(
-                        nodes_searched=base.total_nodes_searched,
-                        visits=child.visits,
-                        q=child.q,
-                    )
-                ] * len(budgets_list),
+                "trajectory_full": full,
+                "trajectory_selected": selected,
+                "trajectory_summary": summary,
+                "trajectory": selected,
             }))
         return base.model_copy(update={"children": enriched_children})
 
-    selected = _select_milestone_snapshots(findings_per_block, budgets_list)
-
-    # The base findings are the deepest snapshot — that's where
-    # downstream callers expect bestmove, children sorted by final
-    # visits, etc.
+    # --- normal path: dense capture + summary + selected ---------------
     base = findings_per_block[-1]
-
-    # Pre-index each selected snapshot by UCI for O(1) lookup.
-    by_uci_per_snapshot: list[dict[str, MCTSChild]] = [
-        {c.uci: c for c in snap.children} for snap in selected
-    ]
 
     enriched_children: list[MCTSChild] = []
     for child in base.children:
-        trajectory: list[MCTSTrajectoryPoint] = []
-        for snap, by_uci in zip(selected, by_uci_per_snapshot):
-            snap_child = by_uci.get(child.uci)
-            if snap_child is None:
-                trajectory.append(_zero_point(snap.total_nodes_searched))
-            else:
-                trajectory.append(MCTSTrajectoryPoint(
-                    nodes_searched=snap.total_nodes_searched,
-                    visits=snap_child.visits,
-                    q=snap_child.q,
-                ))
-        enriched_children.append(child.model_copy(update={"trajectory": trajectory}))
+        full = _build_full_trajectory_for_candidate(child.uci, findings_per_block)
+        if not full:
+            # Candidate only appears in the final block? Synthesize a
+            # one-point trajectory from the base data.
+            full = [MCTSTrajectoryPoint(
+                nodes_searched=base.total_nodes_searched,
+                visits=child.visits,
+                q=child.q,
+            )]
+        summary = _compute_trajectory_summary(full)
+
+        if budgets_list is not None:
+            # v1 back-compat: closest-snapshot per milestone.
+            milestone_snaps = _select_milestone_snapshots(findings_per_block, budgets_list)
+            selected: list[MCTSTrajectoryPoint] = []
+            for snap in milestone_snaps:
+                snap_child = next(
+                    (c for c in snap.children if c.uci == child.uci), None,
+                )
+                if snap_child is None:
+                    selected.append(_zero_point(snap.total_nodes_searched))
+                else:
+                    selected.append(MCTSTrajectoryPoint(
+                        nodes_searched=snap.total_nodes_searched,
+                        visits=snap_child.visits,
+                        q=snap_child.q,
+                    ))
+        else:
+            # v2 default: content-aware down-sample.
+            selected = _content_aware_downsample(
+                full, target_n=target_selected_n, summary=summary,
+            )
+
+        enriched_children.append(child.model_copy(update={
+            "trajectory_full": full,
+            "trajectory_selected": selected,
+            "trajectory_summary": summary,
+            "trajectory": selected,
+        }))
 
     logger.debug(
-        f"mcts_trajectory: max_budget={max_budget} "
+        f"mcts_trajectory: search_budget={search_budget} "
         f"emit_blocks={len(findings_per_block)} "
-        f"selected_snapshots={len(selected)} "
         f"top1={base.children[0].san if base.children else None} "
-        f"top1_visit_trajectory="
-        f"{[p.visits for p in enriched_children[0].trajectory] if enriched_children else []}"
+        f"top1_full_len="
+        f"{len(enriched_children[0].trajectory_full) if enriched_children else 0} "
+        f"top1_selected_len="
+        f"{len(enriched_children[0].trajectory_selected) if enriched_children else 0}"
     )
 
     return base.model_copy(update={"children": enriched_children})
