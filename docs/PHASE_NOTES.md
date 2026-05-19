@@ -11,9 +11,9 @@
 ## Current Status
 
 - **Phase:** 2 — MCTS Integration. Entered 2026-05-19 after Phase 1's informal close. Phase 2 entry brief delivered + acknowledged; Phase 2 plan written (see `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md`).
-- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19; Chunk 6a v0 done 2026-05-19; **Chunk 6a v1** (reviewer-feedback revision) done 2026-05-19. Plan revised at `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md` to integrate five methodological corrections (zero-ablation as 6b default, single-search live-stats for Q-trajectory, encoding-vs-use epistemic humility, divergent-timescale fixture for 6c, smaller tightenings). Next: Chunk 6b — `extract_layer_emergence` with zero-ablation as default.
+- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19; Chunk 6a v0+v1 done 2026-05-19; **Chunk 6a v2** done 2026-05-19. Plan at `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md` revised through second-pass reviewer feedback (A1+B1+B2+C1+C2+C3+D1+D2+D3 all integrated). 6a v2 shipped: methodology doc restructured to thin index + per-extractor module docstrings; dense MCTS-trajectory capture + summary statistics + content-aware down-sampling; Phase 3 concept-candidates tracker started; Chunk 7 (chess-content extractors) reserved; Phase 4 coach-voice prompt-migration reserved. Next: Chunk 6b — `extract_layer_emergence` with zero-ablation as default. **Gate before Chunk 6c implementation: divergent-timescale fixture (A1) must be curated and committed; deferred to pod session since it requires real Lc0 capture.**
 - **Last session:** 2026-05-19
-- **Next session goal:** Phase 2 Chunk 6b — `extract_layer_emergence`. Zero-ablation logit-lens (default per revised plan §3.2, not a fallback). For each layer L ∈ [0..N−1], a forward pass with a hook returning `torch.zeros_like` for `blocks.{L}.hook_resid_post`; baseline is the no-hooks pass. Linear logit-lens stays out of the codebase until equivalence is empirically demonstrated. New files: `leela_chat/extractors/layer_emergence.py`, `tests/unit/test_layer_emergence.py`, `tests/integration/test_layer_emergence_integration.py`.
+- **Next session goal:** Phase 2 Chunk 6b — `extract_layer_emergence`. Zero-ablation logit-lens (default per revised plan §3.2, not a fallback). The full methodology contract lives in `leela_chat/extractors/layer_emergence.py` module docstring (landed in 6a v2 as a scaffold; 6b implementation must satisfy that docstring). For each layer L ∈ [0..N−1], a forward pass with a hook returning `torch.zeros_like` for `blocks.{L}.hook_resid_post`; baseline is the no-hooks pass. Linear logit-lens stays out of the codebase until equivalence is empirically demonstrated. New files: implementation in `leela_chat/extractors/layer_emergence.py`, `tests/unit/test_layer_emergence.py`, `tests/integration/test_layer_emergence_integration.py`.
 
 > **Pod state caveat:** RunPod stop/start cycles wipe everything outside `/workspace` (apt packages, `/workspace/bin/lc0`, `/usr/local/cuda-12.8/bin` PATH). Run `ssh runpod 'bash /workspace/leela-chat/scripts/setup_pod.sh'` after every pod restart — idempotent, takes ~30s on warm restart and ~10 min on first build of Lc0.
 
@@ -812,4 +812,100 @@ Open questions / threads (carry to 6a v1 pod verification + 6b):
 - **Multiple milestones mapping to the same snapshot.** The closest-snapshot rule explicitly allows duplicates. The `did_you_consider` v1 prompt (Chunk 6c) needs to handle this gracefully — quoting the *actual* `nodes_searched` value (which may be e.g. 1200 not 1000) avoids the trap of claiming a snapshot represents a milestone it doesn't.
 
 Test status: 95 unit tests pass (up from 88 in v0, +7 from the refactored test_mcts_trajectory). Integration suite collects 56 tests cleanly off-pod.
+
+---
+
+#### 2026-05-19 (cont., 8) — Phase 2 Chunk 6a v2: second-pass reviewer revision
+
+After 6a v1 shipped (`452a4b1`), a second reviewer pass surfaced nine more items (A1, B1, B2, C1, C2, C3, D1, D2, D3). All valid. Plan revised; this session implements the off-pod work in three commits.
+
+What I did:
+
+- **Commit 1 — Doc restructure (`031b9c2`).** Per **C1 + B1 + B2 + C3**:
+  - `docs/INTERPRETABILITY_NOTES.md` rewritten as a thin cross-cutting index (~290 lines): §1 Premise, §2 Two timescales, §3 Prose contract (was §6.5, promoted out of "Limitations" per **C3**), §4 Worked example, §5 Per-extractor pointers, §6 Cross-cutting limitations, §7 References, §8 Future work. Per-extractor methodology specifics MOVED to module docstrings — the source of truth now travels with code per the user's explicit choice of Option B.
+  - `leela_chat/extractors/layer_emergence.py` NEW scaffold. Module docstring is the full network-time methodology contract (zero-ablation only; **B1**'s rewrite — drops the linear-logit-lens-with-mitigations framing entirely). Function body raises `NotImplementedError`; the 6b implementation must satisfy the docstring contract.
+  - `leela_chat/extractors/mcts_trajectory.py` module docstring expanded to ~110 lines covering the single-search live-stats methodology, why multi-search was rejected (carryover from v1), and the dense-capture + summary + content-aware-down-sampling design that lands in commit 2 (**B2**'s rewrite). The prose contract from §3 is referenced as the binding constraint on consumer prose.
+
+- **Commit 2 — Dense capture + summary + content-aware down-sample (`3fa52d3`).** Per **C2**:
+  - `leela_chat/extractors/mcts_parser.py` — new `MCTSTrajectorySummary` Pydantic model (q_first, q_last, q_peak, q_peak_at_visits, q_trough, q_trough_at_visits, q_stabilized_at_visits, visit_growth_rate, q_crossed_zero, inflection_points, block_count). Extended `MCTSChild` with `trajectory_full` (every captured block), `trajectory_selected` (content-aware down-sample for prompts), `trajectory_summary` (one-shot stats). Legacy `trajectory` field preserved as alias of `trajectory_selected` for v1 callers.
+  - `leela_chat/extractors/mcts_trajectory.py` — new helpers: `_smooth_q`, `_detect_inflection_points`, `_find_q_stabilized_visits`, `_compute_trajectory_summary`, `_content_aware_downsample`, `_build_full_trajectory_for_candidate`. `extract_mcts_trajectory` rewritten: `budgets` is now Optional. When provided (v1 contract), legacy `trajectory` populated by closest-snapshot per milestone. When omitted (v2 default), content-aware down-sample. `trajectory_full` and `trajectory_summary` populate identically in both paths.
+  - 14 new unit tests in `tests/unit/test_mcts_trajectory.py` cover the helpers + end-to-end behaviour + v1 back-compat preservation. Total trajectory tests: 32 (was 18). Full unit suite: 109 (was 95).
+  - One bug found and fixed during implementation: `_find_q_stabilized_visits` initially returned the last point's visits because a singleton suffix is trivially "stable" (point equals itself). Fixed by requiring ≥2 subsequent points; an anchor with only one successor is "we ran out of trajectory," not "Q settled."
+
+- **Commit 3 — D3 + D2 + PHASE_NOTES (this commit).** Per **D3 + D2**:
+  - `docs/phase3/concept_candidates.md` NEW. Phase 3 probe-concept candidate tracker; ~80 seeded concepts across tactical motifs, pawn structure, piece activity, king safety, endgame patterns, strategic concepts, opening-phase concepts. Cross-reference checklist (Silman, Aagaard, Watson, Dvoretsky) for the Phase 3 entry brief's pressure-test pass. Explicit "not on this list" section (opening repertoires, style markers, engine artefacts) to keep the scope honest.
+  - This `PHASE_NOTES.md` entry plus the Phase 4 placeholder + Chunk 7 entry below.
+
+What's deferred to pod session before Chunk 6c implementation:
+
+- **A1 — Divergent-timescale test fixture.** Requires real Lc0 capture; off-pod blocks the FEN selection on running Lc0 ourselves to verify the candidate position actually shows the network-low / MCTS-rescue signature. The plan's pre-6c gate stands: a `tests/unit/fixtures/lc0/divergent_<name>.txt` (Lc0 verbose-move-stats capture) plus a metadata YAML (FEN, expected MCTS-rescue move, Stockfish-depth-20 PV) must be committed before 6c implementation begins. The 6c v1 prompt's third worked example anchors on this fixture.
+
+What surprised me:
+
+- **The doc restructure was bigger than I'd estimated.** The slim INTERPRETABILITY_NOTES.md is 290 lines — more than the ~150 target. §3 (Prose Contract) is the most expensive section by a wide margin because it's load-bearing (forbidden / allowed language lists, permanence clause, encoding-vs-use explanation). I left it long; cutting it further would make the contract weaker. The methodology-doc trajectory will be revisited at Phase 4 anyway per the Option-B decision's exit criterion.
+
+- **C2's content-aware down-sample is genuinely better prose-fodder than fixed milestones.** Testing the worked example mentally: "Q peaked at +0.74 around visit 800 then declined steadily to +0.40 by visit 10 000" is a sentence the LLM can produce *only* if it knows where the peak was. With fixed milestones at [500, 1000, 2500, 5000, 10000], the peak at visit 800 would be invisible to the prompt. C2 makes the inflection narrative tractable.
+
+- **The `MCTSChild` schema needed four trajectory fields**, not three. I went with `trajectory` (legacy alias) + `trajectory_full` (everything) + `trajectory_selected` (down-sample) + `trajectory_summary` (stats). The legacy alias is genuinely useful — back-compat tests pass byte-identically with no special-casing in callers. The downside is field-count clutter on `MCTSChild`. Acceptable; will revisit at the 6.5 retrofit when handler-side serialization is overhauled.
+
+Open questions / threads (carry to 6b):
+
+- **`_content_aware_downsample` may not include all 5 priority anchors if some collide.** E.g., q-peak == first or q-trough == last. The dedupe-by-`nodes_searched` is correct (no double-points), but the resulting selection may be ≤6 even when 6 distinct anchors were targeted. Acceptable; the alternative is double-counting which is worse.
+
+- **`q_stabilized_at_visits` requires 3+ trajectory points.** With Lc0's `--log-live-stats` cadence unknown, a 10k-node search that emits only 2-3 blocks would have null stabilization. The pod investigation gate will tell us whether this is a real concern.
+
+- **`extract_layer_emergence` scaffold contract.** The module docstring is now the binding spec for 6b. If 6b's first integration test (final-layer top-1 must match `extract_network_inference`) fails with zero-ablation, the documented pivot path is mean-ablation (replace activation with calibration-batch mean), NOT linear logit-lens. This is explicit in the docstring's §"6b implementation contract" and DECISIONS.md would record the pivot.
+
+Test status: 109 unit tests pass. Integration suite still collects 56 cleanly off-pod (no changes there).
+
+---
+
+### Phase 4 — Coach-voice prompt migration (placeholder, D2)
+
+> Reserved slot per Chunk 6a v2 reviewer pass D2. Phase 1-2 prompts are
+> deliberately telemetry-voice for safety while extractors are thin. By
+> Phase 3 (probes) + Phase 4 (SAE features) + Chunk 7 (chess-content
+> extractors), the findings JSON is rich enough to support coach-voice
+> prose.
+
+Scope sketch:
+
+- Rewrite each handler's prompt from "narrate the findings" to "give the
+  player a coaching takeaway grounded in the findings."
+- Voice-A/B harness for comparing telemetry-prompt vs coach-prompt on
+  the same findings JSON.
+- Validate that the coach voice doesn't degrade Rule-1 grounding — the
+  coach-voice prompts must still pass the validator on every output.
+- Eval-set rerun comparing the two voices on the same eval positions.
+
+This is a real chunk, not a polish item. Full plan written when Phase 4
+begins.
+
+---
+
+### Chunk 7 — Chess-content extractors (placeholder, D1)
+
+> Reserved slot per Chunk 6a v2 reviewer pass D1. The user has clarified
+> the product goal: a usable chess coach, not an engine-internals
+> narrator. Coach-voice prose needs chess content to ground in.
+
+Likely scope (full plan when 6c lands and surfaces specific gaps):
+
+- **Stockfish full PVs at `multipv=5`, `depth=20+`** — small parameter
+  change to `extract_stockfish_eval`.
+- **Threat detection** — `leela_chat/extractors/threats.py`: hanging
+  pieces, loose pieces (attacked-defended-once with worse defender),
+  pinned, skewered. ~100-150 lines via python-chess.
+- **Material delta on resulting position** — `material_change(board,
+  move)` trivial helper.
+- **Tactical-motif detection** — `leela_chat/extractors/motifs.py`:
+  forks, pins, skewers, discoveries. ~200-300 lines.
+- **King-safety scalar** — `leela_chat/extractors/king_safety.py`:
+  pawn shield count, attacker count, open files near king. ~50-100
+  lines heuristic.
+
+NOT bundled into 6c (6c stays focused on dual-timescale methodology).
+NOT in 6.5 (6.5 is opt-in retrofit of existing handlers with new
+trajectory data). Chunk 7 lands after 6.5 once we know what specific
+chess content the dual-timescale prompts need to ground in.
 
