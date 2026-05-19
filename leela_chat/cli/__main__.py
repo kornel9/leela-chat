@@ -15,8 +15,14 @@ Run with:
     uv run python -m leela_chat.cli ask --fen ... --question ... -v    # + telemetry
 
 Resource lifecycle:
-- Both subcommands load BT4 once (~30-50 s) and start one Stockfish UCI
-  subprocess. Stockfish is closed in a ``finally`` block.
+- Both subcommands load BT4 once (~30-50 s), start one Stockfish UCI
+  subprocess, and — when the Lc0 binary + weights are present — one
+  Lc0 subprocess for MCTS. Both engines are closed in a ``finally`` block.
+- Lc0 paths default to the pod conventions; override with ``LC0_PATH``
+  and ``LC0_WEIGHTS`` env vars. If either is missing, the CLI degrades
+  gracefully to policy-only mode (``findings.mcts = None``) and the v4
+  prompt template handles the no-MCTS case. Useful for local dev boxes
+  without a Lc0 build.
 - The CLI is intentionally not optimised for repeat one-shot calls — the
   REPL is the right mode for interactive personal use. One-shot exists
   for scripting and for the eval-grader contract.
@@ -29,6 +35,7 @@ import shlex
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import chess
@@ -51,6 +58,16 @@ from leela_chat.network import load_bt4
 if TYPE_CHECKING:
     from transformer_lens import HookedTransformer
 
+    from leela_chat.engine.lc0_engine import Lc0Engine
+
+
+# Pod-default paths for Lc0 binary + BT4 weights (Phase-0 build conventions).
+# Override via LC0_PATH / LC0_WEIGHTS env vars on a local dev box.
+_DEFAULT_LC0_BINARY = Path("/workspace/bin/lc0")
+_DEFAULT_LC0_WEIGHTS = Path(
+    "/workspace/weights/BT4-1024x15x32h-swa-6147500/model.pb.gz"
+)
+
 
 # Mapping from --handler choices to the handler implementations. Phase 1
 # has only one; this dict is the extension point for handlers 2/3 once they
@@ -69,18 +86,31 @@ class CliContext:
     REPL holds it for the whole interactive session; the one-shot ``ask``
     holds it for one Q&A. Either way, :func:`_close_context` must run on
     exit (handled by the ``finally`` block in each command).
+
+    ``lc0`` is optional: when the binary or weights are missing (typical
+    on a local dev box), the field is ``None`` and Handler 1 skips MCTS.
+    Pod runs always have a real :class:`Lc0Engine`.
     """
 
     model: "HookedTransformer"
     stockfish: chess.engine.SimpleEngine
     client: LLMClient
     verbose: bool
+    lc0: "Lc0Engine | None" = None
 
 
 def _build_context(mode: LLMMode, verbose: bool) -> CliContext:
-    """Load env, BT4, Stockfish, and LLM client. Logs progress to stderr."""
+    """Load env, BT4, Stockfish, optional Lc0, and LLM client.
+
+    Lc0 is best-effort: if the binary or weights are missing at the
+    configured paths, log a warning and proceed in policy-only mode.
+    The handler + v4 prompt + templated fallback all handle
+    ``findings.mcts = None`` gracefully.
+    """
     load_env()
     stockfish_path = os.environ.get("STOCKFISH_PATH", "/usr/games/stockfish")
+    lc0_path = Path(os.environ.get("LC0_PATH", str(_DEFAULT_LC0_BINARY)))
+    lc0_weights = Path(os.environ.get("LC0_WEIGHTS", str(_DEFAULT_LC0_WEIGHTS)))
 
     logger.info("Loading BT4 (this can take ~30-50 s on first call)...")
     t0 = time.perf_counter()
@@ -91,16 +121,42 @@ def _build_context(mode: LLMMode, verbose: bool) -> CliContext:
     stockfish = chess.engine.SimpleEngine.popen_uci(stockfish_path)
     logger.info(f"Stockfish ready: id_name={stockfish.id.get('name', '?')}")
 
+    lc0: "Lc0Engine | None" = None
+    if lc0_path.exists() and lc0_weights.exists():
+        from leela_chat.engine.lc0_engine import Lc0Engine
+        lc0 = Lc0Engine(binary=lc0_path, weights=lc0_weights)
+    else:
+        missing = []
+        if not lc0_path.exists():
+            missing.append(f"binary at {lc0_path}")
+        if not lc0_weights.exists():
+            missing.append(f"weights at {lc0_weights}")
+        logger.warning(
+            "Lc0 missing ({}); proceeding without MCTS — handler will use "
+            "policy + Stockfish only.".format(", ".join(missing)),
+        )
+
     client = LLMClient(mode=mode)
-    return CliContext(model=model, stockfish=stockfish, client=client, verbose=verbose)
+    return CliContext(
+        model=model,
+        stockfish=stockfish,
+        client=client,
+        verbose=verbose,
+        lc0=lc0,
+    )
 
 
 def _close_context(ctx: CliContext) -> None:
-    """Cleanly close the Stockfish subprocess. Idempotent in practice."""
+    """Cleanly close the engine subprocesses. Idempotent in practice."""
     try:
         ctx.stockfish.close()
     except Exception as exc:  # pragma: no cover — defensive cleanup
         logger.warning(f"Stockfish close failed: {type(exc).__name__}: {exc}")
+    if ctx.lc0 is not None:
+        try:
+            ctx.lc0.close()
+        except Exception as exc:  # pragma: no cover — defensive cleanup
+            logger.warning(f"Lc0 close failed: {type(exc).__name__}: {exc}")
 
 
 # === Per-question core ======================================================
@@ -142,7 +198,10 @@ def _answer_one(
     # mechanical, not a refactor.
     t0 = time.perf_counter()
     findings = handle_what_is_leela_seeing(
-        board, model=ctx.model, stockfish_engine=ctx.stockfish
+        board,
+        model=ctx.model,
+        stockfish_engine=ctx.stockfish,
+        lc0_engine=ctx.lc0,
     )
     t1 = time.perf_counter()
     result = translate_and_validate(

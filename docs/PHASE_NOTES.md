@@ -11,9 +11,9 @@
 ## Current Status
 
 - **Phase:** 2 — MCTS Integration. Entered 2026-05-19 after Phase 1's informal close. Phase 2 entry brief delivered + acknowledged; Phase 2 plan written (see `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md`).
-- **Active chunk:** Phase 2 Chunks 1 + 2 + 3 done 2026-05-19 (Lc0Engine + MCTS parser + extract_mcts glue). Next: Chunk 4 — wire MCTS findings into `what_is_leela_seeing` handler, write v4 prompt teaching policy-vs-MCTS-vs-Stockfish framing.
+- **Active chunk:** Phase 2 Chunks 1 + 2 + 3 + 4 done 2026-05-19 (Lc0Engine + MCTS parser + extract_mcts + Handler 1 v4 prompt with three-signal framing). User-visible payoff is live: walkthrough Rxd4 prose now names the policy-vs-MCTS visit-share gap explicitly. Next: Chunk 5 — Handler 2 (`why_this_move`) built against the final MCTS-bearing findings shape.
 - **Last session:** 2026-05-19
-- **Next session goal:** Phase 2 Chunk 4 — extend `WhatIsLeelaSeeingFindings` Pydantic with an `mcts: MCTSFindings` field, update the handler to call `extract_mcts` alongside `extract_network_inference` + `extract_stockfish_eval`, write `v4.md` prompt that surfaces the policy-vs-MCTS-vs-Stockfish three-way comparison (this is where the walkthrough Rxd4 case finally produces good prose). Smoke against walkthrough positions A/B/C on the pod.
+- **Next session goal:** Phase 2 Chunk 5 — `leela_chat/handlers/why_this_move.py` + `leela_chat/llm/prompts/why_this_move/v1.md`. Takes a (fen, move_uci, question) tuple; surfaces MCTS subtree info about the user-asked-about move (its visit share, Q, V, plus the engine's actual top pick if different). Wire into CLI argparse (extend `ask` subcommand with `--move`). Smoke against ~5 user-eyeballed positions.
 
 > **Pod state caveat:** RunPod stop/start cycles wipe everything outside `/workspace` (apt packages, `/workspace/bin/lc0`, `/usr/local/cuda-12.8/bin` PATH). Run `ssh runpod 'bash /workspace/leela-chat/scripts/setup_pod.sh'` after every pod restart — idempotent, takes ~30s on warm restart and ~10 min on first build of Lc0.
 
@@ -626,7 +626,7 @@ Next session goal:
 | 1 | Lc0 subprocess wrapper (`Lc0Engine`) | ✅ done 2026-05-19 |
 | 2 | MCTS parser (`parse_verbose_move_stats(lines) -> MCTSFindings`) | ✅ done 2026-05-19 |
 | 3 | MCTS extractor (`extract_mcts(board, *, engine, nodes)`) | ✅ done 2026-05-19 |
-| 4 | Handler 1 v4 — incorporate MCTS findings | pending |
+| 4 | Handler 1 v4 — incorporate MCTS findings | ✅ done 2026-05-19 |
 | 5 | Handler 2 `why_this_move` | pending |
 | 6 | Handler 3 `did_you_consider` | pending |
 | 7 | Manual QA + CLI polish if surfaced | pending |
@@ -698,4 +698,27 @@ Open questions / threads:
 
 Next session goal:
 - **Chunk 4** — Update `what_is_leela_seeing` to incorporate MCTS findings. Touches: `leela_chat/handlers/what_is_leela_seeing.py` (add `extract_mcts` call + `mcts: MCTSFindings` field on `WhatIsLeelaSeeingFindings`), `templated_fallback` (extend to render MCTS info), `leela_chat/llm/prompts/what_is_leela_seeing/v4.md` (new prompt teaching three-signal framing with worked example on the Rxd4 case), `leela_chat/cli/__main__.py` (build Lc0Engine in `_build_context`, pass to handler, close in `_close_context`). Smoke against the walkthrough positions; expect Rxd4-case prose to be substantially richer than Phase 1.
+
+---
+
+#### 2026-05-19 (cont., 4) — Phase 2 Chunk 4 done: user-visible MCTS payoff
+
+What I did:
+- **Handler + schema** (`leela_chat/handlers/what_is_leela_seeing.py`): added optional `lc0_engine: Lc0Engine | None` param + `mcts_nodes: int = 10000`. New field `mcts: MCTSFindings | None` on `WhatIsLeelaSeeingFindings` (defaults None for graceful no-Lc0 paths). Handler truncates `mcts.children` to top `MCTS_TOP_N_FOR_LLM = 5` for its findings projection; the extractor's full output stays available to Handler 3 (`did_you_consider`) when it lands in Chunk 6. `templated_fallback` extended to render an MCTS section ("Leela MCTS (committed: Rxd4, 842 of 1000 visits = 84%): top by visits Rxd4 (N=842, Q=+0.95), …") only when `findings.mcts is not None`. `PROMPT_VERSION` bumped to 4.
+- **v4 prompt** (`leela_chat/llm/prompts/what_is_leela_seeing/v4.md`, ~6 KB): rewrites the three-signal framing — policy first-impression vs MCTS committed-judgment vs Stockfish second opinion. Explicitly teaches: **visit share is the load-bearing metric, not policy %**. Two worked examples: consensus case (Italian Game, all three agree on Bc5) and the canonical disagreement (Rxd4 walkthrough, MCTS overrides policy with 77% visit commitment despite 4th-ranked 6.8% prior). New anti-patterns specifically for MCTS data: don't cite V when null, don't claim per-child PV (always empty in Phase 2), 2-decimal Q max, never conflate policy % with visit %, don't say "considered and rejected" for zero-visit candidates ("the search didn't even try" is the accurate phrasing), no inventing mate-in-N from Q near ±1.
+- **CLI** (`leela_chat/cli/__main__.py`): `_build_context` now best-effort spawns `Lc0Engine` from `$LC0_PATH`/`$LC0_WEIGHTS` env vars (defaults `/workspace/bin/lc0` + the BT4 .pb.gz on the pod). Missing binary or weights → warning log + degrade to policy-only mode. `_close_context` extended to also close Lc0. `CliContext.lc0` is `Lc0Engine | None`. Test paths and local dev boxes that lack Lc0 still work; production pod always has it.
+- **Smoke on pod (Rxd4 walkthrough, the binding test):** `source=llm validation_ok=True`, single LLM call (no retry), 7.05 s handler / 10.81 s translate. Prose explicitly names the policy-vs-search gap: *"Leela's policy network ranked Rxd4 only fifth at 6.8% — its first-impression preference was Rxb1+ at 33.0%… But after 4782 nodes of MCTS, the engine committed 4217 visits (88%) to Rxd4 with Q +0.92… Stockfish at depth 15 agrees… Stockfish's line continues Rxd4 Qc3 Rxb1+ Kxb1 Qb8+…"* Exactly the prose Phase 1 couldn't produce.
+- **Smoke on pod (Italian Game, the Phase-1-fallback case):** `source=llm`, no retry needed. Three-way consensus correctly named ("All three signals converge clearly on Bc5"). LLM cites real MCTS visit counts (Bc5: 4560 / 5370 = 85%) and discusses low-visit candidates honestly (Be7: 32 visits, Q −0.17) — no claim that MCTS "considered and rejected" them. The Phase-1 ancestor-move bug (LLM citing Nf3/Bc4 which led to the position) is mitigated because MCTS gives the LLM 30+ legitimate candidates to discuss.
+
+What surprised me:
+- **`prior_pct` in `mcts.children` ≠ `policy_pct` in `top_moves`.** Pod smoke showed Bc5 with `policy_pct=67.5%` (from `extract_network_inference` raw policy net) but `prior_pct=49.0%` in `mcts.children` (from Lc0's verbose-move-stats P field at root). The two should be the same number — both are Lc0's policy-net softmax. The likely cause: Lc0 applies a softmax temperature scaling or per-move blending at the root before MCTS PUCT consumes it. Worth investigating in a follow-up — but the LLM handled the discrepancy gracefully by citing both as separate numbers (which they technically are). Not blocking Chunk 4 ship.
+- **Pod-state-caveat strikes again: `BT4.pt` was missing.** The Fudan-vendored loader hardcodes `/path/to/models/lc0/BT4.pt` which is outside `/workspace`. On the new pod this didn't exist. Fixed by running `convert_bt4_onnx_to_pt(...)` once to produce the .pt under `/workspace/.../BT4.pt`, then symlinking. **setup_pod.sh should grow this step** (idempotent: skip if symlink already points at a real file). Adding to "things to revisit" — fix opportunistically next session.
+- **Lc0 reported 4782 actual nodes searched on a 10000-node request.** Same convergence-driven early-termination behavior we noted in Chunk 1-3. The v4 prompt instructs the LLM to cite the actual total (`mcts.total_nodes_searched`), which it did correctly.
+
+Open questions / threads:
+- **`prior_pct` vs `policy_pct` divergence.** Confirm whether this is Lc0's softmax-temperature scaling, root Dirichlet noise (we don't enable that), or something else. Cleanup ideas: (a) add a sentence to v4 explaining the two are technically different sources, (b) report only one in the LLM-facing JSON and pick the more-faithful one. Defer to a docs-hygiene pass.
+- **`setup_pod.sh` BT4.pt step.** Should add: if `/path/to/models/lc0/BT4.pt` is missing AND `/workspace/.../BT4.pt` is missing, run conversion; else symlink. Idempotent. Important so future pod restarts don't pay the conversion cost twice.
+
+Next session goal:
+- **Chunk 5** — Handler 2 `why_this_move`. New file `leela_chat/handlers/why_this_move.py` + Pydantic findings model + `leela_chat/llm/prompts/why_this_move/v1.md`. Handler signature: `(board, *, move_uci, model, stockfish_engine, lc0_engine)`. Findings include MCTS subtree info about the asked-about move (visit share, Q, V) and how it compares to the engine's actual top pick. CLI: extend `ask` subcommand with `--move` arg; classifier still trivial-routes for now. Smoke against ~5 user-eyeballed positions where you played a specific move and want a second opinion.
 

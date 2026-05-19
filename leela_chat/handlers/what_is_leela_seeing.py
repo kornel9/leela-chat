@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, Literal
 import chess
 from pydantic import BaseModel, ConfigDict, Field
 
+from leela_chat.extractors.mcts import extract_mcts
+from leela_chat.extractors.mcts_parser import MCTSFindings
 from leela_chat.extractors.network_inference import (
     MoveCandidate,
     WDL,
@@ -35,7 +37,9 @@ if TYPE_CHECKING:
     import chess.engine
     from transformer_lens import HookedTransformer
 
-# Points at leela_chat/llm/prompts/what_is_leela_seeing/v3.md.
+    from leela_chat.engine.lc0_engine import Lc0Engine
+
+# Points at leela_chat/llm/prompts/what_is_leela_seeing/v4.md.
 # Per CLAUDE.md §3: increment, never delete old prompt versions.
 # v1 -> v2 (2026-05-18): tightened the precision rule for percentages
 #   after smoke testing found Sonnet rounding `1.2%` to `1%`, which the
@@ -47,7 +51,19 @@ if TYPE_CHECKING:
 #   Stockfish as an independent classical-search reference, requires comparing
 #   the two and explicitly noting disagreements (>0.5 cp eval gap or different
 #   top-move).
-PROMPT_VERSION = 3
+# v3 -> v4 (2026-05-19): MCTS findings added (Phase 2 Chunk 4). The prompt
+#   now teaches a THREE-signal framing — policy first-impression, MCTS
+#   committed-judgment via visit shares, and Stockfish — with the visit
+#   share as the load-bearing metric for "what Leela actually plays."
+#   Worked example pinned on the Rxd4 walkthrough case (the canonical
+#   policy-vs-search disagreement).
+PROMPT_VERSION = 4
+
+# How many top-by-visits MCTS children to surface to the LLM in this
+# handler's findings. The extractor returns all root candidates (up to ~50);
+# the LLM only needs the leading few. Phase-6-relevant raw data is still
+# computed in extract_mcts but not all of it flows into Handler 1's prompt.
+MCTS_TOP_N_FOR_LLM = 5
 
 HANDLER_NAME = "what_is_leela_seeing"
 
@@ -92,6 +108,19 @@ class WhatIsLeelaSeeingFindings(BaseModel):
             "policy. See ADR-0009 for why this lives in Phase 1."
         ),
     )
+    mcts: MCTSFindings | None = Field(
+        default=None,
+        description=(
+            "Leela's MCTS search findings — the engine's committed "
+            "judgment after expanding a search tree (visit-weighted), as "
+            "opposed to the policy network's first-impression in "
+            "``top_moves``. None when this handler is invoked without an "
+            "Lc0 engine (e.g. test paths). When present, children are "
+            "truncated to the top ``MCTS_TOP_N_FOR_LLM`` by visits; the "
+            "extractor's full output stays available to Handler 3 "
+            "(`did_you_consider`) which needs the long tail."
+        ),
+    )
 
     model_config = ConfigDict(frozen=True)
 
@@ -101,16 +130,18 @@ def handle_what_is_leela_seeing(
     *,
     model: "HookedTransformer",
     stockfish_engine: "chess.engine.SimpleEngine",
+    lc0_engine: "Lc0Engine | None" = None,
     top_n: int = 5,
     stockfish_depth: int = 15,
     stockfish_top_n: int = 3,
+    mcts_nodes: int = 10000,
 ) -> WhatIsLeelaSeeingFindings:
     """Build the findings JSON for ``what_is_leela_seeing`` on the given position.
 
-    Runs Leela's policy-network forward pass and Stockfish analysis side by
-    side, then assembles a combined findings model. Per CLAUDE.md §3, the
-    handler does no chess interpretation — it just calls extractors and packs
-    their output.
+    Runs Leela's policy-network forward pass, Stockfish analysis, and
+    (when an Lc0 engine is supplied) Leela MCTS search side by side, then
+    assembles a combined findings model. Per CLAUDE.md §3, the handler does
+    no chess interpretation — it just calls extractors and packs their output.
 
     Args:
         board: Position to assess.
@@ -118,10 +149,18 @@ def handle_what_is_leela_seeing(
             :func:`leela_chat.network.load_bt4`, already on the target device.
         stockfish_engine: Live ``chess.engine.SimpleEngine``. Caller-managed
             (spawn once at process start; close on exit).
+        lc0_engine: Optional live :class:`Lc0Engine` for MCTS analysis. When
+            ``None``, the handler skips MCTS entirely (``findings.mcts =
+            None``) and the v4 prompt + templated fallback degrade
+            gracefully. Used for legacy / test paths that don't want to
+            spawn Lc0; production CLI always supplies one.
         top_n: How many Leela-policy candidate moves to surface to the LLM.
         stockfish_depth: Stockfish search depth. 15 is the default; raise for
             sharper positions or critical eval, lower for sub-second latency.
         stockfish_top_n: How many Stockfish candidate lines to include (multipv).
+        mcts_nodes: Node budget for Lc0 MCTS. 10000 is a reasonable trade-off
+            between depth and pod-warm latency (~1-3 s). Increase for the
+            rare position where the user explicitly asks for deeper analysis.
 
     Returns:
         Findings model for the translation layer.
@@ -133,6 +172,18 @@ def handle_what_is_leela_seeing(
         depth=stockfish_depth,
         top_n=stockfish_top_n,
     )
+
+    mcts_findings: MCTSFindings | None = None
+    if lc0_engine is not None:
+        full_mcts = extract_mcts(board, engine=lc0_engine, nodes=mcts_nodes)
+        # Truncate children for the LLM-facing handler projection. The
+        # extractor's full output (all root candidates incl. zero-visit
+        # tail) is what `did_you_consider` (Handler 3, Chunk 6) will
+        # consume; Handler 1 only needs the leading few by visit share.
+        mcts_findings = full_mcts.model_copy(
+            update={"children": list(full_mcts.children[:MCTS_TOP_N_FOR_LLM])},
+        )
+
     return WhatIsLeelaSeeingFindings(
         fen=leela.fen,
         side_to_move=leela.side_to_move,
@@ -141,6 +192,7 @@ def handle_what_is_leela_seeing(
         moves_left_estimate=leela.moves_left_estimate,
         top_moves=leela.top_moves,
         stockfish=sf,
+        mcts=mcts_findings,
     )
 
 
@@ -151,7 +203,8 @@ def templated_fallback(findings: WhatIsLeelaSeeingFindings) -> str:
     When the LLM hallucinates on both attempts, this is the safe last resort —
     every number traces directly back to the findings model, so it is
     grounded by construction. Reads robotically; that is acceptable for a
-    fallback path. Now includes Stockfish since v3 (ADR-0009).
+    fallback path. v3 added Stockfish (ADR-0009); v4 adds MCTS — the
+    MCTS section is rendered only when ``findings.mcts`` is present.
     """
     eval_pawns = findings.eval_cp / 100.0
     eval_sign = "+" if findings.eval_cp >= 0 else ""
@@ -186,6 +239,21 @@ def templated_fallback(findings: WhatIsLeelaSeeingFindings) -> str:
     else:
         sf_part = f" Stockfish (depth {sf.depth}): no candidates returned."
 
+    mcts = findings.mcts
+    if mcts is None or not mcts.children:
+        mcts_part = ""
+    else:
+        top = mcts.children[0]
+        total = mcts.total_nodes_searched or 1  # guard /0 on degenerate cases
+        share_pct = 100.0 * top.visits / total
+        top_str = ", ".join(
+            f"{c.san} (N={c.visits}, Q={c.q:+.2f})" for c in mcts.children[:3]
+        )
+        mcts_part = (
+            f" Leela MCTS (committed: {mcts.bestmove_san}, {top.visits} of "
+            f"{total} visits = {share_pct:.0f}%): top by visits {top_str}."
+        )
+
     return (
         f"Leela's policy network evaluates the position at "
         f"{eval_sign}{findings.eval_cp} cp ({eval_sign}{eval_pawns:.2f}). "
@@ -193,4 +261,5 @@ def templated_fallback(findings: WhatIsLeelaSeeingFindings) -> str:
         f"Side to move: {findings.side_to_move}."
         f"{leela_moves_part}"
         f"{sf_part}"
+        f"{mcts_part}"
     )
