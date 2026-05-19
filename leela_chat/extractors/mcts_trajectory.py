@@ -1,19 +1,113 @@
 """Single-search MCTS Q-trajectory via Lc0's ``--log-live-stats``.
 
-Runs Lc0 *once* to the deepest requested visit budget with the
-``LogLiveStats`` UCI option enabled. Lc0 then emits the full
-verbose-move-stats block on every info update during the search — each
-block is a complete snapshot of the *same continuous tree* at a
-different point in its growth.
+Source of truth for the **search-time methodology** in the dual-
+timescale dismissal framework. Cross-cutting framing in
+``docs/INTERPRETABILITY_NOTES.md``; prose contract in §3 of that file
+applies to every consumer of this module's output.
 
-Per-candidate trajectories are stitched across snapshots of the same
-tree (not across independent searches). For methodology see
-``docs/INTERPRETABILITY_NOTES.md`` §4: in particular §4.2 on why
-multi-search stitching was rejected, and §4.3-4.4 on milestone
-selection.
+This module is the *search-time* half of the dual-timescale
+methodology. The *network-time* half is
+:mod:`leela_chat.extractors.layer_emergence` (zero-ablation
+logit-lens; created in Chunk 6b).
 
-Companion: :mod:`leela_chat.extractors.layer_emergence` is the
-*network-time* half of the dual-timescale methodology (Chunk 6b).
+================================================================
+Methodology
+================================================================
+
+**Goal.** For each candidate move in a position, record how its
+(visits, Q) evolved within **one continuous MCTS tree** as the search
+progressed. The data is a true intra-search history, not a stitched
+composite of independent searches.
+
+**Why not stitch independent searches?**
+
+A first-cut implementation ran Lc0 K times at budgets [500, 1 000,
+2 500, 5 000, 10 000] and stitched per-candidate (visits, Q) across
+the K independent search results. We shipped that as Chunk 6a v0 and
+rejected it after reviewer feedback:
+
+- The K trees are not the same tree. MCTS expansion order depends on
+  backend stochasticity, exploration-bonus tiebreaks, and network
+  noise. Two 10 000-node runs can produce different visit
+  distributions; *different-budget* runs produce *different-shape*
+  trees that happened to end at different sizes.
+- Prose built on stitched data over-claims. A sentence like *"Q
+  dropped from +0.74 at 1 000 nodes to +0.53 at 10 000"* implies
+  single-run continuity that the data didn't have.
+
+**How we capture single-search trajectories.**
+
+Lc0 v0.32.1 supports the ``--log-live-stats`` flag (UCI option
+``LogLiveStats``). Per
+``update_research/repos/lc0-master/src/search/classic/params.cc:294``:
+
+    "Do VerboseMoveStats on every info update."
+
+When on, Lc0 emits the full verbose-move-stats block — every
+candidate's line plus a ``node`` summary line — on every UCI info
+update during the search. The format is identical to end-of-search
+verbose-move-stats, so the existing
+:func:`leela_chat.extractors.mcts_parser.parse_verbose_move_stats`
+reuses cleanly per block.
+
+Block boundary detection: a line whose header parses to the literal
+token ``node`` ends the current block. The next non-``node`` candidate
+line opens a new block.
+
+**Storage policy (Chunk 6a v2 decision: store everything).**
+
+We retain ALL captured blocks on ``MCTSChild.trajectory_full`` (~20-100
+blocks per 10k-node search; a few KB per candidate; cheap). On top we
+compute:
+
+- ``trajectory_summary: MCTSTrajectorySummary`` — peak-Q,
+  peak-at-visits, trough-Q, trough-at-visits, q-stabilized-at-visits,
+  visit-growth-rate, q-crossed-zero, inflection_points (smoothed
+  local maxima/minima), block_count.
+- ``trajectory_selected: list[MCTSTrajectoryPoint]`` — content-aware
+  down-sampled selection (~5-8 points) for prompt use: always
+  includes first, last, q-peak, q-trough, q-stabilized; remainder
+  fills from inflection points / even spacing.
+- ``trajectory: list[MCTSTrajectoryPoint]`` — legacy field equal to
+  ``trajectory_selected`` when populated. Preserved for Chunks 1-5
+  callers and the 6a v1 contract.
+
+Why content-aware down-sampling beats fixed milestones? The inflection
+narrative ("Q peaked at +0.74 around visit 800 then declined steadily
+to +0.40") is more useful prose-fodder than five raw snapshots at
+[500, 1000, 2500, 5000, 10000]. Same prompt budget, more informative
+content.
+
+**Backward compatibility.** A caller passing ``budgets=[500, 1000,
+2500, 5000, 10000]`` (the v1 contract) gets the closest-snapshot rule
+to populate ``trajectory_selected`` and ``trajectory``. A caller
+omitting ``budgets`` (the v2 default) gets content-aware sampling. In
+both cases ``trajectory_full`` and ``trajectory_summary`` are populated
+identically.
+
+**Limitations.**
+
+- Lc0's live-stats emission cadence is not configurable at fine
+  granularity. We get the cadence Lc0 chooses. The investigation gate
+  in PHASE_NOTES tracks the observed cadence; if a 10k-node search
+  produces fewer than ~5 blocks, the trajectory degrades to "first,
+  last, repeat" — honest representation, but the inflection-point
+  story is impoverished.
+- Fallback path: if the live-stats stream produces no parseable blocks
+  (engine misconfiguration, format change), the extractor falls back
+  to a single end-of-search snapshot via the standard
+  :func:`extract_mcts` path and emits a flat (single-point-repeated)
+  trajectory.
+- We do **not** report visit-by-visit precision (one (visits, Q) per
+  individual MCTS visit). That would need an Lc0 source patch and is
+  not currently planned.
+
+**Prose contract.** Outputs of this module are observational. The
+forbidden / allowed language lists in
+``docs/INTERPRETABILITY_NOTES.md`` §3 apply: describe what changed in
+the trajectory (rank, visits, Q), don't claim what search "decided" or
+"realized." Search is the source of *trajectory* facts; Stockfish is
+the source of *content* facts (which move refutes which).
 """
 from __future__ import annotations
 
