@@ -88,11 +88,21 @@ identically.
 **Limitations.**
 
 - Lc0's live-stats emission cadence is not configurable at fine
-  granularity. We get the cadence Lc0 chooses. The investigation gate
-  in PHASE_NOTES tracks the observed cadence; if a 10k-node search
-  produces fewer than ~5 blocks, the trajectory degrades to "first,
-  last, repeat" — honest representation, but the inflection-point
-  story is impoverished.
+  granularity. We get the cadence Lc0 chooses. **Empirical (pod
+  2026-05-19, Lc0 v0.32.1):** a 10 000-node search on the Rxd4
+  walkthrough produces ~25 blocks; the last emit lands around
+  ~5 000 nodes (PUCT stops producing `info` updates once bestmove is
+  confident, then plays out the remaining budget silently). So
+  ``q_last`` in the summary represents "Q at the deepest live-stats
+  emit," not "Q at the actual end-of-search." This is fine for
+  methodology — the deliberation period is what the trajectory
+  captures. Prose should not refer to absolute end-of-search Q.
+- The ``LogLiveStats`` UCI option in Lc0 v0.32.1 is `ProOnly`
+  visibility — accessible only via the ``--log-live-stats`` CLI flag,
+  NOT via UCI ``setoption``. ``Lc0Engine`` spawns with the flag
+  always-on; the per-call ``log_live_stats`` kwarg controls whether
+  the wrapper returns the full multi-block stream or filters to the
+  final emit cycle for single-snapshot callers.
 - Fallback path: if the live-stats stream produces no parseable blocks
   (engine misconfiguration, format change), the extractor falls back
   to a single end-of-search snapshot via the standard

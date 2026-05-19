@@ -1,0 +1,84 @@
+# Walkthrough Rxd4 — divergent-timescale fixture (A1)
+#
+# Captured 2026-05-19 on pod (BT4 + Lc0 v0.32.1, cuda-fp16). Per the
+# Chunk 6a v2 reviewer pass A1, the dual-timescale `did_you_consider`
+# handler needs a fixture covering the divergent quadrants where
+# network signal and MCTS signal disagree. The Rxd4 walkthrough
+# position covers BOTH divergent quadrants in a single position — see
+# the per-focal-move analysis below.
+#
+# Companion files:
+#   walkthrough_rxd4.txt              — single end-of-search snapshot (Chunk 2 fixture, parser tests)
+#   walkthrough_rxd4_livestats.txt    — multi-block live-stats stream (Chunk 6a v2 trajectory tests)
+
+position:
+  fen: "1r1r2k1/5ppp/p3pn2/4q3/b1PN4/Q4P2/P2RB1PP/KR6 b - - 0 1"
+  side_to_move: black
+  description: |
+    Black-to-move tactical position. Two candidate moves of interest:
+    - Rxd4 (d8d4): wins material via a quiet rook capture; refutes
+      White's knight on d4. Stockfish-top-1 at depth 20+.
+    - Rxb1+ (b8b1): an attractive-looking attack the network ranks
+      highly but search refutes (Kxb1 holds).
+
+  stockfish_depth_20_top_pv:
+    bestmove_uci: d8d4
+    bestmove_san: Rxd4
+    pv_san: [Rxd4, Rxd4, Qxa3]   # Rxd4 cxd4 (only legal recapture), Qxa3
+    eval_cp: -310  # from white's perspective; black is winning
+
+mcts_findings:
+  # Empirical from Lc0 v0.32.1 (cuda-fp16) at nodes=10000.
+  bestmove_uci: d8d4
+  bestmove_san: Rxd4
+  rxd4_visit_share_at_10k: 0.84   # roughly 8400 / 10000
+
+# === A1 coverage: dual divergent quadrants in this position ===
+
+divergent_quadrants:
+  # Quadrant 2: network keeps, search refutes.
+  search_refutes:
+    focal_uci: b8b1
+    focal_san: "Rxb1+"
+    description: |
+      Rxb1+ is the network's eventual top-1 (rank 1 at the final BT4
+      layer, ~27% policy). MCTS commits only ~20 visits and Q drops
+      from V-head optimism (+0.74) to a trough (+0.36) before partial
+      recovery to ~+0.53 at the last live-stats emit. The network
+      never sees the Kxb1 defense; search reveals it.
+    network_emergence_pattern: "Late emergence: rank 1 only at L=14-15; outside top-5 for layers 0-13"
+    expected_summary:
+      q_first_approx: 0.74
+      q_trough_approx: 0.36
+      q_trough_at_visits_approx: 22
+      trajectory_pattern: "high initial V-head; trough mid-search; partial recovery"
+
+  # Quadrant 3: network ranks low throughout, MCTS rescues.
+  mcts_rescue:
+    focal_uci: d8d4
+    focal_san: "Rxd4"
+    description: |
+      Rxd4 is the MCTS bestmove (~84% visit share at 10k nodes) but
+      its network rank stays >= 9 at every BT4 layer (never enters
+      top-5). The network alone cannot find this; MCTS discovers it
+      through deeper exploration. This is the canonical divergent-
+      timescale fixture for the `did_you_consider` handler's third
+      worked example.
+    network_emergence_pattern: "Never_rose: rank 9-43 at every layer; peak rank 9 at L=15"
+    expected_summary:
+      q_first_approx: 0.56     # V-head only (no visits at first emit)
+      q_peak_approx: 0.96
+      q_peak_at_visits_approx: 125
+      q_last_approx: 0.92
+      trajectory_pattern: "V-head start; rapid climb after first visits; sustained high Q"
+
+# === Validation history ===
+
+# Pod validation 2026-05-19:
+# - test_baseline_top1_matches_network_inference_starting_position: PASS
+#   (hook-wiring gate)
+# - test_walkthrough_rxd4_layer_trajectories_are_non_degenerate: PASS
+#   (printed trajectories matched the predictions above)
+# - test_rxd4_q_confirms_within_one_search: PASS (q_peak - q_first = +0.41)
+# - test_rxb1_check_refuted_within_one_search: PASS (q_trough - q_first = -0.38)
+# - test_live_stats_block_count_meaningful_for_10k_search: PASS (25 blocks)

@@ -24,6 +24,7 @@ Lifecycle conventions match :mod:`leela_chat.extractors.stockfish`:
 """
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 from types import TracebackType
@@ -36,6 +37,45 @@ from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
     pass
+
+
+# Matches Lc0's verbose-move-stats "node ..." summary header line. We
+# only need a cheap prefix check, not the full _HEADER_RE; the parser
+# does the real parsing downstream. Used by ``_keep_last_block`` to
+# split a multi-block live-stats stream into its final emit cycle.
+_NODE_SUMMARY_RE = re.compile(r"^\s*node\s+\(\s*\d+\s*\)")
+
+
+def _keep_last_block(info_string_lines: list[str]) -> list[str]:
+    """Return only the lines belonging to the last verbose-move-stats
+    emit cycle.
+
+    With ``--log-live-stats`` on (the engine's default — see
+    ``Lc0Engine.__init__``), Lc0 emits a verbose-move-stats block on
+    every UCI ``info`` update — potentially 20+ blocks per 10k-node
+    search. Single-snapshot callers (Chunks 1-5 extractors that don't
+    want trajectory data) need only the final block. Trajectory
+    callers (``extract_mcts_trajectory``, 6a v2+) consume the whole
+    stream and group it themselves.
+
+    Implementation: find the last ``node`` summary line; walk backward
+    to find the previous ``node`` boundary (or list start); return the
+    inclusive slice. If no ``node`` summary is found, returns the
+    input unchanged (no live-stats emissions; the input is whatever
+    Lc0 produced).
+    """
+    last_node_idx: int | None = None
+    for i, line in enumerate(info_string_lines):
+        if _NODE_SUMMARY_RE.match(line):
+            last_node_idx = i
+    if last_node_idx is None:
+        return info_string_lines
+    start = 0
+    for j in range(last_node_idx - 1, -1, -1):
+        if _NODE_SUMMARY_RE.match(info_string_lines[j]):
+            start = j + 1
+            break
+    return info_string_lines[start:last_node_idx + 1]
 
 
 class Lc0SearchResult(BaseModel):
@@ -129,9 +169,17 @@ class Lc0Engine:
         if not Path(weights).exists():
             raise FileNotFoundError(f"Lc0 weights not found: {weights}")
 
+        # ``--log-live-stats`` is a ProOnly UCI option in Lc0
+        # v0.32.1 — accessible only via the CLI flag, NOT via UCI
+        # ``setoption``. We spawn with it always-on so trajectory callers
+        # (Chunk 6a v2+ ``extract_mcts_trajectory``) see the stream of
+        # per-info-update verbose-move-stats blocks; single-snapshot
+        # callers filter to the last block in ``analyse_verbose``.
+        # Source: ``update_research/repos/lc0-master/src/search/classic/params.cc:294``.
         command: list[str] = [
             str(binary),
             "--verbose-move-stats",
+            "--log-live-stats",
             f"--weights={weights}",
         ]
         if extra_args:
@@ -168,15 +216,18 @@ class Lc0Engine:
             board: Position to search.
             nodes: Node budget. Default 10000 — comfortable trade-off
                 between depth and latency on the pod (~5-10 s per call).
-            log_live_stats: If True, set Lc0's ``LogLiveStats`` UCI option
-                for this call so the engine emits the full verbose-move-
-                stats block on every info update (not only at search end).
-                The captured ``info_string_lines`` then contain one block
-                per emit cycle, each terminated by a ``node`` summary
-                line — consumed by ``extract_mcts_trajectory`` for
-                intra-search Q-trajectory data. Default False (preserves
-                Chunks 1-5 single-snapshot behaviour). Source:
-                ``update_research/repos/lc0-master/src/search/classic/params.cc:294``.
+            log_live_stats: If True, returned ``info_string_lines``
+                contain the FULL multi-block stream (one verbose-move-
+                stats block per UCI info update, each terminated by a
+                ``node`` summary line) — consumed by
+                ``extract_mcts_trajectory`` for intra-search Q-trajectory
+                data. If False (default), the stream is filtered down to
+                the final emit cycle so single-snapshot extractors
+                (Chunks 1-5) see only the end-of-search snapshot. The
+                ``--log-live-stats`` CLI flag is always set on the
+                engine (it's a ProOnly Lc0 option not accessible via
+                UCI ``setoption``); this kwarg only controls whether
+                the wrapper filters the stream before returning.
 
         Returns:
             :class:`Lc0SearchResult` with the captured lines, the engine's
@@ -188,41 +239,30 @@ class Lc0Engine:
         search_complete: bool = False
         start = time.perf_counter()
 
-        # Toggle LogLiveStats around the analysis call. Restored to False
-        # afterwards so this option is per-call, not engine-wide — a later
-        # single-budget caller can't accidentally inherit live-stats mode.
-        try:
-            self._engine.configure({"LogLiveStats": log_live_stats})
-        except (chess.engine.EngineError, chess.engine.EngineTerminatedError) as exc:
-            logger.warning(f"Lc0 configure(LogLiveStats={log_live_stats}) failed: {exc}")
+        with self._engine.analysis(board, chess.engine.Limit(nodes=nodes)) as analysis:
+            for info in analysis:
+                s = info.get("string")
+                if isinstance(s, str) and s:
+                    info_string_lines.append(s)
+            # When the context exits, the engine has emitted bestmove and
+            # analysis._finished is set. Wait() retrieves the BestMove.
+            try:
+                best = analysis.wait()
+                if best.move is not None:
+                    bestmove_uci = best.move.uci()
+                    search_complete = True
+            except chess.engine.EngineError as exc:
+                logger.warning(f"Lc0 analysis ended without bestmove: {exc}")
 
-        try:
-            with self._engine.analysis(board, chess.engine.Limit(nodes=nodes)) as analysis:
-                for info in analysis:
-                    s = info.get("string")
-                    if isinstance(s, str) and s:
-                        info_string_lines.append(s)
-                # When the context exits, the engine has emitted bestmove and
-                # analysis._finished is set. Wait() retrieves the BestMove.
-                try:
-                    best = analysis.wait()
-                    if best.move is not None:
-                        bestmove_uci = best.move.uci()
-                        search_complete = True
-                except chess.engine.EngineError as exc:
-                    logger.warning(f"Lc0 analysis ended without bestmove: {exc}")
-        finally:
-            if log_live_stats:
-                try:
-                    self._engine.configure({"LogLiveStats": False})
-                except (chess.engine.EngineError, chess.engine.EngineTerminatedError) as exc:
-                    logger.warning(f"Lc0 configure(LogLiveStats=False) reset failed: {exc}")
+        raw_line_count = len(info_string_lines)
+        if not log_live_stats:
+            info_string_lines = _keep_last_block(info_string_lines)
 
         wall = time.perf_counter() - start
         logger.debug(
             f"lc0 analyse_verbose: nodes={nodes} live_stats={log_live_stats} "
-            f"lines={len(info_string_lines)} bestmove={bestmove_uci} "
-            f"wall={wall:.2f}s complete={search_complete}"
+            f"raw_lines={raw_line_count} returned_lines={len(info_string_lines)} "
+            f"bestmove={bestmove_uci} wall={wall:.2f}s complete={search_complete}"
         )
         return Lc0SearchResult(
             info_string_lines=info_string_lines,

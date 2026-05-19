@@ -11,9 +11,9 @@
 ## Current Status
 
 - **Phase:** 2 — MCTS Integration. Entered 2026-05-19 after Phase 1's informal close. Phase 2 entry brief delivered + acknowledged; Phase 2 plan written (see `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md`).
-- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19; Chunk 6a (v0+v1+v2) done 2026-05-19; **Chunk 6b** done 2026-05-19 (off-pod code path). Plan at `docs/plans/chunk-6.md` (snapshot of plan-mode workspace). Next: Chunk 6c — `did_you_consider` handler + v1 prompt with three worked examples. **Gate before 6c implementation: A1 divergent-timescale fixture must be curated and committed; deferred to pod session since it requires real Lc0 capture (user gave source-hunt order: try `update_research/repos/superhuman-ai-consistency-main/` test set first). Also pod-gated: 6b's `test_baseline_top1_matches_network_inference_starting_position` hook-wiring sanity check.**
+- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19; Chunk 6a (v0+v1+v2) done 2026-05-19; Chunk 6b done 2026-05-19; **pod validation pass** done 2026-05-19. All pre-6c gates closed: hook-wiring sanity ✓, layer-emergence non-degeneracy ✓, live-stats trajectory ✓, A1 divergent fixture ✓ (the existing walkthrough_rxd4 position covers BOTH divergent quadrants — see fixture metadata YAML). Next: Chunk 6c — `did_you_consider` handler + v1 prompt with three worked examples + CLI wiring. No more pod gates remaining before 6c implementation.
 - **Last session:** 2026-05-19
-- **Next session goal:** **Pod session.** Run 6b's integration test (`test_baseline_top1_matches_network_inference_starting_position` is the hook-wiring sanity gate; if it passes, methodology is validated). Then either (a) curate the A1 divergent fixture per the source-hunt order in PHASE_NOTES below, or (b) proceed to Chunk 6c with a temporary fixture-deferred 3rd worked example. Chunk 6c: `did_you_consider` handler + v1 prompt with three worked examples (concordant pick, search-refutes, network-low-MCTS-rescue), CLI wiring, three pod smokes.
+- **Next session goal:** **Chunk 6c implementation.** `did_you_consider` handler + v1 prompt + CLI wiring. The v1 prompt's three worked examples are now empirically anchored: (1) concordant pick (a starting-position or Italian Game example where the network and MCTS agree on the bestmove), (2) search-refutes (Rxb1+ on the walkthrough position — q_trough=+0.36 at v22 from v_first=+0.74), (3) network-low-MCTS-rescue (Rxd4 on the same walkthrough position — q_peak=+0.96 at v125 from V-head v_first=+0.56 with the network never ranking it in the top-5 at any layer). All numbers from real pod runs; methodology doc §4 worked example updated to match.
 
 > **Pod state caveat:** RunPod stop/start cycles wipe everything outside `/workspace` (apt packages, `/workspace/bin/lc0`, `/usr/local/cuda-12.8/bin` PATH). Run `ssh runpod 'bash /workspace/leela-chat/scripts/setup_pod.sh'` after every pod restart — idempotent, takes ~30s on warm restart and ~10 min on first build of Lc0.
 
@@ -913,6 +913,66 @@ NOT bundled into 6c (6c stays focused on dual-timescale methodology).
 NOT in 6.5 (6.5 is opt-in retrofit of existing handlers with new
 trajectory data). Chunk 7 lands after 6.5 once we know what specific
 chess content the dual-timescale prompts need to ground in.
+
+---
+
+#### 2026-05-19 (cont., 10) — Pod validation pass; all pre-6c gates closed
+
+**Pod state on entry:** RunPod RTX 3090 alive (`213.192.2.110:40039`); Lc0 v0.32.1 + BT4 weights present per setup_pod.sh. Project tree at `/workspace/leela-chat/` (no git; rsync-deployed). Synced this session's local diffs via rsync (`-rltz --no-owner --no-group`).
+
+**Gate 1 — Hook-wiring sanity (6b).** `test_baseline_top1_matches_network_inference_starting_position` PASSED on first try. The baseline (L=N, no hooks) policy top-1 from `extract_layer_emergence` matches `extract_network_inference`'s top-1 byte-for-byte on the starting position. Methodology validated mechanically.
+
+**Gate 2 — Layer-emergence non-degeneracy (6b).** `test_walkthrough_rxd4_layer_trajectories_are_non_degenerate` PASSED. Printed trajectories on the Rxd4 walkthrough position (n_layers=15):
+
+```
+Rxb1+  (b8b1): ranks [41, 36, 35, 36, 46, 38, 39, 41, 34, 34, 32, 31, 25, 15, 2, 1]; tag=rose_and_stayed
+Rxd4   (d8d4): ranks [43, 32, 29, 31, 35, 32, 24, 35, 35, 37, 34, 33, 31, 25, 14, 9]; tag=never_rose
+Qg5    (e5g5): ranks [1, 27, 43, 43, 29, 24, 26, 30, 38, 44, 47, 47, 43, 32, 16, 7]; tag=rose_and_stayed
+```
+
+Three load-bearing observations:
+1. **Rxb1+ surfaces only at the final 2 layers** (rank 2 at L=14, rank 1 at L=15). The earlier layers don't see it. This contradicts the v0 prediction in the methodology doc ("Rxb1+ rank stays #1 across every measured BT4 layer"). The real BT4 builds the high-prior Rxb1+ commitment late.
+2. **Rxd4's network rank is ≥ 9 at every layer.** The network truly never finds the eventual MCTS bestmove. This is the A1 divergent-timescale signature — the existing walkthrough position satisfies the A1 criteria without a separate fixture.
+3. **Qg5 is the embedding-only (L=0) top-1.** Drops to rank 7 by the final layer. The embedding "considered then dismissed" Qg5 (in allowed prose: "Qg5's rank dropped from #1 at L=0 to #7 at L=15").
+
+**Gate 3 — Live-stats trajectory (6a v2).** Three failures on first try, then refixed. Two issues uncovered:
+
+*Issue 3a: `LogLiveStats` UCI option doesn't work.* The 6a v1 implementation called `engine.configure({"LogLiveStats": True})` per-call. Empirically, the option is `kProOnly` visibility in Lc0 v0.32.1 — exposed only via the `--log-live-stats` CLI flag, NOT via UCI `setoption`. The configure call was a no-op; only end-of-search verbose-move-stats reached the wrapper (1 block, not 21+). Confirmed via `(echo uci; ...) | lc0` — no `LogLiveStats` in the UCI option list, only `VerboseMoveStats`.
+
+Fix: spawn `Lc0Engine` with `--log-live-stats` as a command-line flag always. Drop the UCI configure call. Add `_keep_last_block` helper to `lc0_engine.py` that filters the multi-block stream to the final emit cycle when callers pass `log_live_stats=False` (the default for Chunks 1-5 single-snapshot callers). Chunks 1-5 callers see the same single-block output they always have; trajectory callers (`extract_mcts_trajectory`) get the full stream.
+
+*Issue 3b: V0 prediction wrong on Q-trajectory shape.* The integration test expected `qs[-1] - qs[0] < -0.10` for Rxb1+ (monotonic-or-near-monotonic drop). Actual Rxb1+ Q-trajectory on the pod: starts at +0.74 (V-head optimism, 1 visit), DIPS to +0.36 around v=22 (search refutation), then PARTIALLY RECOVERS to +0.52 by the last live-stats emit (v=93). The dip-then-recovery pattern is the real refutation signature, not a monotonic drop.
+
+Fix: rewrite the integration test assertions to use `trajectory_summary` fields (specifically `q_trough - q_first < -0.20` for refutation, `q_peak - q_first > 0.10` for confirmation). The summary stats are method-agnostic and capture the actual signal; milestone-snapshot deltas (the v1 approach) measure the wrong endpoints. Methodology doc §4.3 worked example updated to match the empirical numbers.
+
+Result: all 4 mcts_trajectory integration tests PASSED on the rerun:
+- Rxd4: `q_first=+0.558 q_peak=+0.963@v125 q_trough=+0.423@v0 q_last=+0.918 blocks=25` ✓ (q_peak - q_first = +0.41)
+- Rxb1+: `q_first=+0.739 q_peak=+0.747@v2 q_trough=+0.362@v22 q_last=+0.523 blocks=25 inflections=2` ✓ (q_trough - q_first = -0.38)
+- `test_live_stats_block_count_meaningful_for_10k_search` ✓ (25 blocks emitted)
+- `test_trajectory_smoke_on_starting_position` ✓
+
+**Empirical limitation discovered:** Lc0's live-stats emission cadence stops well before search budget exhaustion. A 10 000-node search produces ~25 blocks with the deepest emit at ~5 000 nodes — once PUCT is confident in bestmove, no more `info` updates fire, and Lc0 plays out the remaining budget silently. So `q_last` in the summary is "Q at the deepest live-stats emit," NOT "Q at end-of-search." Methodology doc and module docstring updated to make this explicit; the deliberation period (which the trajectory captures) is what we care about anyway, so this is fine.
+
+**A1 closed.** The walkthrough_rxd4 position covers BOTH divergent quadrants:
+- Rxb1+ = "network keeps / search refutes" (late-rising network rank + dipping Q)
+- Rxd4 = "network never finds / MCTS rescues" (never enters network top-5; MCTS commits 84% visit share)
+
+Plus the canonical concordant prediction is also visible (Qg5 ranks #1 at L=0 → #7 at L=15; not the engine's pick at all). One position, three quadrants of dual-timescale narrative. The user's source-hunt suggestion (`superhuman-ai-consistency-main/`) is preserved in backlog but not needed for 6c.
+
+Added a new fixture `tests/unit/fixtures/lc0/walkthrough_rxd4_livestats.txt` — the raw 1300-line multi-block live-stats capture from this session. Companion metadata YAML at `tests/unit/fixtures/lc0/walkthrough_rxd4.meta.yaml` documents the position's dual-quadrant coverage with the empirical numbers. Two new unit tests parse the fixture to lock the format invariant: regression against future Lc0 version changes.
+
+What surprised me:
+
+- **The `LogLiveStats`-via-UCI-doesn't-work bug.** The 6a v1 plan and code happily configured this option as if it would work. Pod testing exposed it. The fix is small (CLI flag at engine spawn + per-call filter) but the methodology lesson is sharper: "UCI option exists per docs" is not the same as "UCI option is exposed via setoption." The Lc0 `kProOnly` visibility designation is the gate.
+
+- **The Q-trajectory shape is more complex than predicted.** The dip-then-recovery pattern is methodologically more interesting than a monotonic drop — it tells us Lc0 considered Rxb1+'s "compensating attacking lines" briefly during search before settling for Rxd4. The C2 design (q_trough, q_peak, inflection points) captured this beautifully. Sticks score: 1.
+
+- **Rxb1+ is a late-network-emerging move, not a stay-top-1 move.** v0's methodology doc claim "Rxb1+ stays top-1 across every measured layer" was wrong. The actual story: Rxb1+ surfaces only at L=14-15 (the network "decides" the move at the very end of its forward pass). This is actually a richer narrative — it suggests the late layers compute the high-prior attacking move while the early/middle layers are doing something else entirely. Real probe / SAE work in Phase 3+ could investigate what.
+
+Test status:
+- Unit: 128 pass (was 126; +2 fixture round-trip tests)
+- Integration on pod: 4/4 mcts_trajectory PASS, 3/3 layer_emergence PASS (gates 1+2 + smoke)
+- Total: 135 tests passing across the suite (off-pod skips the 11 pod-only tests)
 
 ---
 

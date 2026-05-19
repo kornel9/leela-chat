@@ -167,15 +167,30 @@ collects ~840 visits, Rxb1+ ~20.
 
 ### 4.3 What the LLM should say (Chunk 6c v1 prompt target)
 
-> *"Rxb1+ never dropped in the network — its rank stayed top-1 across
-> all 15 layers. The refutation came from search within the same tree:
-> at ~1 000 visits, Q was +0.7; by ~10 000 visits in that same tree, Q
-> had fallen to +0.4 while visits stagnated at ~20. The rank trajectory
-> alone doesn't tell us which layer, if any, computed the refutation —
-> but Stockfish identifies Kxb1 as the move that holds. Rxd4 surfaced
-> at both timescales: rank entered the top-10 by the middle layers and
-> stayed; its MCTS Q grew from +0.85 at ~1 000 visits to +0.95 at
-> ~10 000 visits in the same tree."*
+> *"Rxb1+'s rank emerged only at the very end of the network — outside
+> the top-10 through layer 13, then rising to rank 2 at layer 14 and
+> rank 1 at layer 15. Within the same MCTS tree, Q started at +0.74
+> (one early visit, V-head optimistic), reached a trough of +0.36
+> around 22 visits as PUCT explored White's responses, then partially
+> recovered to +0.53 by the deepest live-stats emit (~93 visits). The
+> trough is the signature of search-time refutation; the rank
+> trajectory alone doesn't tell us which layer, if any, computed the
+> refutation — but Stockfish identifies Kxb1 as the move that holds.
+> Rxd4 surfaced only at search-time: rank stayed >= 9 at every BT4
+> layer (the network never finds it), but MCTS Q rose from a V-head
+> estimate of +0.56 to a peak of +0.96 by 125 visits, with visit
+> share growing to ~84% of the 10 000-node search."*
+
+**Empirical (pod 2026-05-19, BT4 + Lc0 v0.32.1):**
+- Rxb1+ summary: `q_first=+0.74 q_peak=+0.75@v2 q_trough=+0.36@v22 q_last=+0.52 blocks=25`
+- Rxd4 summary: `q_first=+0.56 q_peak=+0.96@v125 q_trough=+0.42@v0 q_last=+0.92 blocks=25`
+- Layer-emergence: Rxb1+ rank 41→...→1 (final), peak rank 1 at L=15. Rxd4 rank 43→...→9 (final), peak rank 9 at L=15.
+
+The v0 prediction ("Q drops monotonically toward end-of-search")
+turned out wrong on the magnitude: the dip-then-partial-recovery
+pattern is the real refutation signature. The `q_trough` summary
+field is the load-bearing data point, not `q_last`. Methodology
+locked accordingly in Chunk 6a v2.
 
 This is the v1 worked example. A second case — the divergent
 *network-low / MCTS-rescue* quadrant — is gated on a hand-picked

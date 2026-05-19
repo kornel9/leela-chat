@@ -15,6 +15,8 @@ stitching K independent searches).
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import chess
 import pytest
 
@@ -734,3 +736,82 @@ def test_full_extractor_back_compat_when_budgets_provided(monkeypatch, board):
     assert len(rxd4.trajectory_full) == 3
     # Summary still populated.
     assert rxd4.trajectory_summary is not None
+
+
+# === Real-Lc0 live-stats fixture: regression check for format drift ========
+
+
+FIXTURE_PATH = Path(__file__).parent / "fixtures" / "lc0" / "walkthrough_rxd4_livestats.txt"
+
+
+def _load_livestats_fixture() -> list[str]:
+    """Load the captured live-stats stream; strip header `# ...` lines."""
+    text = FIXTURE_PATH.read_text().splitlines()
+    return [line for line in text if line and not line.startswith("#")]
+
+
+def test_real_lc0_livestats_fixture_groups_into_many_blocks():
+    """The real-Lc0 multi-block fixture should split into >=20 blocks.
+
+    Captured 2026-05-19 on pod: BT4 + Lc0 v0.32.1 (cuda-fp16) at
+    nodes=10000 with --log-live-stats. The exact block count depends
+    on Lc0's emit cadence (PUCT events trigger info updates), but it
+    should always be substantially more than 1.
+    """
+    from leela_chat.extractors.mcts_trajectory import _group_live_stats_blocks
+
+    lines = _load_livestats_fixture()
+    blocks = _group_live_stats_blocks(lines)
+    assert len(blocks) >= 20, (
+        f"expected >=20 blocks in the captured multi-block fixture; "
+        f"got {len(blocks)}. Either the fixture was regenerated from "
+        f"a different Lc0 build or the grouper logic regressed."
+    )
+    # Every block should end with a node-summary line.
+    for i, block in enumerate(blocks):
+        assert block[-1].lstrip().startswith("node "), (
+            f"block {i} does not end with a node-summary: {block[-1][:60]}..."
+        )
+
+
+def test_real_lc0_livestats_fixture_trajectory_summary_passes_round_trip(board):
+    """Feeding the real-Lc0 fixture through extract_mcts_trajectory
+    should produce sensible trajectory_summary fields for the two
+    candidates the methodology cares about.
+
+    This test is a regression check: if Lc0 changes the
+    verbose-move-stats format, or the parser breaks on the sentinel
+    values like ``(V: -.----)``, this catches it locally without
+    needing pod access.
+    """
+    lines = _load_livestats_fixture()
+    stub = _StubEngine([Lc0SearchResult(
+        info_string_lines=lines,
+        bestmove_uci="d8d4",
+        nodes_requested=10000,
+        wall_seconds=5.66,
+        search_complete=True,
+    )])
+
+    result = extract_mcts_trajectory(
+        board, engine=stub, budgets=[500, 1000, 2500, 5000, 10000],
+    )
+
+    # Both focal candidates should have populated trajectories.
+    rxd4 = next(c for c in result.children if c.uci == "d8d4")
+    rxb1 = next(c for c in result.children if c.uci == "b8b1")
+
+    # Rxd4 trajectory_summary: confirmation signature.
+    assert rxd4.trajectory_summary is not None
+    assert rxd4.trajectory_summary.q_peak > 0.85, (
+        f"Rxd4 q_peak should be > +0.85; got {rxd4.trajectory_summary.q_peak}"
+    )
+    # First visit-count where Q hit its peak (V-head only is q ~+0.56).
+    assert rxd4.trajectory_summary.q_peak - rxd4.trajectory_summary.q_first > 0.20
+
+    # Rxb1+ trajectory_summary: refutation signature.
+    assert rxb1.trajectory_summary is not None
+    assert rxb1.trajectory_summary.q_trough < 0.45, (
+        f"Rxb1+ q_trough should be < +0.45; got {rxb1.trajectory_summary.q_trough}"
+    )
+    assert rxb1.trajectory_summary.q_trough - rxb1.trajectory_summary.q_first < -0.20
