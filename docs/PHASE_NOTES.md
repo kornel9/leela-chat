@@ -11,9 +11,9 @@
 ## Current Status
 
 - **Phase:** 2 — MCTS Integration. Entered 2026-05-19 after Phase 1's informal close. Phase 2 entry brief delivered + acknowledged; Phase 2 plan written (see `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md`).
-- **Active chunk:** Phase 2 Chunk 1 done 2026-05-19 (Lc0Engine wrapper + 11 unit + 2 pod integration tests). Next: Chunk 2 — MCTS parser turning info-string lines into Pydantic findings.
+- **Active chunk:** Phase 2 Chunks 1 + 2 done 2026-05-19 (Lc0Engine + MCTS parser). Next: Chunk 3 — `extract_mcts(board, *, engine, nodes)` glue function composing the wrapper and parser into the handler-facing extractor.
 - **Last session:** 2026-05-19
-- **Next session goal:** Phase 2 Chunk 2 — `parse_verbose_move_stats(lines) -> MCTSFindings`. Pure-Python parser; unit tests with frozen Lc0 v0.32.1 outputs.
+- **Next session goal:** Phase 2 Chunk 3 — `leela_chat/extractors/mcts.py` extractor function. Should be a small wrapper: takes a live Lc0Engine + board + nodes, calls analyse_verbose, feeds output through parse_verbose_move_stats, returns MCTSFindings. Tests: mock both Lc0Engine and parser, verify glue behaviour.
 
 > **Pod state caveat:** RunPod stop/start cycles wipe everything outside `/workspace` (apt packages, `/workspace/bin/lc0`, `/usr/local/cuda-12.8/bin` PATH). Run `ssh runpod 'bash /workspace/leela-chat/scripts/setup_pod.sh'` after every pod restart — idempotent, takes ~30s on warm restart and ~10 min on first build of Lc0.
 
@@ -624,7 +624,7 @@ Next session goal:
 | # | What | Status |
 |---|---|---|
 | 1 | Lc0 subprocess wrapper (`Lc0Engine`) | ✅ done 2026-05-19 |
-| 2 | MCTS parser (`parse_verbose_move_stats(lines) -> MCTSFindings`) | pending |
+| 2 | MCTS parser (`parse_verbose_move_stats(lines) -> MCTSFindings`) | ✅ done 2026-05-19 |
 | 3 | MCTS extractor (`extract_mcts(board, *, engine, nodes)`) | pending |
 | 4 | Handler 1 v4 — incorporate MCTS findings | pending |
 | 5 | Handler 2 `why_this_move` | pending |
@@ -658,4 +658,25 @@ Open questions / threads:
 
 Next session goal:
 - **Chunk 2** — `leela_chat/extractors/mcts_parser.py`. Pure-function `parse_verbose_move_stats(lines: list[str]) -> MCTSFindings`. Inline Pydantic models (`MCTSChild`, `MCTSFindings`). Unit tests with frozen Lc0 v0.32.1 sample outputs (the starting-position 21-line dump captured today + ~5-10 more from the walkthrough positions). No pod needed — pure-Python parser tests run locally.
+
+---
+
+#### 2026-05-19 (cont., 2) — Phase 2 Chunk 2 done: MCTS parser
+
+What I did:
+- Captured 5 Lc0 v0.32.1 fixtures on the pod, saved under `tests/unit/fixtures/lc0/`: starting position (500 nodes, 20 candidates), Italian Game Black to move (500 nodes, 31 cand), walkthrough Rxd4 (2000 nodes, 51 cand), endgame R+N vs B+P (1000 nodes, 31 cand), QGD Bb4 opening (500 nodes, 24 cand). Each fixture header records FEN + nodes_requested + bestmove_uci + search_complete + wall_seconds + line_count, then the raw info-string lines.
+- Implemented `leela_chat/extractors/mcts_parser.py`. Pure-Python, no I/O. Three Pydantic models: `MCTSChild` (per-root-candidate raw counts — visits, visits_in_flight, prior_pct, q, v, wl, draw, moves_left, u, s, plus an empty `pv_san: list[str]` placeholder for Chunks 5-6 to fill in if needed), `MCTSRootStats` (root aggregate from the `node` line; same fields minus u/s which root doesn't have), and `MCTSFindings` (the top-level container). Parser uses three composable regexes: `_HEADER_RE` peels off `move (idx)`, `_N_RE` peels off `N: X (+ Y)`, and `_FIELD_RE` extracts every `(KEY: VALUE)` pair after. Children sorted by visits desc (tie-broken by prior desc, deterministic). 19 unit tests including a flagship "Rxd4 surfaces on top" test that pins the walkthrough Phase-1-fail case as a regression guard.
+- Smoke verification: parser handles all 5 fixtures cleanly. Walkthrough Rxd4 case validates: `top1 = Rxd4 (N=842, Q=+0.951, prior=6.79%)` — exactly the policy-vs-MCTS gap Phase 1 couldn't surface. Now Phase 2 will.
+
+What surprised me:
+- **Lc0 emits `(V: -.----)` as a sentinel for unexpanded moves.** When a candidate has never been expanded by the search (low prior, search didn't get to it), Lc0 still emits a `(V: ...)` field on the line, but with literal `-.----` instead of a number. My initial regex (numeric values only) silently dropped these — which was actually correct, but the consumer code defaulted V to 0.0, which is wrong (0.0 would mean "value head says exactly even"). Changed `MCTSChild.v` to `float | None` so the missing-V state propagates honestly. Walkthrough rxd4 has 19 None-V children (low-prior moves Lc0 never tried); test pins this so a future parser change doesn't regress.
+- **Total visits doesn't match nodes_requested.** Asked for 2000 on the walkthrough position; root_stats reports visits=931 + visits_in_flight=164 = 1095. Lc0's node counter excludes some bookkeeping or stopped early on the heavily-confidence-converged Rxd4 line. Not a parser bug — the engine itself terminates when convergence is detected. `total_nodes_searched` in findings reports the engine-true number; `nodes_requested` from `Lc0SearchResult` carries the caller-asked-for number; handlers can compare to detect early termination.
+- **Sub-second searches at 2000 nodes.** Wall-clock on the pod's RTX 3090: starting position 500 nodes = 4.8s (mostly BT4 net load), walkthrough 2000 nodes = 0.35s (BT4 warm). Reasonable budget for handler use — `--nodes 10000` should still fit in ~2-3 s warm.
+
+Open questions / threads:
+- **Should the parser expose the raw `_parse_one_line` dict for debugging?** Currently the function is module-private (underscore prefix). I exported it in the test file's imports to write unit tests, which is a slight layer-leak but acceptable for testing internals. Revisit if a third caller needs it.
+- **PV (principal variation) is empty per-child.** `MCTSChild.pv_san = []` always at Chunk 2. For Handler 3 (`did_you_consider`), we may want to know "if Leela had played X, the opponent would respond Y, you'd respond Z" — that requires deeper tree dump or move-forcing. Defer the decision to Chunk 5-6 when the handler design forces a call.
+
+Next session goal:
+- **Chunk 3** — `leela_chat/extractors/mcts.py`. Composes `Lc0Engine.analyse_verbose` + `parse_verbose_move_stats` into a single `extract_mcts(board, *, engine, nodes=10000) -> MCTSFindings` callable. Tests mock both pieces and verify the glue. ~50 LOC, ~5 unit tests, ~30 minutes including PHASE_NOTES entry.
 
