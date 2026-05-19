@@ -4,23 +4,29 @@ NOT eval data. These FENs are throwaway development fixtures, not the
 canonical eval set (``tests/eval/eval_positions.yaml`` — friends authoring
 per the G0.2 override).
 
-Loads BT4 once, iterates ``FIXTURES`` (FEN + question), runs handler then
-translator, prints findings + final response + telemetry per position.
+Loads BT4 once, starts a Stockfish UCI subprocess, iterates ``FIXTURES``
+(FEN + question), runs handler then translator, prints findings + final
+response + telemetry per position. Both engines are kept alive between
+positions; closed cleanly at the end.
 
-Run on the pod (BT4 weights + GPU required):
+Run on the pod (BT4 weights + GPU + ``/usr/games/stockfish`` required):
 
     uv run python -m leela_chat.scripts.smoke_test_handler
 
 Defaults to ITER mode (Sonnet 4.6) for cheap iteration. Pass ``--prod`` to
-use Opus 4.7 (PROD mode).
+use Opus 4.7 (PROD mode). Stockfish path overridable via the
+``STOCKFISH_PATH`` env var; defaults to ``/usr/games/stockfish`` (Ubuntu's
+apt-installed location, confirmed in setup_pod.sh).
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 
 import chess
+import chess.engine
 from loguru import logger
 
 from leela_chat.handlers.what_is_leela_seeing import (
@@ -85,6 +91,18 @@ def main() -> None:
         default=5,
         help="How many top-policy moves the handler exposes to the LLM (default 5).",
     )
+    parser.add_argument(
+        "--stockfish-depth",
+        type=int,
+        default=15,
+        help="Stockfish search depth (default 15, ~0.5-1s per position on the pod CPU).",
+    )
+    parser.add_argument(
+        "--stockfish-top-n",
+        type=int,
+        default=3,
+        help="How many Stockfish candidate lines (multipv) to include in findings.",
+    )
     args = parser.parse_args()
 
     if not FIXTURES:
@@ -97,65 +115,81 @@ def main() -> None:
 
     load_env()
     mode = LLMMode.PROD if args.prod else LLMMode.ITER
+    stockfish_path = os.environ.get("STOCKFISH_PATH", "/usr/games/stockfish")
 
     logger.info(f"Loading BT4 (this can take ~20s on first call)...")
     t0 = time.perf_counter()
     model = load_bt4()
     logger.info(f"BT4 loaded in {time.perf_counter() - t0:.1f}s")
 
+    logger.info(f"Starting Stockfish from {stockfish_path}...")
+    stockfish_engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
+    logger.info(f"Stockfish ready: id_name={stockfish_engine.id.get('name', '?')}")
+
     client = LLMClient(mode=mode)
 
-    for i, (fen, question, comment) in enumerate(FIXTURES, start=1):
-        print(f"\n{'=' * 72}")
-        print(f"[{i}/{len(FIXTURES)}] {comment}")
-        print(f"FEN: {fen}")
-        print(f"Q:   {question}")
-        print("-" * 72)
+    try:
+        for i, (fen, question, comment) in enumerate(FIXTURES, start=1):
+            print(f"\n{'=' * 72}")
+            print(f"[{i}/{len(FIXTURES)}] {comment}")
+            print(f"FEN: {fen}")
+            print(f"Q:   {question}")
+            print("-" * 72)
 
-        try:
-            board = chess.Board(fen)
-        except ValueError as e:
-            logger.error(f"Invalid FEN, skipping: {e}")
-            continue
+            try:
+                board = chess.Board(fen)
+            except ValueError as e:
+                logger.error(f"Invalid FEN, skipping: {e}")
+                continue
 
-        t_handler = time.perf_counter()
-        findings = handle_what_is_leela_seeing(board, model=model, top_n=args.top_n)
-        t_translate = time.perf_counter()
+            t_handler = time.perf_counter()
+            findings = handle_what_is_leela_seeing(
+                board,
+                model=model,
+                stockfish_engine=stockfish_engine,
+                top_n=args.top_n,
+                stockfish_depth=args.stockfish_depth,
+                stockfish_top_n=args.stockfish_top_n,
+            )
+            t_translate = time.perf_counter()
 
-        result = translate_and_validate(
-            findings=findings,
-            question=question,
-            handler_name=HANDLER_NAME,
-            prompt_version=PROMPT_VERSION,
-            templated_fallback=templated_fallback,
-            mode=mode,
-            client=client,
-        )
-        t_done = time.perf_counter()
+            result = translate_and_validate(
+                findings=findings,
+                question=question,
+                handler_name=HANDLER_NAME,
+                prompt_version=PROMPT_VERSION,
+                templated_fallback=templated_fallback,
+                mode=mode,
+                client=client,
+            )
+            t_done = time.perf_counter()
 
-        # Findings (truncated dump for readability).
-        print("Findings:")
-        print(json.dumps(findings.model_dump(), indent=2))
-        print()
-        print(f"Response (source={result.source}, validation_ok={result.validation.ok}):")
-        print(result.text)
-        if not result.validation.ok:
+            # Findings (truncated dump for readability).
+            print("Findings:")
+            print(json.dumps(findings.model_dump(), indent=2))
             print()
-            print(f"Last-attempt validation errors ({len(result.validation.errors)}):")
-            for e in result.validation.errors:
-                print(f"  - {e.kind}: {e.detail}")
+            print(f"Response (source={result.source}, validation_ok={result.validation.ok}):")
+            print(result.text)
+            if not result.validation.ok:
+                print()
+                print(f"Last-attempt validation errors ({len(result.validation.errors)}):")
+                for e in result.validation.errors:
+                    print(f"  - {e.kind}: {e.detail}")
 
-        # Telemetry.
-        print()
-        print(
-            f"Latency: handler={t_translate - t_handler:.2f}s "
-            f"translate={t_done - t_translate:.2f}s "
-            f"total={t_done - t_handler:.2f}s "
-            f"llm_calls={len(result.llm_responses)}"
-        )
-        total_in = sum(r.input_tokens for r in result.llm_responses)
-        total_out = sum(r.output_tokens for r in result.llm_responses)
-        print(f"Tokens: in={total_in} out={total_out}")
+            # Telemetry.
+            print()
+            print(
+                f"Latency: handler={t_translate - t_handler:.2f}s "
+                f"translate={t_done - t_translate:.2f}s "
+                f"total={t_done - t_handler:.2f}s "
+                f"llm_calls={len(result.llm_responses)}"
+            )
+            total_in = sum(r.input_tokens for r in result.llm_responses)
+            total_out = sum(r.output_tokens for r in result.llm_responses)
+            print(f"Tokens: in={total_in} out={total_out}")
+    finally:
+        stockfish_engine.close()
+        logger.info("Stockfish engine closed.")
 
 
 if __name__ == "__main__":

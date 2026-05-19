@@ -98,7 +98,7 @@ def validate_response(
         else ``ok=False`` with one or more ``ValidationError`` entries.
     """
     errors: list[ValidationError] = []
-    errors.extend(_check_legality(response_text, fen))
+    errors.extend(_check_legality(response_text, fen, findings))
     errors.extend(_check_grounding(response_text, findings))
     result = ValidationResult(ok=not errors, errors=errors)
     if not result.ok:
@@ -112,8 +112,28 @@ def validate_response(
 # --- Legality ---------------------------------------------------------------
 
 
-def _check_legality(response_text: str, fen: str) -> list[ValidationError]:
+def _check_legality(
+    response_text: str, fen: str, findings: dict[str, Any],
+) -> list[ValidationError]:
+    """Flag any SAN/UCI in ``response_text`` that is neither legal on ``fen``
+    nor a trusted findings-provided move.
+
+    The "trusted" carve-out matters because handlers can put PV (principal
+    variation) move sequences in findings — for example
+    ``stockfish.top_moves[*].pv_san`` lists moves like
+    ``["Rxd4", "Rxd4", "Qxa3"]`` where only the first is legal on the root
+    position; the others are legal only on subsequent boards along the PV.
+    Without this carve-out, the validator would flag any LLM response that
+    cites a PV beyond its first move. See ADR-0009 / the v3 prompt's
+    "you may cite a PV" allowance.
+
+    Behaviour: a SAN or UCI in the response passes if either (a) it appears
+    in the flattened findings move set (top_moves.san, stockfish.top_moves.san,
+    stockfish.top_moves.pv_san, top_moves.uci, stockfish.top_moves.uci), or
+    (b) it's legal on the root board. Else it's flagged ``illegal_move``.
+    """
     board = chess.Board(fen)
+    trusted_sans, trusted_ucis = _collect_trusted_moves(findings)
     errors: list[ValidationError] = []
     seen: set[str] = set()
 
@@ -122,10 +142,15 @@ def _check_legality(response_text: str, fen: str) -> list[ValidationError]:
         if san in seen:
             continue
         seen.add(san)
+        if san in trusted_sans:
+            continue
         if not _is_legal_san(san, board):
             errors.append(ValidationError(
                 kind="illegal_move",
-                detail=f"SAN move '{san}' is not legal on the position.",
+                detail=(
+                    f"SAN move '{san}' is not legal on the root position "
+                    f"and does not appear in findings."
+                ),
                 span=san,
             ))
 
@@ -134,13 +159,53 @@ def _check_legality(response_text: str, fen: str) -> list[ValidationError]:
         if uci in seen:
             continue
         seen.add(uci)
+        if uci in trusted_ucis:
+            continue
         if not _is_legal_uci(uci, board):
             errors.append(ValidationError(
                 kind="illegal_move",
-                detail=f"UCI move '{uci}' is not legal on the position.",
+                detail=(
+                    f"UCI move '{uci}' is not legal on the root position "
+                    f"and does not appear in findings."
+                ),
                 span=uci,
             ))
     return errors
+
+
+def _collect_trusted_moves(findings: Any) -> tuple[set[str], set[str]]:
+    """Walk findings and collect every ``san`` / ``uci`` / ``pv_san`` string.
+
+    Handler-agnostic: doesn't care about the schema shape. Recursively visits
+    dicts and lists; whenever a key ``san`` or ``uci`` maps to a string, or
+    a key ``pv_san`` maps to a list of strings, the values join the trusted
+    set. Works for both the current findings shape (network + stockfish) and
+    any future shape that follows the same key conventions.
+
+    Returns a ``(sans, ucis)`` tuple of frozen-after-walk sets.
+    """
+    sans: set[str] = set()
+    ucis: set[str] = set()
+
+    def walk(obj: Any) -> None:
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k == "san" and isinstance(v, str):
+                    sans.add(v)
+                elif k == "uci" and isinstance(v, str):
+                    ucis.add(v)
+                elif k == "pv_san" and isinstance(v, list):
+                    for s in v:
+                        if isinstance(s, str):
+                            sans.add(s)
+                else:
+                    walk(v)
+        elif isinstance(obj, list):
+            for v in obj:
+                walk(v)
+
+    walk(findings)
+    return sans, ucis
 
 
 def _is_legal_san(san: str, board: chess.Board) -> bool:

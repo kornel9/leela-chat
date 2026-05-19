@@ -338,3 +338,51 @@ The Fudan code path remains the first attempt per CLAUDE.md §10. Only the fallb
 - CLAUDE.md §10 Phase 4 go/no-go.
 - PHASE_NOTES.md open question 9 — branch-pin durability.
 - BIBLE.md §8.1 — Phase 4 decision tree (updated alongside this ADR).
+
+---
+
+### ADR-0009: Stockfish comparison extractor — Phase-2 work pulled into Chunk 5
+
+- **Date:** 2026-05-18
+- **Status:** Accepted
+- **Phase:** Phase 1 — Network-First Chat MVP (with deliberate Phase 2 carve-out)
+- **Decision-makers:** [initials]
+
+#### Context
+The Chunk 5 v2 smoke run (10 dev fixtures) produced responses that grounded correctly against findings but were near-content-free chess-wise: descriptions of `eval_cp`, WDL, and policy-pct values. User audit caught a more concrete failure on position 4 (`1r1r2k1/5ppp/p3pn2/4q3/b1PN4/Q4P2/P2RB1PP/KR6 b - - 0 1`): Stockfish's clear best move `Rxd4` did not appear in Leela's policy top-5 (top: `Rxb1+ 33%`). MCTS diagnostic on the same FEN (`lc0` binary, 20k nodes) returned `bestmove d8d4` — confirming that Leela-with-search *also* picks `Rxd4`. The policy network alone undervalues the move; only search (MCTS or classical) discovers it.
+
+This is exactly the failure mode CLAUDE.md §6 (Two kinds of thinking) and BIBLE.md §1.5 (What MCTS gives you that features don't) predict. The fix is to feed a search-derived signal into the findings JSON. Phase 2 plans to do that via MCTS-tree parsing; that's the higher-complexity engineering (parsing `--verbose-move-stats`, eval trajectories, ADR-0006). Stockfish comparison is the *cheap* version of the same idea — one subprocess call, no tree parsing, depth-limited classical search.
+
+CLAUDE.md §8 explicitly lists "Doing Phase 2 work (MCTS tree parsing) while Phase 1 (network handlers) isn't passing eval" as a pitfall. The pitfall is about MCTS *tree parsing* (complex, multi-week). A Stockfish subprocess call is a Chunk-5-class addition, not Phase 2-class.
+
+#### Decision
+Add **Stockfish-comparison extraction** to Chunk 5, in the same handler (`what_is_leela_seeing`), as a second extractor feeding the same findings model.
+
+- New extractor: `leela_chat/extractors/stockfish.py` — `extract_stockfish_eval(board, *, engine, depth=15, top_n=3) -> StockfishResult`. Uses python-chess `SimpleEngine.analyse` with `multipv=top_n`.
+- `WhatIsLeelaSeeingFindings` gains a required `stockfish: StockfishResult` field.
+- Prompt bumped to v3: explicit framing that `eval_cp`/`top_moves` from Leela come from the **policy network alone, no MCTS**, and that `stockfish.*` is an independent classical-search reference. Output template requires comparing the two and noting disagreements >0.5 cp.
+- Latency budget: depth 15 on the pod's CPU ≈ 0.5-1 s per position; well under the 30 s Phase 1 ceiling.
+- Stockfish version is whatever apt ships (Ubuntu 24.04 → Stockfish 16, currently). Pin at the version-major level in CLAUDE.md §4; not strictly an ADR pin since we use it as a reference, not as a critical dependency for interpretation work.
+
+#### Alternatives considered
+- **Wait for Phase 2 MCTS** to provide the search signal. Rejected — Phase 2 MCTS-tree parsing is multi-chunk work (ADR-0006); blocking Chunk 5's usefulness for that long means shipping a system whose Chunk 5 demonstrations are content-thin, which directly hurts Phase 1 exit criterion #4 ("you personally find it useful for your own games").
+- **Add Stockfish as a separate handler** (e.g., `compare_with_stockfish`). Rejected — that fragments the user experience (need to call two handlers to get a complete read on a position) and doubles the prompt-engineering surface. The natural place for Stockfish is *alongside* Leela's view in the same response.
+- **Lc0 MCTS in-process** instead of Stockfish. Rejected for now — Lc0 MCTS requires the full Phase-2 tree-parsing infrastructure to expose anything richer than a single bestmove. Stockfish's `multipv=3` gives us three candidate moves + evals + PVs out of the box.
+- **Leave Phase 1 as-is and accept thin prose.** Rejected based on the user's audit feedback — Phase 1's prose was unmistakably "number paraphrasing." Without an independent search signal, all three planned handlers (`what_is_leela_seeing`, `why_this_move`, `did_you_consider`) would suffer the same content-thinness; the cost compounds across handlers.
+
+#### Consequences
+- Phase 1 chat responses now have a second engine's perspective and concrete lines (Stockfish PV). Materially more useful for personal chess analysis.
+- Phase 1 latency budget consumes 0.5-1 s extra per question (depth 15). Still well under 30 s.
+- The findings shape grows; the validator's grounding check now has more numbers to ground against (more permissive in practice — the LLM has more things it's *allowed* to cite).
+- `handle_what_is_leela_seeing` now orchestrates *two* extractors. Sets the pattern for future handlers that will orchestrate three or more (network + MCTS + probes + ...).
+- Phase 2's `compare_with_stockfish` handler (originally Chunk 6 in BIBLE.md §6.2) becomes mostly redundant — the comparison already happens in the default handler. Phase 2 can repurpose that handler slot or drop it.
+- CLAUDE.md §8 pitfall list should add a clarification distinguishing "Phase 2 MCTS-tree parsing" (the real pitfall) from "any Phase-2-flavored work" (which is fine when bounded and the user clearly benefits). Will surface as a CLAUDE.md edit in a follow-up.
+- This ADR is **Accepted** (not Proposed) because it ships in this commit, not at a later phase entry. Reversal cost: rip out the extractor + revert handler + revert prompt → small, since it's contained.
+
+#### References
+- PHASE_NOTES.md 2026-05-18 audit findings (user observation on position 4, MCTS diagnostic confirmation).
+- ADR-0006 (MCTS tree parser sourcing) — the Phase 2 version of the same "feed search signal into findings" idea.
+- BIBLE.md §1.5 — "What MCTS gives you that features don't".
+- BIBLE.md §6.2 — `compare_with_stockfish` handler description (will be revisited at Phase 2 entry given this ADR's overlap).
+- CLAUDE.md §8 — Phase-creep pitfall list (clarifying edit pending).
+- `lc0` binary verified `bestmove d8d4 ponder a3c3` on position 4 at 20k nodes; pod log captured in this session.

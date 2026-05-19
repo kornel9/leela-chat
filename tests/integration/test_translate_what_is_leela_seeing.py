@@ -18,6 +18,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from leela_chat.extractors.network_inference import MoveCandidate, WDL
+from leela_chat.extractors.stockfish import StockfishMoveCandidate, StockfishResult
 from leela_chat.handlers.what_is_leela_seeing import (
     HANDLER_NAME,
     PROMPT_VERSION,
@@ -29,8 +30,9 @@ from leela_chat.llm.translate import translate_and_validate
 
 
 # A fixed findings object used across tests. Starting position, slight White
-# edge, two top-policy moves. Keeps numbers small and ungrounded-failures easy
-# to construct.
+# edge, two top-policy moves, plus a stub Stockfish result with agreement on
+# the top move. Keeps numbers small and ungrounded-failures easy to
+# construct.
 FIXED_FINDINGS = WhatIsLeelaSeeingFindings(
     fen="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
     side_to_move="white",
@@ -41,6 +43,28 @@ FIXED_FINDINGS = WhatIsLeelaSeeingFindings(
         MoveCandidate(uci="e2e4", san="e4", policy_pct=14.2),
         MoveCandidate(uci="d2d4", san="d4", policy_pct=12.8),
     ],
+    stockfish=StockfishResult(
+        depth=15,
+        nodes=100_000,
+        root_eval_cp=18,
+        root_mate_in=None,
+        top_moves=[
+            StockfishMoveCandidate(
+                uci="e2e4",
+                san="e4",
+                eval_cp=18,
+                mate_in=None,
+                pv_san=["e4", "e5", "Nf3"],
+            ),
+            StockfishMoveCandidate(
+                uci="d2d4",
+                san="d4",
+                eval_cp=16,
+                mate_in=None,
+                pv_san=["d4", "d5", "c4"],
+            ),
+        ],
+    ),
 )
 
 

@@ -215,3 +215,74 @@ def test_result_is_frozen_pydantic():
     assert isinstance(r, ValidationResult)
     dumped = r.model_dump()
     assert dumped == {"ok": True, "errors": []}
+
+
+# === Findings-trusted moves (ADR-0009: Stockfish PVs) =======================
+
+
+# Stockfish-shaped findings with a PV that includes moves illegal on the root.
+# From the starting position, Stockfish's PV after 1.e4 is ["e4", "e5", "Nf3"]
+# — e5 (Black move) is illegal in starting position, but legal after e4.
+_FINDINGS_WITH_PV = {
+    "fen": START_FEN,
+    "side_to_move": "white",
+    "eval_cp": 18,
+    "wdl": {"white_wins": 0.21, "draw": 0.62, "black_wins": 0.17},
+    "moves_left_estimate": 86.4,
+    "top_moves": [
+        {"uci": "e2e4", "san": "e4", "policy_pct": 14.2},
+        {"uci": "d2d4", "san": "d4", "policy_pct": 12.8},
+    ],
+    "stockfish": {
+        "depth": 15,
+        "root_eval_cp": 18,
+        "root_mate_in": None,
+        "top_moves": [
+            {
+                "uci": "e2e4", "san": "e4", "eval_cp": 18, "mate_in": None,
+                "pv_san": ["e4", "e5", "Nf3"],
+            },
+            {
+                "uci": "d2d4", "san": "d4", "eval_cp": 16, "mate_in": None,
+                "pv_san": ["d4", "d5", "c4"],
+            },
+        ],
+    },
+}
+
+
+def test_pv_move_illegal_on_root_but_in_findings_passes():
+    """LLM citing a PV move legal only after a prefix should NOT be flagged."""
+    # "e5" is illegal in start position (white pawn already on e2; black pawn
+    # can't reach e5 on white's turn) but is in the e4 PV.
+    text = "Stockfish's line continues e4 e5 Nf3 (depth 15)."
+    r = validate_response(text, fen=START_FEN, findings=_FINDINGS_WITH_PV)
+    assert r.ok, r.errors
+
+
+def test_move_not_in_findings_and_illegal_still_flagged():
+    """The whitelist must NOT make every move pass — only findings-provided ones."""
+    # Qh5 is not in any pv_san or top_moves, and illegal on the starting board
+    # (queen blocked by d1/e1 pieces).
+    text = "White plays Qh5+ here."
+    r = validate_response(text, fen=START_FEN, findings=_FINDINGS_WITH_PV)
+    assert not r.ok
+    assert any(e.kind == "illegal_move" and "Qh5" in e.span for e in r.errors)
+
+
+def test_legal_root_move_passes_even_without_findings():
+    """Pre-existing behavior: a legal root move passes regardless of findings."""
+    text = "White plays Nf3 here."
+    r = validate_response(text, fen=START_FEN, findings={})
+    assert r.ok, r.errors
+
+
+def test_trusted_uci_whitelist_walks_findings():
+    """UCI form trusted-move walk picks up uci fields too."""
+    # a2a8 is wildly illegal on start position but suppose findings contains it.
+    findings = {
+        "top_moves": [{"uci": "a2a8", "san": "a8=Q", "policy_pct": 5.0}],
+    }
+    text = "Best is a2a8."
+    r = validate_response(text, fen=START_FEN, findings=findings)
+    assert r.ok, r.errors
