@@ -11,9 +11,9 @@
 ## Current Status
 
 - **Phase:** 2 — MCTS Integration. Entered 2026-05-19 after Phase 1's informal close. Phase 2 entry brief delivered + acknowledged; Phase 2 plan written (see `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md`).
-- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19. Chunk 5 (`why_this_move`) shipped: takes a (fen, move) tuple and produces justification prose with categorical bucket framing (winning / better / draw / worse / losing). Pod smoke on Rxd4 walkthrough: both branches (focal IS engine pick / focal NOT engine pick) produce clean LLM-source prose. Next: Chunk 6 — `did_you_consider` (twin handler emphasising why an alternative was rejected).
+- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19; Chunk 6a done 2026-05-19. Chunk 6 splits into 6a (methodology + Q-trajectory MCTS extractor — this session) / 6b (layer-wise emergence) / 6c (`did_you_consider` handler + dual-timescale prompt). Plan locked at `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md`. Methodology grounded in new `docs/INTERPRETABILITY_NOTES.md` (design-doc-first discipline). Next: Chunk 6b — `extract_layer_emergence`.
 - **Last session:** 2026-05-19
-- **Next session goal:** Phase 2 Chunk 6 — `did_you_consider` handler. Likely shares the focal-move findings shape with `why_this_move` (refactor opportunity); prompt focus shifts to "engine didn't play this, here's why." Distinguishes "tactically refuted" (move has visits but low Q) from "search didn't reach it" (zero visits). CLI: also `--move` driven; switch to `did_you_consider` via `--handler` flag.
+- **Next session goal:** Phase 2 Chunk 6b — `extract_layer_emergence`. Uses HookedTransformer `run_with_cache` + BT4 PolicyHead reapplication on intermediate residuals. Starts with linear logit-lens; falls back to zero-ablation if early-layer outputs are degenerate. New file `leela_chat/extractors/layer_emergence.py` + unit tests + pod integration test (final-layer top-1 must match `extract_network_inference`).
 
 > **Pod state caveat:** RunPod stop/start cycles wipe everything outside `/workspace` (apt packages, `/workspace/bin/lc0`, `/usr/local/cuda-12.8/bin` PATH). Run `ssh runpod 'bash /workspace/leela-chat/scripts/setup_pod.sh'` after every pod restart — idempotent, takes ~30s on warm restart and ~10 min on first build of Lc0.
 
@@ -744,4 +744,36 @@ Open questions / threads:
 
 Next session goal:
 - **Chunk 6** — Handler 3 `did_you_consider`. New handler module + v1 prompt + CLI flag wiring. Reuses the same MCTS-bearing pipeline as Chunk 5; the prompt zooms onto **why an alternative was rejected** rather than justifying the engine's pick. Decision-tree on `focal_mcts_child.visits`: if zero → "search didn't reach it within the budget" framing; if low (e.g. < 5% of total visits) → "search dismissed early" framing; if non-trivial → "explored but evaluated worse than the pick" framing. CLI: `--handler did_you_consider --move <UCI>`. Likely refactor the shared focal-move-finding helpers (`_find_focal_in_policy` etc.) into a small shared module if the duplication becomes noisy.
+
+---
+
+#### 2026-05-19 (cont., 6) — Phase 2 Chunk 6a done: methodology doc + Q-trajectory extractor
+
+Chunk 6 (`did_you_consider` with dual-timescale dismissal tracking) is too large for one chunk. Split into 6a (methodology + search-time Q-trajectory) / 6b (network-time layer emergence) / 6c (handler + prompt) per the approved plan at `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md`. 6a is this session.
+
+What I did:
+
+- **`docs/INTERPRETABILITY_NOTES.md`** — new methodology document (~280 lines). Design-doc-first discipline: landed BEFORE any extractor code. Covers (1) the premise — extracting deliberation, not just verdict; (2) two timescales (network-time forward-pass emergence + search-time MCTS refutation), with the four interpretive cases enumerated; (3) network-time methodology (linear vs zero-ablation logit-lens, BT4 policy-head reapplication math, summary tag derivation); (4) search-time methodology (multi-budget MCTS, why checkpoint resolution beats visit-by-visit, cost analysis); (5) the Rxb1+/Rxd4 worked example with predicted dual-timescale story; (6) honest caveats (linear logit-lens approximation, no causal claim, BT4-specific); (7) references to Iterative Inference, Alain & Bengio, Jenner Look-Ahead, Fudan, Monroe, McGrath; (8) future work pointing at Phase 3 probes / Phase 4 SAEs / Phase 6 counterfactuals / Phase 7 reasoning pathways. This is the living interpretability-methodology document for the project; it grows with each phase.
+
+- **Schema extension** (`leela_chat/extractors/mcts_parser.py`): added `MCTSTrajectoryPoint(nodes_searched, visits, q)` frozen Pydantic model + `trajectory: list[MCTSTrajectoryPoint] = []` field on `MCTSChild`. Default empty so Chunks 1-5 callers (single-budget `extract_mcts`) are unaffected. Decision recorded in this entry: **embedded** rather than a sibling `MCTSFindings.trajectories` dict. Rationale: handler ergonomics (single lookup for "everything about this candidate"), and network-time layer-emergence won't pile onto `MCTSChild` because it lives in its own `LayerEmergenceResult` (Chunk 6b).
+
+- **New extractor** (`leela_chat/extractors/mcts_trajectory.py`, ~110 lines): `extract_mcts_trajectory(board, *, engine, budgets=DEFAULT_BUDGETS=[500, 1000, 2500, 5000, 10000]) -> MCTSFindings`. Calls existing `extract_mcts` once per budget, joins per-candidate stats across checkpoints by UCI, returns the deepest-budget findings with `children[*].trajectory` populated. Candidates absent from a lower-budget checkpoint get a zero-fill point (search didn't reach them yet). Candidates that appear at low budgets but drop out of the deepest budget's verbose-move-stats are simply not in the result (intentional: the deepest search defines the candidate set). Validation: budgets must be non-empty, positive, strictly ascending.
+
+- **Unit tests** (`tests/unit/test_mcts_trajectory.py`, 11 tests): happy-path three-budget trajectory assembly, default-budgets call, zero-fill for absent-at-low-budget candidate, drop-from-top behavior at high budget, single-budget degenerate case, ascending-order invariant, validation (empty / negative / non-ascending budgets), frozen-Pydantic preservation, default-empty trajectory on single-budget calls. All pass. Full unit suite stays green: 88 tests.
+
+- **Integration scaffold** (`tests/integration/test_mcts_trajectory_integration.py`, 3 tests, pod-only): Rxd4 Q-confirms-across-budgets, Rxb1+ refuted-across-budgets (final Q below early Q, final Q ≥0.2 lower than Rxd4's), starting-position smoke. Skipped off-pod via `pytest.mark.skipif` on the Lc0 binary + BT4 weights paths. Collects cleanly off-pod.
+
+What surprised me:
+
+- Nothing methodologically. The existing `extract_mcts` was clean enough that the multi-budget wrapper is ~20 lines of real logic; the rest is validation + zero-fill bookkeeping. The methodology doc was the heavier lift — anchoring the *why* in writing first paid off, since the extractor's design follows directly from §4 of the doc rather than the other way around.
+
+Open questions / threads (carry to 6b):
+
+- **Linear logit-lens degeneracy risk.** §3.2 of INTERPRETABILITY_NOTES commits to starting with the linear approach (cheap, ~1.5× one forward pass) and falling back to zero-ablation (~N× forward passes) if early-layer outputs are degenerate. Decision criterion is encoded in 6b's integration test: final-layer top-1 must match `extract_network_inference`'s top-1; layer-0 top-1 on easy positions (starting position) shouldn't be wildly different from the final layer's. This decision will be made *during* 6b based on empirical output.
+- **BT4 PolicyHead callability on intermediate residuals.** I asserted in §3.3 of the methodology doc that we can invoke `model.policy_head(residual_L)` directly on a cached `hook_resid_post.{L}`. Have not verified the vendored module supports this without modifications — checking this is the first concrete 6b task before any extractor logic.
+- **Checkpoint resolution upgrade path.** Default budgets `[500, 1000, 2500, 5000, 10000]` chosen as logarithmically-spaced "qualitative story" resolution. If 6c's prose feels too coarse (e.g. the LLM can't tell whether visits "stagnated" or "kept growing"), step to 8-10 budgets across the same range. Latency scales linearly.
+
+Next session goal:
+
+- **Chunk 6b** — `extract_layer_emergence` using HookedTransformer hooks + BT4 PolicyHead reapplication. New file `leela_chat/extractors/layer_emergence.py`, unit tests with mocked model, pod integration test asserting layer-15 top-1 matches `extract_network_inference`. Falls back to zero-ablation logit-lens iff early-layer outputs are degenerate.
 

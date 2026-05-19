@@ -69,6 +69,31 @@ _FIELD_RE = re.compile(
 )
 
 
+class MCTSTrajectoryPoint(BaseModel):
+    """One (nodes_searched, visits, q) sample for a single candidate.
+
+    Populated by :func:`extract_mcts_trajectory` (Chunk 6a) — the
+    multi-budget extractor that runs MCTS at several node budgets and
+    records each candidate's per-budget state. Methodology rationale
+    lives in ``docs/INTERPRETABILITY_NOTES.md`` §4.
+    """
+
+    nodes_searched: int = Field(
+        ..., ge=0,
+        description="Engine's total search size at this checkpoint.",
+    )
+    visits: int = Field(
+        ..., ge=0,
+        description="This candidate's visits at this checkpoint.",
+    )
+    q: float = Field(
+        ..., ge=-1.0, le=1.0,
+        description="This candidate's Q at this checkpoint (side-to-move perspective).",
+    )
+
+    model_config = ConfigDict(frozen=True)
+
+
 class MCTSChild(BaseModel):
     """One root-level child move with its raw MCTS statistics.
 
@@ -131,6 +156,17 @@ class MCTSChild(BaseModel):
             "in Phase 2 Chunk 2 — verbose-move-stats does not surface per-"
             "child PV; Chunks 5-6 may revisit via deeper tree dumps or "
             "move-forcing if the handlers need it."
+        ),
+    )
+
+    trajectory: list[MCTSTrajectoryPoint] = Field(
+        default_factory=list,
+        description=(
+            "Multi-budget MCTS trajectory for this candidate, in budget-"
+            "ascending order. Populated by ``extract_mcts_trajectory`` "
+            "(Chunk 6a); empty when produced by single-budget "
+            "``extract_mcts``. Methodology in "
+            "``docs/INTERPRETABILITY_NOTES.md`` §4."
         ),
     )
 
