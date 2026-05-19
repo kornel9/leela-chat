@@ -153,6 +153,7 @@ class Lc0Engine:
         board: chess.Board,
         *,
         nodes: int = 10000,
+        log_live_stats: bool = False,
     ) -> Lc0SearchResult:
         """Run an MCTS search; return the raw info-string lines.
 
@@ -167,6 +168,15 @@ class Lc0Engine:
             board: Position to search.
             nodes: Node budget. Default 10000 — comfortable trade-off
                 between depth and latency on the pod (~5-10 s per call).
+            log_live_stats: If True, set Lc0's ``LogLiveStats`` UCI option
+                for this call so the engine emits the full verbose-move-
+                stats block on every info update (not only at search end).
+                The captured ``info_string_lines`` then contain one block
+                per emit cycle, each terminated by a ``node`` summary
+                line — consumed by ``extract_mcts_trajectory`` for
+                intra-search Q-trajectory data. Default False (preserves
+                Chunks 1-5 single-snapshot behaviour). Source:
+                ``update_research/repos/lc0-master/src/search/classic/params.cc:294``.
 
         Returns:
             :class:`Lc0SearchResult` with the captured lines, the engine's
@@ -178,25 +188,41 @@ class Lc0Engine:
         search_complete: bool = False
         start = time.perf_counter()
 
-        with self._engine.analysis(board, chess.engine.Limit(nodes=nodes)) as analysis:
-            for info in analysis:
-                s = info.get("string")
-                if isinstance(s, str) and s:
-                    info_string_lines.append(s)
-            # When the context exits, the engine has emitted bestmove and
-            # analysis._finished is set. Wait() retrieves the BestMove.
-            try:
-                best = analysis.wait()
-                if best.move is not None:
-                    bestmove_uci = best.move.uci()
-                    search_complete = True
-            except chess.engine.EngineError as exc:
-                logger.warning(f"Lc0 analysis ended without bestmove: {exc}")
+        # Toggle LogLiveStats around the analysis call. Restored to False
+        # afterwards so this option is per-call, not engine-wide — a later
+        # single-budget caller can't accidentally inherit live-stats mode.
+        try:
+            self._engine.configure({"LogLiveStats": log_live_stats})
+        except (chess.engine.EngineError, chess.engine.EngineTerminatedError) as exc:
+            logger.warning(f"Lc0 configure(LogLiveStats={log_live_stats}) failed: {exc}")
+
+        try:
+            with self._engine.analysis(board, chess.engine.Limit(nodes=nodes)) as analysis:
+                for info in analysis:
+                    s = info.get("string")
+                    if isinstance(s, str) and s:
+                        info_string_lines.append(s)
+                # When the context exits, the engine has emitted bestmove and
+                # analysis._finished is set. Wait() retrieves the BestMove.
+                try:
+                    best = analysis.wait()
+                    if best.move is not None:
+                        bestmove_uci = best.move.uci()
+                        search_complete = True
+                except chess.engine.EngineError as exc:
+                    logger.warning(f"Lc0 analysis ended without bestmove: {exc}")
+        finally:
+            if log_live_stats:
+                try:
+                    self._engine.configure({"LogLiveStats": False})
+                except (chess.engine.EngineError, chess.engine.EngineTerminatedError) as exc:
+                    logger.warning(f"Lc0 configure(LogLiveStats=False) reset failed: {exc}")
 
         wall = time.perf_counter() - start
         logger.debug(
-            f"lc0 analyse_verbose: nodes={nodes} lines={len(info_string_lines)} "
-            f"bestmove={bestmove_uci} wall={wall:.2f}s complete={search_complete}"
+            f"lc0 analyse_verbose: nodes={nodes} live_stats={log_live_stats} "
+            f"lines={len(info_string_lines)} bestmove={bestmove_uci} "
+            f"wall={wall:.2f}s complete={search_complete}"
         )
         return Lc0SearchResult(
             info_string_lines=info_string_lines,

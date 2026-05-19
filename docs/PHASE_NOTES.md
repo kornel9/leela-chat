@@ -11,9 +11,9 @@
 ## Current Status
 
 - **Phase:** 2 — MCTS Integration. Entered 2026-05-19 after Phase 1's informal close. Phase 2 entry brief delivered + acknowledged; Phase 2 plan written (see `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md`).
-- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19; Chunk 6a done 2026-05-19. Chunk 6 splits into 6a (methodology + Q-trajectory MCTS extractor — this session) / 6b (layer-wise emergence) / 6c (`did_you_consider` handler + dual-timescale prompt). Plan locked at `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md`. Methodology grounded in new `docs/INTERPRETABILITY_NOTES.md` (design-doc-first discipline). Next: Chunk 6b — `extract_layer_emergence`.
+- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19; Chunk 6a v0 done 2026-05-19; **Chunk 6a v1** (reviewer-feedback revision) done 2026-05-19. Plan revised at `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md` to integrate five methodological corrections (zero-ablation as 6b default, single-search live-stats for Q-trajectory, encoding-vs-use epistemic humility, divergent-timescale fixture for 6c, smaller tightenings). Next: Chunk 6b — `extract_layer_emergence` with zero-ablation as default.
 - **Last session:** 2026-05-19
-- **Next session goal:** Phase 2 Chunk 6b — `extract_layer_emergence`. Uses HookedTransformer `run_with_cache` + BT4 PolicyHead reapplication on intermediate residuals. Starts with linear logit-lens; falls back to zero-ablation if early-layer outputs are degenerate. New file `leela_chat/extractors/layer_emergence.py` + unit tests + pod integration test (final-layer top-1 must match `extract_network_inference`).
+- **Next session goal:** Phase 2 Chunk 6b — `extract_layer_emergence`. Zero-ablation logit-lens (default per revised plan §3.2, not a fallback). For each layer L ∈ [0..N−1], a forward pass with a hook returning `torch.zeros_like` for `blocks.{L}.hook_resid_post`; baseline is the no-hooks pass. Linear logit-lens stays out of the codebase until equivalence is empirically demonstrated. New files: `leela_chat/extractors/layer_emergence.py`, `tests/unit/test_layer_emergence.py`, `tests/integration/test_layer_emergence_integration.py`.
 
 > **Pod state caveat:** RunPod stop/start cycles wipe everything outside `/workspace` (apt packages, `/workspace/bin/lc0`, `/usr/local/cuda-12.8/bin` PATH). Run `ssh runpod 'bash /workspace/leela-chat/scripts/setup_pod.sh'` after every pod restart — idempotent, takes ~30s on warm restart and ~10 min on first build of Lc0.
 
@@ -776,4 +776,40 @@ Open questions / threads (carry to 6b):
 Next session goal:
 
 - **Chunk 6b** — `extract_layer_emergence` using HookedTransformer hooks + BT4 PolicyHead reapplication. New file `leela_chat/extractors/layer_emergence.py`, unit tests with mocked model, pod integration test asserting layer-15 top-1 matches `extract_network_inference`. Falls back to zero-ablation logit-lens iff early-layer outputs are degenerate.
+
+---
+
+#### 2026-05-19 (cont., 7) — Phase 2 Chunk 6a v1: reviewer-feedback revision
+
+After 6a v0 (commit `8d17f36`) shipped, a reviewer feedback pass identified five methodological problems that — if left in place — would let the LLM produce prose that overclaims relative to the data (violating CLAUDE.md §2 Rule 1). Plan revised; this session implements the search-time corrections (revisions 2 + 3 + 5a) plus the methodology-doc updates for revision 1 (which mainly affects 6b code). Plan file: `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md`.
+
+What I did:
+
+- **Methodology doc revision** (`docs/INTERPRETABILITY_NOTES.md`):
+  - **§3 (network-time) — Revision 1.** Zero-ablation logit-lens is now the 6b default, not a fallback. Linear logit-lens is demoted to a 6.5-or-later optimization, gated on demonstrated equivalence (concordant top-3 across ≥5 diverse positions). Rationale: BT4's attention-based PolicyHead can produce plausible-looking-but-mechanically-meaningless output on intermediate residuals; the final-layer top-1 match check (the original v0 sanity check) cannot distinguish subtle rank-order errors from geometric noise.
+  - **§4 (search-time) — Revision 2.** Rewritten end-to-end for single-search live-stats. v0's multi-search approach stitched five independent searches; this is methodologically wrong because the K trees have different shapes due to MCTS stochasticity. v1 uses Lc0's `--log-live-stats` (UCI: `LogLiveStats`, confirmed at `update_research/repos/lc0-master/src/search/classic/params.cc:294`) to capture intra-search snapshots of the SAME tree at different visit counts.
+  - **§5.3 (walkthrough prose) — Revision 3.** Causal phrasings replaced with descriptive ones ("later layers noticed Kxb1" → "rank stayed top-1 across all measured layers; refutation came from search"). Stockfish is the content authority for "which move refutes;" rank-trajectory data covaries but does not establish causation.
+  - **NEW §6.5 — Revision 3.** "What layer-emergence does and does not tell us": the encoding-vs-use distinction (ADR-0007) re-emerging one layer down. Rank change at layer L is consistent with both "layer L computed the change" and "the network refines a representation; the rank change is a side-effect with no semantic notion of consideration." Forbidden language list ("noticed," "realized," "discovered") and allowed language list documented.
+
+- **Engine wrapper** (`leela_chat/engine/lc0_engine.py`): added `log_live_stats: bool = False` keyword to `analyse_verbose()`. When True, the wrapper toggles Lc0's `LogLiveStats` UCI option around the analysis call (and resets to False in a `finally` block). Off by default — Chunks 1-5 single-snapshot callers unaffected.
+
+- **Extractor rewrite** (`leela_chat/extractors/mcts_trajectory.py`): function signature `extract_mcts_trajectory(board, *, engine, budgets=DEFAULT_BUDGETS)` preserved. Implementation switched: one `analyse_verbose(nodes=max_budget, log_live_stats=True)` call; live-stats stream grouped into per-emit-cycle blocks (split at `node`-summary boundaries); each block parsed with the existing `parse_verbose_move_stats`; closest-snapshot rule picks one parsed `MCTSFindings` per requested milestone; trajectories assembled per UCI from the deepest snapshot's children. Fallback path: if the live-stats stream produces no parseable blocks, falls through to a single end-of-search snapshot via the existing `extract_mcts` and emits a flat trajectory.
+
+- **Unit tests refactored** (`tests/unit/test_mcts_trajectory.py`): `_StubEngine` replaces the `_patch_extract_mcts` mock. Tests build synthetic live-stats streams via `_emit_cycle` / `_candidate_line` helpers that emit the same format Lc0 produces. Test count: 18 (11 v0 intents preserved + 3 block-grouper tests + 2 milestone-selection tests + 1 fallback test + 1 schema-default-empty test). Subtle bug found and fixed during writing: my initial fixture used `{q:+.5f}` to format Q values, producing `+0.85000` — the parser's `_FIELD_RE` only accepts `-?` (optional minus) not `+`, so positive Q values were silently dropping to 0.0. Fixed by using `{q: .5f}` (space-pad-positives, matching Lc0's own convention).
+
+- **Integration test tightened** (`tests/integration/test_mcts_trajectory_integration.py`): per **Revision 5a**, replaced strict monotonicity with single-comparison-plus-tolerance: `qs[-1] - qs[0] > 0.10` for Rxd4 (confirmation), `< -0.10` for Rxb1+ (refutation). Strict monotonicity flakes on MCTS Q at low visit counts because PUCT visit order creates local noise. Added a fourth test that asserts `--log-live-stats` actually produces ≥2 emit blocks during a 10k search — investigation-gate proxy.
+
+What surprised me:
+
+- **The fixture-format `+` bug** — a positive-format-flag `{q:+.5f}` produces `+0.85000` which doesn't match the parser's regex `-?\d+`. Caught by failing tests (q values came back as 0.0). The fix is a one-character change; the lesson is that any synthetic fixture for the Lc0 verbose-move-stats format must match Lc0's space-pad-positive convention exactly. Easy to get wrong because most production Lc0 output uses `-` for negatives and a space (not `+`) for positives.
+
+- **Refactor smaller than expected.** The data model (`MCTSTrajectoryPoint`, `MCTSChild.trajectory`) was right in v0; only the population mechanism changed. The Pydantic schema, the unit-test intents, and the integration-test structure all transferred 1:1. The plan's "decision: in-place refactor, not parallel extractor" was the right call — no dead code, clean replacement.
+
+Open questions / threads (carry to 6a v1 pod verification + 6b):
+
+- **`--log-live-stats` emission cadence is unknown.** The plan's investigation gate is a pod-only step. The 4th integration test (`test_live_stats_block_count_meaningful_for_10k_search`) is its proxy: if a 10k-node search emits fewer than 2 blocks, the closest-snapshot rule degrades and milestone resolution collapses. If this happens on the pod, options: (a) drop the budget count to match what Lc0 actually emits, or (b) submit an Lc0 patch upstream to make cadence configurable. The fallback path (no parseable blocks → single-snapshot) already handles the worst case gracefully.
+
+- **Multiple milestones mapping to the same snapshot.** The closest-snapshot rule explicitly allows duplicates. The `did_you_consider` v1 prompt (Chunk 6c) needs to handle this gracefully — quoting the *actual* `nodes_searched` value (which may be e.g. 1200 not 1000) avoids the trap of claiming a snapshot represents a milestone it doesn't.
+
+Test status: 95 unit tests pass (up from 88 in v0, +7 from the refactored test_mcts_trajectory). Integration suite collects 56 tests cleanly off-pod.
 

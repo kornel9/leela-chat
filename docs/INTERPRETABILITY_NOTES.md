@@ -1,8 +1,12 @@
 # INTERPRETABILITY_NOTES.md — Methodology for extracting Leela's deliberation
 
 > Living methodology document. Reviewed before each new interpretability
-> extractor lands. Status: **draft, Chunk 6a**. Owner: the project (this is
-> the "why" behind the layer-emergence + Q-trajectory extractors).
+> extractor lands. Status: **draft, Chunk 6a v1**. Owner: the project
+> (this is the "why" behind the layer-emergence + Q-trajectory
+> extractors). v1 revisions integrated reviewer feedback on multi-search
+> stitching (now single-search live-stats), zero-ablation as the 6b
+> default (not a fallback), and encoding-vs-use epistemic humility about
+> layer-rank evolution.
 >
 > Sister documents:
 > - `BIBLE.md` — strategic project vision
@@ -136,62 +140,74 @@ For a board position, run BT4 once and produce a per-layer per-move
 view: at layer L, what is the policy distribution implied by *stopping
 the forward pass at L and applying the (final) policy head*?
 
-### 3.2 Two implementation strategies
+### 3.2 Strategy: zero-ablation logit-lens (default)
 
-**Strategy A — Linear logit-lens.** Single forward pass with hooks at
-every `hook_resid_post.{L}`. For each captured residual stream tensor,
-invoke the *same* policy head (frozen, learned on the final layer)
-directly on the cached residual. Read off the 1858-dim distribution.
+For each layer index L ∈ [0..N−1], run a forward pass with a hook at
+`blocks.{L}.hook_resid_post` (or equivalent) that **replaces the layer's
+output with `torch.zeros_like(activation)`**, then read the model's
+final policy. Layer N's "ablation" is the baseline pass (no hooks). The
+per-layer-L policy is "what BT4 would predict if it only had layers
+0..L−1; everything beyond was zeroed."
 
-- Cost: ~1.5× a single forward pass.
-- Caveat: the policy head was trained against the *final* residual.
-  Early-layer residuals may be in a different geometric subspace; the
-  resulting distribution can be degenerate.
-- Soundness check: the final layer's logit-lens output must exactly
-  match the engine's reported policy (otherwise we wired the hooks
-  wrong). If layer 0's top-1 is nonsense (e.g. random / illegal) then
-  the linear logit-lens is degenerate at early layers and we need
-  Strategy B.
+This is the methodology of the Iterative Inference paper (arXiv
+2508.21380) and we adopt it as **6b's default**, not a fallback.
 
-**Strategy B — Zero-ablation logit-lens.** For each layer L, run a
-forward pass with layers L..N's transformer blocks masked out (set
-contributions to zero, or replaced with mean activations). The final
-policy from that pass is then "what BT4 would say if it only had
-layers 0..L−1."
+- Cost: ~(N+1)× a single forward pass. For BT4 with N=15, that's ~16
+  passes × ~50 ms on a 4090 ≈ 800 ms. Well within Phase 1's 30 s
+  end-to-end ceiling. Cost is not the binding constraint.
+- The vendored `HookedRootModule.run_with_hooks`
+  (`leela_chat/_vendor/transformer_lens/hook_points.py:417`) supports
+  this directly: a hook can return a tensor that replaces the activation
+  downstream. No modifications to the vendored module needed.
+- We let the *real* `PolicyHead` see the (modified) final residual.
+  We do **not** invoke the head on intermediate residuals. This sidesteps
+  the geometric-mismatch failure mode below.
 
-This is the methodology of the Iterative Inference paper. It's more
-expensive (~N× forward passes), but it's the one the paper validates.
+### 3.3 Why we don't start with linear logit-lens
 
-**Our plan.** Start with Strategy A. It's fast, and the final-layer
-sanity check is cheap. If the layer-0 / layer-1 outputs are degenerate
-on the BT4 starting position (where the right answer is well-defined and
-shouldn't depend much on depth), pivot to Strategy B.
+A naive alternative — call **linear logit-lens** — caches each
+intermediate residual and applies the trained `PolicyHead` *directly*
+to those caches. It's faster (~1.5× a single forward pass) but
+unsound in this setting.
 
-### 3.3 The BT4-specific wrinkle: policy head reapplication
+BT4's `PolicyHead` (`leela_chat/_vendor/transformer_lens/components/leela_policyhead.py`)
+is an **attention-based head** with learned key/query projections per
+square, plus separate promotion logits. Its parameters are tuned to
+the geometry of the *final* residual stream. Applied to intermediate
+residuals, the head can produce *plausible-looking but mechanistically
+meaningless* output: sane-shaped distributions, sensible-looking top-N
+orderings, all artefacts of geometric mismatch rather than of the
+layer's computation.
 
-BT4's policy head is not a linear projection of the final residual. From
-`leela_chat/_vendor/transformer_lens/components/leela_policyhead.py`:
+The seductive failure mode here is that a "final-layer top-1 matches
+the engine's policy" sanity check **does not** distinguish "early-
+layer projection is real" from "early-layer projection is coincidentally
+plausible noise." Subtle rank-order errors at intermediate layers
+would slip through, and our prose would describe a layer's "thinking"
+based on noise. Per CLAUDE.md §2 Rule 1, that is the failure mode we
+exist to prevent.
 
-- Linear "key" and "query" projections per square (8×8 = 64 tokens).
-- 64×64 logit grid produced by Q·Kᵀ.
-- Promotion logits added separately (for 8th-rank pawn moves).
-- 1858 final move logits assembled from the grid + promotion adjustments.
+Linear logit-lens stays out of the codebase until equivalence with
+zero-ablation is empirically demonstrated. That's a future
+optimization (deferred to Chunk 6.5 or later), gated on a positive
+side-by-side study: concordant top-3 ranks at every layer for ≥5
+diverse positions, including positions where the eventual top-1 differs
+from the layer-1 top-1.
 
-This means we can't shortcut the head with `final_W_unembed @ residual`.
-We must invoke the PolicyHead module (or its functional equivalent) on
-the cached residual stream. Concretely, for each layer L:
+### 3.4 What zero-ablation produces — and what it doesn't
 
-```
-residual_L = cache["blocks.{L}.hook_resid_post"]   # (batch=1, 64, d_model)
-policy_logits_L = model.policy_head(residual_L)    # (batch=1, 1858)
-policy_probs_L = softmax(policy_logits_L, dim=-1)  # (batch=1, 1858)
-```
+Under zero-ablation we get, for each layer L, a *real* BT4 policy
+distribution — the model's actual `PolicyHead` output, run on a
+modified residual stream. That distribution is interpretable in the
+network's native units (probabilities over the 1858 move vocabulary).
+What changes between L=0 and L=N is *only how much of the network's
+computation was used*; the head's contribution is constant.
 
-The vendored `PolicyHead` is just a `nn.Module`; we can call it
-directly on intermediate residuals. (HookedTransformer's `decompose_qk`
-infrastructure isn't required.)
+This eliminates the geometric-mismatch failure mode of §3.3. The
+remaining caveat — that we cannot causally claim a specific layer
+"computed" the rank change — is the topic of §6.5.
 
-### 3.4 Data we extract per candidate per layer
+### 3.5 Data we extract per candidate per layer
 
 ```python
 LayerPolicyPoint(layer: int, rank: int, prob: float)
@@ -206,7 +222,7 @@ candidates we care about for `did_you_consider`:
 - The mid-search top-N MCTS moves (so we have coverage of the search
   story).
 
-### 3.5 Summary tags
+### 3.6 Summary tags
 
 The raw trajectory is rich but verbose. To make the LLM's job easier we
 pre-compute a categorical tag per candidate:
@@ -233,69 +249,102 @@ so the LLM can quote the tag *and* cite the specific layer numbers
 
 ### 4.1 Goal
 
-For a board position, run Lc0 MCTS at multiple budgets (e.g. 500, 1000,
-2500, 5000, 10000 nodes) and record, for every candidate, its (visits,
-Q) at each checkpoint.
+For a board position, run Lc0 MCTS **once** to a deep budget and
+record, for every candidate of interest, how its (visits, Q) evolved
+within that **same continuous tree** as the search progressed. The
+trajectory is a true intra-search history, not a stitched composite of
+independent searches.
 
-### 4.2 Implementation
+### 4.2 Why not stitch independent searches?
 
-Lc0's UCI `go nodes N` runs a search and reports verbose-move-stats at
-the end. We already parse this in `extractors/mcts.py` and
-`extractors/mcts_parser.py`. Multi-budget trajectory is the same
-extractor called K times with different `nodes`:
+A first-cut implementation runs Lc0 K times at budgets [500, 1000,
+2500, 5000, 10000] and stitches per-candidate (visits, Q) across the K
+independent search results. We tried this in Chunk 6a v0 and rejected
+it after reviewer feedback:
+
+- **The K trees are not the same tree.** MCTS expansion order depends
+  on backend stochasticity, exploration-bonus tiebreaks, and network
+  noise. Two 10 000-node runs can produce different visit
+  distributions; *different-budget* runs produce *different-shape*
+  trees that happened to have ended at different sizes.
+- **Prose built on stitched data over-claims.** A sentence like *"Q
+  dropped from +0.74 at 1000 nodes to +0.53 at 10 000"* implies
+  single-run continuity that the data doesn't have. With stitching,
+  the true statement is *"Q in a 1 000-node search vs Q in a separately-
+  run 10 000-node search"* — a different (and much weaker) claim.
+
+### 4.3 Implementation — Lc0 `--log-live-stats`
+
+Lc0 v0.32.1 supports the `--log-live-stats` flag (UCI option
+`LogLiveStats`). Per `update_research/repos/lc0-master/src/search/classic/params.cc:294`:
+
+> *"Do VerboseMoveStats on every info update."*
+
+When the option is on, Lc0 emits the **full verbose-move-stats block**
+— every candidate's line plus the `node` summary — on every UCI info
+update during the search. The format is identical to end-of-search
+verbose-move-stats; the existing `parse_verbose_move_stats` reuses
+cleanly.
 
 ```python
-budgets = [500, 1000, 2500, 5000, 10000]
-checkpoints = [extract_mcts(board, engine=engine, nodes=N) for N in budgets]
+# One call. Live-stats stream collected via the wrapper's existing
+# info-string capture in leela_chat/engine/lc0_engine.py.
+result = engine.analyse_verbose(board, nodes=10_000, log_live_stats=True)
+
+# result.info_string_lines now contains many blocks of candidate lines,
+# each terminated by a `node ...` summary line.
+blocks = group_live_stats_blocks(result.info_string_lines)
+findings_per_block = [parse_verbose_move_stats(b, ...) for b in blocks]
+
+# Pick the snapshots closest to our requested milestones.
+selected = select_milestone_snapshots(
+    findings_per_block,
+    milestones=[500, 1000, 2500, 5000, 10000],
+)
+
+# Join across snapshots by UCI; each MCTSChild.trajectory is one point
+# per selected snapshot, all from the SAME tree.
 ```
 
-Then for each candidate UCI present in the final-budget findings, we
-join across checkpoints by UCI:
+Block boundary detection is mechanical: a line whose header parses to
+the literal token `node` ends the current block. The next non-`node`
+candidate line opens a new block. Stray diagnostic info-string lines
+are filtered out by the parser.
 
-```python
-trajectory[uci] = [
-    MCTSTrajectoryPoint(
-        nodes_searched=ck.total_nodes_searched,
-        visits=child.visits if child else 0,
-        q=child.q if child else 0.0,
-    )
-    for ck, child in zip(checkpoints, lookups)
-]
-```
+### 4.4 Milestone selection
 
-The result is attached as `MCTSChild.trajectory: list[MCTSTrajectoryPoint]`
-on the final-budget findings. Existing callers see the same shape as
-before (the field defaults to `[]`); new callers can introspect.
+The shipped API accepts a list of target visit milestones (default
+`[500, 1000, 2500, 5000, 10000]`). For each target M, the extractor
+picks the live-stats snapshot whose `total_nodes_searched` is **closest
+to M**. If Lc0's emission cadence is coarser than the requested
+milestones (e.g. Lc0 emits at 800, 2000, 4500, ...), multiple
+milestones may resolve to the same snapshot; the trajectory then has
+fewer *unique* points than milestones requested. That's an honest
+representation of the data.
 
-### 4.3 Why checkpoint resolution, not visit-by-visit?
+A snapshot's *actual* `nodes_searched` (not the requested milestone
+value) is recorded on each `MCTSTrajectoryPoint`. Prose downstream
+uses the actual values, never the requested ones.
 
-A true visit-by-visit trajectory would require Lc0 to emit progress
-during search, which is non-trivial (would need either `--show-tree`
-periodically or a custom build). Checkpoints at logarithmically-spaced
-budgets capture the same qualitative story:
+### 4.5 Cost
 
-- Visit growth rate is informative (visits doubling between budgets =
-  PUCT still favoring this move; visits stagnating = PUCT has moved on).
-- Q evolution is informative (Q dropping monotonically across budgets =
-  search progressively finding the refutation; Q rising = search
-  confirming early optimism).
+One Lc0 search to the deepest milestone, plus per-snapshot parse of
+the streamed info-string lines (cheap, ~µs per block). On the pod
+GPU, ~3-4 s warm for a 10 000-node search. *Faster* than the prior
+multi-search approach.
 
-Five checkpoints over [500, 10000] is enough resolution for the prose
-to make a meaningful statement. We can scale up if needed.
+### 4.6 What this gives us that multi-search did not
 
-### 4.4 Cost
+- **Single-tree continuity.** Every snapshot is the same tree at a
+  different point in its growth. "Q at this candidate at 1 000 visits"
+  is the same tree as "Q at this candidate at 10 000 visits" — just
+  later.
+- **Honest prose.** Sentences like *"Q dropped from +0.74 to +0.53
+  within the same search"* are now true. The reader's natural
+  interpretation matches the data.
+- **Cheaper.** One search instead of K, but with richer information.
 
-Each `extract_mcts(board, nodes=N)` costs roughly N microseconds-per-node
-on the pod GPU. Running 5 budgets sums to ~19k nodes total — *slower
-than just running 10k once*, but only modestly (the first 4 are warm
-network passes and short).
-
-In practice on the pod: warm BT4 + 5 budgets [500..10000] ≈ 6-8 s.
-Versus a single 10k MCTS ≈ 2-3 s. So Q-trajectory roughly doubles MCTS
-latency — acceptable for `did_you_consider`, gated behind a `--detailed`
-flag for the retrofitted Handler 1 and Handler 2.
-
-### 4.5 Summary tags
+### 4.7 Summary tags
 
 Mirroring §3.5 for search-time:
 
@@ -328,45 +377,58 @@ clean policy-vs-search disagreement.
 
 ### 5.1 Network-time story (predicted)
 
-We *expect* (will validate in 6b integration test):
+We *expect* (will validate in 6b integration test). Phrasings below
+describe what changed; they do not claim that any specific layer
+"computed" the change — see §6.5 for why that distinction matters.
 
-- **Rxb1+**: enters the top-1 by some early layer (matches its high
-  final policy), then *stays high* at the final layer (because policy
-  has no concept of search-deeper). Its `network_dismissal` is
-  **never** — the network alone, even at layer 15, ranks it #1. The
-  network *cannot* find this refutation. Search must.
-- **Rxd4**: enters the top-10 around mid-network as positional features
-  integrate. Stays in top-10 at the final layer (ranked ~4th). Its
-  `network_dismissal` is **rose_and_stayed**.
+- **Rxb1+**: ranked top-1 at every layer we measure (matching its
+  high final policy). Its `network_dismissal` tag is **never** — the
+  network alone, even at layer 15, ranks it #1. The mechanism that
+  catches Kxb1 lies beyond the network's per-position forward pass;
+  search is what reveals it.
+- **Rxd4**: enters the top-10 around mid-network and stays in top-10
+  at the final layer (~4th). Its `network_dismissal` is
+  **rose_and_stayed**.
 
-If our methodology shows Rxb1+ ranked top-1 throughout all 15 layers,
-that *itself* is the story: "The network never saw Kxb1's refutation;
-this is why MCTS is essential here."
+If layer-emergence shows Rxb1+ ranked top-1 throughout all 15 layers,
+that *itself* is informative: it tells us the per-position forward
+pass alone is insufficient for this case, and search is doing
+load-bearing work the network couldn't.
 
 ### 5.2 Search-time story (predicted)
 
-- **Rxb1+**: early budget (500 nodes) likely shows 30+ visits and Q
-  around +0.7 (matching the optimistic policy prior). By budget 10000,
-  visits stagnate near 20 and Q crashes toward +0.4. Its
-  `search_dismissal` is **explored_and_refuted**.
-- **Rxd4**: early budget might show only ~50 visits because the prior
-  is low. But Q is healthy (+0.85+), so PUCT progressively redirects
-  visits to it. By budget 10000, visits dominate (~840) and Q has risen
-  toward +0.95. Its `search_dismissal` is **explored_and_confirmed**.
+- **Rxb1+**: early in the tree (~500 visits) likely shows healthy Q
+  (~+0.7) matching the optimistic policy prior; by 10 000 visits in
+  the same tree, Q drops to ~+0.4 as the refutation propagates and
+  PUCT redirects visits elsewhere. Its `search_dismissal` is
+  **explored_and_refuted**.
+- **Rxd4**: ~50 visits early because the prior is low. Q is healthy
+  (~+0.85), so PUCT progressively commits to it. By 10 000 visits in
+  the same tree, visits dominate (~840) and Q has grown to ~+0.95.
+  Its `search_dismissal` is **explored_and_confirmed**.
 
 ### 5.3 What the LLM should say (Chunk 6c v1 prompt target)
 
-> *"Rxb1+ wasn't dismissed by the network — it stayed top-1 through all
-> 15 layers. The refutation came from search: MCTS gave it 30 visits at
-> 1000 nodes when Q looked like +0.7, but by 10000 nodes Q had crashed
-> to +0.4 and visits had stagnated at 20. The network missed Kxb1's
-> defense; search caught it. Rxd4, conversely, was a slow-burn from both
-> sides: it entered the top-10 in the network's middle layers and never
-> left, and its MCTS Q rose from +0.85 at 1000 nodes to +0.95 at 10000
-> as visits accumulated."*
+> *"Rxb1+ never dropped in the network — its rank stayed top-1 across
+> all 15 layers. The refutation came from search within the same tree:
+> at ~1 000 visits, Q was +0.7; by ~10 000 visits in that same tree, Q
+> had fallen to +0.4 while visits stagnated at ~20. The rank trajectory
+> alone doesn't tell us *which* layer or head, if any, computed the
+> refutation — but Stockfish identifies Kxb1 as the move that holds.
+> Rxd4 surfaced at both timescales: rank entered the top-10 by the
+> middle layers and stayed; its MCTS Q grew from +0.85 at ~1 000 visits
+> to +0.95 at ~10 000 visits in the same tree, with visits accumulating
+> as PUCT committed."*
 
-This is what we are unable to write today (Phase 2 Chunk 5 has no
-trajectory data); it is what we can write after Chunk 6 lands.
+Note the deliberate phrasings:
+- *"never dropped in the network"* not *"the network never noticed"*.
+- *"the refutation came from search"* (compatible with both encoding
+  and use interpretations of the rank data — see §6.5).
+- *"rank entered the top-10 ... and stayed"* not *"the middle layers
+  pulled it in"*.
+- Stockfish is the source of the *content* claim (which move refutes);
+  layer-rank data is the source of the *trajectory* claim (rank
+  changed).
 
 ---
 
@@ -409,7 +471,69 @@ L's contribution and re-run, see if Rxb1+ still gets visits. But Chunk
 This methodology relies on BT4's specific architecture (15 layers,
 attention-based policy head, smolgen attention). Different Lc0
 networks would need re-validation. T82 in particular has a different
-policy head and the linear logit-lens math may not transfer.
+policy head and the zero-ablation hook attachment points would need
+to be re-derived.
+
+### 6.5 What layer-emergence does and does not tell us
+
+We measure **per-layer policy-rank trajectories** for candidate moves.
+We sometimes describe this in prose using language like "the move was
+considered then dismissed" because that phrasing is the most readable
+chess-content gloss on the data. But the data does not establish a
+semantic act of consideration on any particular layer's part.
+
+Per-layer rank change is consistent with at least two interpretations:
+
+1. **Causal — the layer's computation actively re-evaluates the move.**
+   Some attention head at layer L attends to the squares that matter
+   for the refutation; its output rotates the residual so that the
+   move's logit drops.
+
+2. **Architectural — the network refines a representation; rank
+   changes are a side-effect of that refinement with no semantic
+   notion of consideration.** The residual progresses through layers
+   doing many distributed computations; the projection of the residual
+   onto move-logit space happens to *rotate* between layers, and a
+   given move's rank can rise and fall purely because of how the
+   geometry shifts, with no layer's contribution being "about" that
+   move specifically.
+
+The methodology in this document cannot distinguish (1) from (2). It
+takes probes (Phase 3, to name *what feature* a layer detects) and
+counterfactual ablations (Phase 6, to test whether removing a specific
+component causes the rank change) to push from descriptive
+("rank changed at layer L") to causal ("layer L computed the
+refutation").
+
+This is the **encoding-vs-use distinction** (ADR-0007, Lovering et al.,
+"Predicting Inductive Biases of Pre-Trained Models") re-emerging one
+layer down. ADR-0007 applies it to probes: that a feature is decodable
+from the residual doesn't mean the network *uses* it. The same logic
+applies here: that a move's rank changes between layers doesn't mean
+any layer *re-evaluated* it.
+
+**Practical consequence for prose.** In handler prompts and methodology
+text, describe **what changed** (rank, probability, visit share)
+without invoking causal verbs about the network's "thinking." Forbidden
+language for `did_you_consider` v1 prompt and beyond:
+
+- *"the network noticed / realized / discovered / saw / found ..."*
+- *"by layer N, the model recognized ..."*
+- *"layers 8-10 worked out that ..."*
+- *"the network changed its mind ..."*
+
+Allowed language:
+
+- *"the rank had shifted to N-th by layer K"*
+- *"rank stayed at #1 across all measured layers"*
+- *"consistent with the Kxb1 response Stockfish identifies as the
+  refutation"* (Stockfish is the content authority; the rank
+  trajectory just covaries)
+- *"the trajectory alone does not establish which layer, if any,
+  computed the change"*
+
+The point is not to make the prose stilted; it's to keep the prose
+exactly as strong as the data warrants — no stronger.
 
 ---
 
