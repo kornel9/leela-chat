@@ -11,9 +11,9 @@
 ## Current Status
 
 - **Phase:** 2 — MCTS Integration. Entered 2026-05-19 after Phase 1's informal close. Phase 2 entry brief delivered + acknowledged; Phase 2 plan written (see `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md`).
-- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19; Chunk 6a v0+v1 done 2026-05-19; **Chunk 6a v2** done 2026-05-19. Plan at `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md` revised through second-pass reviewer feedback (A1+B1+B2+C1+C2+C3+D1+D2+D3 all integrated). 6a v2 shipped: methodology doc restructured to thin index + per-extractor module docstrings; dense MCTS-trajectory capture + summary statistics + content-aware down-sampling; Phase 3 concept-candidates tracker started; Chunk 7 (chess-content extractors) reserved; Phase 4 coach-voice prompt-migration reserved. Next: Chunk 6b — `extract_layer_emergence` with zero-ablation as default. **Gate before Chunk 6c implementation: divergent-timescale fixture (A1) must be curated and committed; deferred to pod session since it requires real Lc0 capture.**
+- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19; Chunk 6a (v0+v1+v2) done 2026-05-19; **Chunk 6b** done 2026-05-19 (off-pod code path). Plan at `docs/plans/chunk-6.md` (snapshot of plan-mode workspace). Next: Chunk 6c — `did_you_consider` handler + v1 prompt with three worked examples. **Gate before 6c implementation: A1 divergent-timescale fixture must be curated and committed; deferred to pod session since it requires real Lc0 capture (user gave source-hunt order: try `update_research/repos/superhuman-ai-consistency-main/` test set first). Also pod-gated: 6b's `test_baseline_top1_matches_network_inference_starting_position` hook-wiring sanity check.**
 - **Last session:** 2026-05-19
-- **Next session goal:** Phase 2 Chunk 6b — `extract_layer_emergence`. Zero-ablation logit-lens (default per revised plan §3.2, not a fallback). The full methodology contract lives in `leela_chat/extractors/layer_emergence.py` module docstring (landed in 6a v2 as a scaffold; 6b implementation must satisfy that docstring). For each layer L ∈ [0..N−1], a forward pass with a hook returning `torch.zeros_like` for `blocks.{L}.hook_resid_post`; baseline is the no-hooks pass. Linear logit-lens stays out of the codebase until equivalence is empirically demonstrated. New files: implementation in `leela_chat/extractors/layer_emergence.py`, `tests/unit/test_layer_emergence.py`, `tests/integration/test_layer_emergence_integration.py`.
+- **Next session goal:** **Pod session.** Run 6b's integration test (`test_baseline_top1_matches_network_inference_starting_position` is the hook-wiring sanity gate; if it passes, methodology is validated). Then either (a) curate the A1 divergent fixture per the source-hunt order in PHASE_NOTES below, or (b) proceed to Chunk 6c with a temporary fixture-deferred 3rd worked example. Chunk 6c: `did_you_consider` handler + v1 prompt with three worked examples (concordant pick, search-refutes, network-low-MCTS-rescue), CLI wiring, three pod smokes.
 
 > **Pod state caveat:** RunPod stop/start cycles wipe everything outside `/workspace` (apt packages, `/workspace/bin/lc0`, `/usr/local/cuda-12.8/bin` PATH). Run `ssh runpod 'bash /workspace/leela-chat/scripts/setup_pod.sh'` after every pod restart — idempotent, takes ~30s on warm restart and ~10 min on first build of Lc0.
 
@@ -913,4 +913,54 @@ NOT bundled into 6c (6c stays focused on dual-timescale methodology).
 NOT in 6.5 (6.5 is opt-in retrofit of existing handlers with new
 trajectory data). Chunk 7 lands after 6.5 once we know what specific
 chess content the dual-timescale prompts need to ground in.
+
+---
+
+#### 2026-05-19 (cont., 9) — Phase 2 Chunk 6b: zero-ablation layer emergence (off-pod code path)
+
+The 6a v2 scaffold's module docstring (`leela_chat/extractors/layer_emergence.py`) was the written methodology contract. 6b implements it. Pod-only steps (integration test, real BT4) deferred to the next pod session.
+
+What I did:
+
+- **Investigation via Explore agent** — confirmed the exact vendored API:
+  - **Hook names corrected.** Initial scaffold guessed `blocks.{L}.hook_resid_post`; actual BT4 hook points are `hook_attn_in`, `hook_attn_out`, `resid_mid_after_ln`, `hook_mlp_out`, `resid_post_after_ln` (per `leela_chat/_vendor/transformer_lens/components/leela_encoder.py:161-165`).
+  - **Critical mechanism clarification.** Zero-ablating `resid_post_after_ln` would zero the entire residual stream at that point, not just the layer's contribution. The correct approach is to zero BOTH `hook_attn_out` AND `hook_mlp_out` (the two delta contributions the block adds to the residual). The docstring was rewritten to make this explicit.
+  - **`run_with_hooks` signature** confirmed at `hook_points.py:417`: hook receives `(tensor, *, hook)` and returns either a tensor (replaces activation) or None.
+  - **BT4 forward** returns a LIST `[policy_logits, value_logits, mlh_logits]`, not a tuple; first element shape `(batch=1, 1858)`.
+
+- **Pydantic models added** to `layer_emergence.py`:
+  - `LayerPolicyPoint(layer, rank, prob)` — one per layer per candidate.
+  - `CandidateLayerTrajectory(uci, san, layer_trajectory, entered_top5_at_layer, exited_top5_at_layer, peak_rank, peak_layer, network_dismissal)` — pre-computes the categorical dismissal tag.
+  - `LayerEmergenceResult(candidates, n_layers)` — outer container.
+
+- **Helpers** added: `_zero_hook` (the hook protocol), `_build_ablation_hooks_for_layer` (one entry per ablated layer × 2 hookpoints), `_legal_move_probs` (mirrors `network_inference`'s legal-move-masked softmax), `_classify_dismissal` (categorical tag derivation), `_build_candidate_trajectory` (assembles a CandidateLayerTrajectory from per-layer policy distributions).
+
+- **`extract_layer_emergence` body** — N+1 forward passes: L=k ablates `hook_attn_out` + `hook_mlp_out` at every block k..N-1; L=N is the baseline (no hooks). Per-layer rank computed against legal moves only (masked + renormalised softmax). Tracks the final-layer top-N candidates plus the focal_uci (if provided and legal). Terminal-position guard: empty result if no legal moves.
+
+- **Unit tests** (`tests/unit/test_layer_emergence.py`, 17 tests):
+  - Hook-protocol shape sanity + ablation-hook construction (right layer ranges, both `hook_attn_out` and `hook_mlp_out` per ablated layer).
+  - `_legal_move_probs` renormalisation correctness.
+  - `_classify_dismissal` coverage of all four tags (`rose_and_stayed`, `rose_and_fell`, `never_rose`, `unknown`).
+  - `_build_candidate_trajectory`: peak detection, exit-detection correctness, terminal `rose_and_fell` case with final rank > 10.
+  - `_FakeBT4` stub: end-to-end with canned per-pass policy logits. Asserts hook counts per pass (8, 6, 4, 2, 0 for a 4-layer model), focal_uci forced tracking, terminal-position empty return.
+
+- **Integration test scaffold** (`tests/integration/test_layer_emergence_integration.py`, pod-only): three tests covering hook-wiring sanity (baseline top-1 vs `extract_network_inference`), Rxd4 walkthrough non-degeneracy (per-layer trajectories printed for manual eyeball + assertions that at least one candidate shows rank variation across layers), starting-position smoke.
+
+What surprised me:
+
+- **The scaffold's hook-name guess (`hook_resid_post`) was wrong.** Two interconnected issues: (a) BT4 doesn't expose a hook named `hook_resid_post`; the equivalent is `resid_post_after_ln`. (b) Even if we hooked the right name, zeroing `resid_post_after_ln` would zero EVERYTHING in the residual at that point, not just the layer's contribution. The Iterative Inference paper's "layer ablation" methodology is correctly implemented by zeroing the per-layer *deltas* (`hook_attn_out` + `hook_mlp_out`), not the residual itself. The docstring rewrite makes this explicit so the next reader doesn't repeat the confusion.
+
+- **Two bugs caught by unit tests.** (a) `from leela_chat.network.uci_to_idx import encode_legal_move` is wrong — the correct path is `from leela_chat.network import encode_legal_move`. Caught at import time. (b) A test fixture intended to put move 'x' at rank 6 actually produced rank 5 due to argsort tie-breaking on equal probabilities; tightened the fixture so 'x' is unambiguously rank 7.
+
+- **Pre-computed `network_dismissal` tag is more useful than I expected.** The four-quadrant taxonomy (rose_and_stayed / rose_and_fell / never_rose / unknown) lets the 6c v1 prompt make structural decisions from a single Literal field rather than from the raw 16-point trajectory. Reduces hallucination surface area for the LLM.
+
+Open questions / threads (carry to pod + 6c):
+
+- **Pod gate: hook-wiring sanity.** `test_baseline_top1_matches_network_inference_starting_position` is the must-pass check. If it fails, debug *before* trusting any layer-emergence output. Likely failure mode: hook names off (e.g. the smolgen pre-hook intercepts something we'd want to keep), or the `LeelaBoard` encoding is being applied differently.
+- **Pod gate: non-degeneracy.** If `test_walkthrough_rxd4_layer_trajectories_are_non_degenerate` shows every per-layer rank trajectory identical to the final layer's, the ablation hooks aren't producing per-layer differences. Possible cause: the policy head's contribution dominates so much that intermediate-layer ablation barely shifts logits. Documented pivot path: mean-ablation (replace activation with a calibration-batch mean), recorded in DECISIONS.md if/when needed. Linear-logit-lens stays out of the codebase per the v2 reviewer-pass commitment.
+- **Cost on pod.** N+1 = 16 forward passes; we haven't measured warm-BT4 latency on the pod yet. The plan says ~800 ms; if it's 5 s, may need to cache per-session (one extraction per board hash).
+
+Test status: 126 unit tests pass (was 109; +17 layer-emergence). Integration suite collects 59 tests off-pod (was 56; +3 layer-emergence integration tests).
+
+
 
