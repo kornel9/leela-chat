@@ -45,10 +45,16 @@ from loguru import logger
 from leela_chat.classifier import classify
 from leela_chat.conversation import ConversationState, Turn
 from leela_chat.handlers.what_is_leela_seeing import (
-    HANDLER_NAME,
-    PROMPT_VERSION,
+    HANDLER_NAME as WHAT_HANDLER_NAME,
+    PROMPT_VERSION as WHAT_PROMPT_VERSION,
     handle_what_is_leela_seeing,
-    templated_fallback,
+    templated_fallback as what_templated_fallback,
+)
+from leela_chat.handlers.why_this_move import (
+    HANDLER_NAME as WHY_HANDLER_NAME,
+    PROMPT_VERSION as WHY_PROMPT_VERSION,
+    handle_why_this_move,
+    templated_fallback as why_templated_fallback,
 )
 from leela_chat.llm.client import LLMClient, LLMMode
 from leela_chat.llm.env import load_env
@@ -69,10 +75,9 @@ _DEFAULT_LC0_WEIGHTS = Path(
 )
 
 
-# Mapping from --handler choices to the handler implementations. Phase 1
-# has only one; this dict is the extension point for handlers 2/3 once they
-# land after Phase 2 per the architecture-of-efficiency decision.
-HANDLERS_AVAILABLE: list[str] = [HANDLER_NAME]
+# Available handlers in this build. Order matters only for ``--help``
+# rendering; the classifier picks by question + position context.
+HANDLERS_AVAILABLE: list[str] = [WHAT_HANDLER_NAME, WHY_HANDLER_NAME]
 
 
 # === Shared session context =================================================
@@ -168,8 +173,9 @@ def _answer_one(
     question: str,
     *,
     handler_override: str | None = None,
+    move_uci: str | None = None,
 ) -> tuple[ValidatedTranslation, float, float]:
-    """Run handler + translate for one (fen, question) pair.
+    """Run handler + translate for one (fen, question[, move]) tuple.
 
     Args:
         ctx: Active CLI context.
@@ -178,6 +184,10 @@ def _answer_one(
         question: User's literal question.
         handler_override: If supplied, force this handler instead of asking
             the classifier. Must be one of ``HANDLERS_AVAILABLE``.
+        move_uci: Move the user is asking about (for move-specific handlers
+            like ``why_this_move``). When the resolved handler needs a move
+            and this is None, raises ``ValueError``. When the resolved
+            handler doesn't take a move, this is ignored.
 
     Returns:
         Tuple of (validated translation, handler latency in seconds,
@@ -193,23 +203,41 @@ def _answer_one(
             f"(available: {HANDLERS_AVAILABLE})."
         )
 
-    # Phase 1: only one handler exists. When handlers 2/3 land we'll dispatch
-    # on handler_name. Keeping this explicit so the future extension is
-    # mechanical, not a refactor.
     t0 = time.perf_counter()
-    findings = handle_what_is_leela_seeing(
-        board,
-        model=ctx.model,
-        stockfish_engine=ctx.stockfish,
-        lc0_engine=ctx.lc0,
-    )
+    if handler_name == WHY_HANDLER_NAME:
+        if move_uci is None:
+            raise ValueError(
+                f"Handler {handler_name!r} requires --move <UCI>."
+            )
+        move = chess.Move.from_uci(move_uci)
+        if move not in board.legal_moves:
+            raise ValueError(
+                f"Move {move_uci!r} is not legal on FEN {fen!r}."
+            )
+        findings = handle_why_this_move(
+            board, move,
+            model=ctx.model,
+            stockfish_engine=ctx.stockfish,
+            lc0_engine=ctx.lc0,
+        )
+        fallback_fn = why_templated_fallback
+        prompt_version = WHY_PROMPT_VERSION
+    else:
+        findings = handle_what_is_leela_seeing(
+            board,
+            model=ctx.model,
+            stockfish_engine=ctx.stockfish,
+            lc0_engine=ctx.lc0,
+        )
+        fallback_fn = what_templated_fallback
+        prompt_version = WHAT_PROMPT_VERSION
     t1 = time.perf_counter()
     result = translate_and_validate(
         findings=findings,
         question=question,
-        handler_name=HANDLER_NAME,
-        templated_fallback=templated_fallback,
-        prompt_version=PROMPT_VERSION,
+        handler_name=handler_name,
+        templated_fallback=fallback_fn,
+        prompt_version=prompt_version,
         client=ctx.client,
     )
     t2 = time.perf_counter()
@@ -237,21 +265,42 @@ def _emit_telemetry(
 def cmd_ask(args: argparse.Namespace) -> int:
     """One-shot: load context, ask one question, print response, exit."""
     try:
-        chess.Board(args.fen)
+        board = chess.Board(args.fen)
     except ValueError as exc:
         print(f"error: invalid FEN: {exc}", file=sys.stderr)
         return 2
+
+    # Validate --move (UCI format + legality) up-front so we can exit
+    # before paying the BT4-load cost on bad input.
+    move_uci: str | None = getattr(args, "move", None)
+    if move_uci is not None:
+        try:
+            move_obj = chess.Move.from_uci(move_uci)
+        except (ValueError, chess.InvalidMoveError) as exc:
+            print(f"error: invalid UCI move {move_uci!r}: {exc}", file=sys.stderr)
+            return 2
+        if move_obj not in board.legal_moves:
+            print(
+                f"error: move {move_uci!r} is not legal on this position.",
+                file=sys.stderr,
+            )
+            return 2
+
+    # Default-routing: --move without --handler implies why_this_move.
+    handler_override = args.handler
+    if handler_override is None and move_uci is not None:
+        handler_override = WHY_HANDLER_NAME
 
     mode = LLMMode(args.mode)
     ctx = _build_context(mode=mode, verbose=args.verbose)
     try:
         try:
             result, handler_s, translate_s = _answer_one(
-                ctx, args.fen, args.question, handler_override=args.handler
+                ctx, args.fen, args.question,
+                handler_override=handler_override,
+                move_uci=move_uci,
             )
         except ValueError as exc:
-            # Most likely: --handler points at a not-yet-implemented handler.
-            # FEN validity was already checked above.
             print(f"error: {exc}", file=sys.stderr)
             return 2
 
@@ -408,6 +457,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_ask.add_argument(
         "--question", required=True,
         help="Natural-language question.",
+    )
+    p_ask.add_argument(
+        "--move",
+        default=None,
+        help=(
+            "Move to ask about, in UCI (e.g. 'd2d4'). Required when "
+            "--handler why_this_move. When supplied without --handler, "
+            "the handler defaults to why_this_move."
+        ),
     )
     _add_common_flags(p_ask)
 

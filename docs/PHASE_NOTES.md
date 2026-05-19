@@ -11,9 +11,9 @@
 ## Current Status
 
 - **Phase:** 2 — MCTS Integration. Entered 2026-05-19 after Phase 1's informal close. Phase 2 entry brief delivered + acknowledged; Phase 2 plan written (see `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md`).
-- **Active chunk:** Phase 2 Chunks 1 + 2 + 3 + 4 done 2026-05-19 (Lc0Engine + MCTS parser + extract_mcts + Handler 1 v4 prompt with three-signal framing). User-visible payoff is live: walkthrough Rxd4 prose now names the policy-vs-MCTS visit-share gap explicitly. Next: Chunk 5 — Handler 2 (`why_this_move`) built against the final MCTS-bearing findings shape.
+- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19. Chunk 5 (`why_this_move`) shipped: takes a (fen, move) tuple and produces justification prose with categorical bucket framing (winning / better / draw / worse / losing). Pod smoke on Rxd4 walkthrough: both branches (focal IS engine pick / focal NOT engine pick) produce clean LLM-source prose. Next: Chunk 6 — `did_you_consider` (twin handler emphasising why an alternative was rejected).
 - **Last session:** 2026-05-19
-- **Next session goal:** Phase 2 Chunk 5 — `leela_chat/handlers/why_this_move.py` + `leela_chat/llm/prompts/why_this_move/v1.md`. Takes a (fen, move_uci, question) tuple; surfaces MCTS subtree info about the user-asked-about move (its visit share, Q, V, plus the engine's actual top pick if different). Wire into CLI argparse (extend `ask` subcommand with `--move`). Smoke against ~5 user-eyeballed positions.
+- **Next session goal:** Phase 2 Chunk 6 — `did_you_consider` handler. Likely shares the focal-move findings shape with `why_this_move` (refactor opportunity); prompt focus shifts to "engine didn't play this, here's why." Distinguishes "tactically refuted" (move has visits but low Q) from "search didn't reach it" (zero visits). CLI: also `--move` driven; switch to `did_you_consider` via `--handler` flag.
 
 > **Pod state caveat:** RunPod stop/start cycles wipe everything outside `/workspace` (apt packages, `/workspace/bin/lc0`, `/usr/local/cuda-12.8/bin` PATH). Run `ssh runpod 'bash /workspace/leela-chat/scripts/setup_pod.sh'` after every pod restart — idempotent, takes ~30s on warm restart and ~10 min on first build of Lc0.
 
@@ -627,7 +627,7 @@ Next session goal:
 | 2 | MCTS parser (`parse_verbose_move_stats(lines) -> MCTSFindings`) | ✅ done 2026-05-19 |
 | 3 | MCTS extractor (`extract_mcts(board, *, engine, nodes)`) | ✅ done 2026-05-19 |
 | 4 | Handler 1 v4 — incorporate MCTS findings | ✅ done 2026-05-19 |
-| 5 | Handler 2 `why_this_move` | pending |
+| 5 | Handler 2 `why_this_move` | ✅ done 2026-05-19 |
 | 6 | Handler 3 `did_you_consider` | pending |
 | 7 | Manual QA + CLI polish if surfaced | pending |
 
@@ -721,4 +721,27 @@ Open questions / threads:
 
 Next session goal:
 - **Chunk 5** — Handler 2 `why_this_move`. New file `leela_chat/handlers/why_this_move.py` + Pydantic findings model + `leela_chat/llm/prompts/why_this_move/v1.md`. Handler signature: `(board, *, move_uci, model, stockfish_engine, lc0_engine)`. Findings include MCTS subtree info about the asked-about move (visit share, Q, V) and how it compares to the engine's actual top pick. CLI: extend `ask` subcommand with `--move` arg; classifier still trivial-routes for now. Smoke against ~5 user-eyeballed positions where you played a specific move and want a second opinion.
+
+---
+
+#### 2026-05-19 (cont., 5) — Phase 2 Chunk 5 done: `why_this_move` + bucket framing
+
+What I did:
+- **Handler module** (`leela_chat/handlers/why_this_move.py`, ~280 lines): `WhyThisMoveFindings` Pydantic with position-level fields mirroring Handler 1 + focal-move callouts (`focal_*` for policy / MCTS / Stockfish, each with rank + stats; None when the move is outside that source's reported top). `handle_why_this_move(board, move, *, model, stockfish_engine, lc0_engine, ...)` validates move legality, runs the three extractors, scans pre-truncation candidate lists for the focal move, then truncates `mcts.children` to top-10 by visits (wider than Handler 1's 5 since the focal move is more likely to need its raw stats surfaced — though the pre-extracted `focal_mcts_child` is the authoritative source regardless). `templated_fallback` renders both branches (`focal_is_engine_pick=True/False`) sensibly.
+- **v1 prompt** (`leela_chat/llm/prompts/why_this_move/v1.md`, ~6 KB): three-signal framing zoomed onto the focal move with **categorical eval buckets** per user feedback. Five fixed buckets: **winning** (eval > +2.0 pawns / Q > +0.80), **better** (+0.5 to +2.0 / +0.30 to +0.80), **draw / equal** (-0.5 to +0.5 / -0.30 to +0.30), **worse** (-2.0 to -0.5 / -0.80 to -0.30), **losing** (eval < -2.0 / Q < -0.80). MCTS Q thresholds derived from Lc0's `cp = 90 * tan(1.5637541897 * q)` formula. "Near-equal" = same bucket AND `abs(Q_focal - Q_alt) < 0.10` (or Stockfish fallback `< 0.50 pawns`). Cross-bucket alternatives are explicit downgrades. Three worked examples: cross-bucket dominant (walkthrough Rxd4), same-bucket near-equal (quiet recapture), focal-NOT-engine-pick (the user-played-Rxb1+ case).
+- **CLI** (`leela_chat/cli/__main__.py`): `--move <UCI>` added to `ask` subparser. UCI format + legality validated up-front (exit 2 before BT4 load on bad input). Default-routing rule: `--move` without `--handler` auto-routes to `why_this_move`. Imports of handler symbols use `as`-aliases (`WHAT_HANDLER_NAME` / `WHY_HANDLER_NAME`) to disambiguate the two handler modules. `_answer_one` dispatches on handler name.
+- **Tests** (8 unit + 5 CLI integration): handler logic (focal-as-engine-pick / focal-not-pick / focal-outside-top / illegal-move-raises / lc0=None-skips-mcts / children-truncated-to-10 / templated_fallback both branches), CLI argv routing (--move passes through / --move alone routes to why_this_move / explicit --handler overrides / invalid UCI exits 2 / illegal-for-board exits 2). 97 local tests pass (84 → 97).
+- **Pod smoke (binding tests):** Both branches on the Rxd4 walkthrough position, `source=llm validation_ok=True` for both, no retries. Branch A (`--move d8d4`): prose names "winning bucket" / "cross-bucket downgrade" / "just outside the near-equal threshold" — exactly the categorical language the prompt teaches. Branch B (`--move b8b1`): prose leads with "Leela's MCTS firmly prefers Rxd4, not Rxb1+" and surfaces the genuinely insightful observation that **Rxb1+ appears later in Stockfish's PV** ("the check has real value — just not as move one"). That's real chess inference from the data the prompt gave the LLM, not generic engine-number reporting.
+
+What surprised me:
+- **The Branch B prose was unexpectedly insightful.** I'd designed the prompt to explain "engine's pick + focal-move gap" but the LLM connected the dots about Rxb1+ being a *later* move in Stockfish's preferred PV — the kind of pattern reasoning that bridges scoreboard-reporting and chess-content. Not a prompt change I planned for; emerged from giving the LLM the focal-move-in-Stockfish-PVs data plus enough room in the prompt.
+- **Bucket boundaries held cleanly in practice.** No "slightly better" / "marginally winning" weasel words in either smoke output. The LLM categorised Rxd4 = winning, Rbc8 = winning, Rxb1+ = better, and named cross-bucket gaps explicitly. The fixed thresholds removed an entire class of LLM hedge phrasing.
+- **One Branch A prose nit:** the LLM cited the runner-up Rbc8 with a Q gap of 0.12 (vs the 0.10 near-equal threshold) and correctly called it "just outside the near-equal threshold" — but ideally the prompt would prefer that this be framed as "narrowly outside" rather than implying a hard cliff. Not a defect; minor v2 polish for later.
+
+Open questions / threads:
+- **Refactor `FocalMoveFindings` as shared module before Chunk 6?** Chunk 6's `did_you_consider` will need the same focal-* fields. Current decision per plan: extract iff clear overlap during Chunk 6 implementation. Both findings shapes could share inheritance / composition; defer until both exist.
+- **Backlog: "practical-best" / Maia-driven recommendation** (user request 2026-05-19). Idea: future handler `recommend_practical_move(fen, opponent_elo)` that scores candidates by *how hard the resulting position is for a human opponent to defend*. `update_research/repos/maia-chess-master/` is already on disk. Approach sketch: load Maia at target ELO, run it on positions after each candidate, compute the gap between Maia's predicted human response and Leela-MCTS's optimal response (bigger gap = harder for the human). Natural fit alongside Phase 3 concept-probe handlers. Tracked here so it doesn't get lost.
+
+Next session goal:
+- **Chunk 6** — Handler 3 `did_you_consider`. New handler module + v1 prompt + CLI flag wiring. Reuses the same MCTS-bearing pipeline as Chunk 5; the prompt zooms onto **why an alternative was rejected** rather than justifying the engine's pick. Decision-tree on `focal_mcts_child.visits`: if zero → "search didn't reach it within the budget" framing; if low (e.g. < 5% of total visits) → "search dismissed early" framing; if non-trivial → "explored but evaluated worse than the pick" framing. CLI: `--handler did_you_consider --move <UCI>`. Likely refactor the shared focal-move-finding helpers (`_find_focal_in_policy` etc.) into a small shared module if the duplication becomes noisy.
 

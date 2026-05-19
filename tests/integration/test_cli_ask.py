@@ -66,10 +66,11 @@ def _patch_heavy(monkeypatch: pytest.MonkeyPatch, *, answer_result=None) -> dict
         captured["verbose"] = verbose
         return _fake_ctx()
 
-    def fake_answer(ctx, fen, question, *, handler_override=None):
+    def fake_answer(ctx, fen, question, *, handler_override=None, move_uci=None):
         captured["fen"] = fen
         captured["question"] = question
         captured["handler_override"] = handler_override
+        captured["move_uci"] = move_uci
         return answer_result or _fake_result(), 0.10, 0.20
 
     monkeypatch.setattr(cli_main, "_build_context", fake_build)
@@ -157,3 +158,78 @@ def test_ask_unknown_subcommand_returns_2(capsys):
     """A bogus subcommand should error out via argparse (exits via SystemExit)."""
     with pytest.raises(SystemExit):
         cli_main.main(["bogus-cmd"])
+
+
+# --- Chunk 5: --move-specific argv tests ----------------------------------------
+
+
+def test_ask_move_passes_through_to_answer_one(monkeypatch):
+    """The --move flag should reach _answer_one as move_uci."""
+    captured = _patch_heavy(monkeypatch)
+    cli_main.main([
+        "ask", "--fen", START_FEN, "--question", "Why d4?", "--move", "d2d4",
+    ])
+    assert captured["move_uci"] == "d2d4"
+
+
+def test_ask_move_alone_defaults_handler_to_why_this_move(monkeypatch):
+    """--move without --handler should auto-route to why_this_move."""
+    captured = _patch_heavy(monkeypatch)
+    cli_main.main([
+        "ask", "--fen", START_FEN, "--question", "Why d4?", "--move", "d2d4",
+    ])
+    assert captured["handler_override"] == "why_this_move"
+
+
+def test_ask_explicit_handler_overrides_move_default(monkeypatch):
+    """If --handler is set explicitly, --move doesn't override it."""
+    captured = _patch_heavy(monkeypatch)
+    cli_main.main([
+        "ask", "--fen", START_FEN, "--question", "?",
+        "--move", "d2d4", "--handler", "what_is_leela_seeing",
+    ])
+    assert captured["handler_override"] == "what_is_leela_seeing"
+    assert captured["move_uci"] == "d2d4"
+
+
+def test_ask_invalid_uci_move_exits_2(capsys, monkeypatch):
+    """A malformed UCI move should exit 2 before loading any model."""
+    build_called = []
+    monkeypatch.setattr(
+        cli_main, "_build_context",
+        lambda mode, verbose: build_called.append(True) or _fake_ctx(),
+    )
+    monkeypatch.setattr(cli_main, "_close_context", lambda ctx: None)
+    monkeypatch.setattr(
+        cli_main, "_answer_one",
+        lambda *a, **kw: (_fake_result(), 0.0, 0.0),
+    )
+    code = cli_main.main([
+        "ask", "--fen", START_FEN, "--question", "?", "--move", "z9z9",
+    ])
+    assert code == 2
+    out = capsys.readouterr()
+    assert "invalid uci" in out.err.lower()
+    assert build_called == [], "BT4 / Stockfish should not load for invalid UCI"
+
+
+def test_ask_illegal_move_for_position_exits_2(capsys, monkeypatch):
+    """A valid-UCI but illegal-on-board move should also exit 2."""
+    build_called = []
+    monkeypatch.setattr(
+        cli_main, "_build_context",
+        lambda mode, verbose: build_called.append(True) or _fake_ctx(),
+    )
+    monkeypatch.setattr(cli_main, "_close_context", lambda ctx: None)
+    monkeypatch.setattr(
+        cli_main, "_answer_one",
+        lambda *a, **kw: (_fake_result(), 0.0, 0.0),
+    )
+    # e2e5 is not legal from the starting position (pawn can't jump 3 squares).
+    code = cli_main.main([
+        "ask", "--fen", START_FEN, "--question", "?", "--move", "e2e5",
+    ])
+    assert code == 2
+    out = capsys.readouterr()
+    assert "not legal" in out.err.lower()
+    assert build_called == [], "should not load model for illegal move"
