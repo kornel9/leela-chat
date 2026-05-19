@@ -42,35 +42,66 @@ divergent_quadrants:
     focal_san: "Rxb1+"
     description: |
       Rxb1+ is the network's eventual top-1 (rank 1 at the final BT4
-      layer, ~27% policy). MCTS commits only ~20 visits and Q drops
-      from V-head optimism (+0.74) to a trough (+0.36) before partial
-      recovery to ~+0.53 at the last live-stats emit. The network
-      never sees the Kxb1 defense; search reveals it.
-    network_emergence_pattern: "Late emergence: rank 1 only at L=14-15; outside top-5 for layers 0-13"
+      layer, ~27% policy). The network commits LATE — rank 41 at
+      L=0, stays in 30-50s through L=13, rank 2 at L=14, rank 1 at
+      L=15. Within MCTS, Q dips from V-head optimism (+0.74) to a
+      trough (+0.36 at v=28) as search finds the Kxb1 defense;
+      partial drift back to ~+0.53 by deepest live-stats emit
+      (v=89). The drift is "search no longer sampling" (PUCT
+      redirected visits to Rxd4), NOT "the move recovering."
+    network_emergence_pattern: "Late emergence: rank 41→1 with the commitment at L=14-15"
     expected_summary:
       q_first_approx: 0.74
       q_trough_approx: 0.36
-      q_trough_at_visits_approx: 22
-      trajectory_pattern: "high initial V-head; trough mid-search; partial recovery"
+      q_trough_at_visits_approx: 28
+      visit_share_approx: 0.02   # ~2% of root visits — search refused to commit
+      trajectory_pattern: "high V-head; trough at v~28 (refutation); post-trough drift to +0.53 as PUCT redirected"
 
   # Quadrant 3: network ranks low throughout, MCTS rescues.
   mcts_rescue:
     focal_uci: d8d4
     focal_san: "Rxd4"
     description: |
-      Rxd4 is the MCTS bestmove (~84% visit share at 10k nodes) but
-      its network rank stays >= 9 at every BT4 layer (never enters
-      top-5). The network alone cannot find this; MCTS discovers it
-      through deeper exploration. This is the canonical divergent-
-      timescale fixture for the `did_you_consider` handler's third
-      worked example.
-    network_emergence_pattern: "Never_rose: rank 9-43 at every layer; peak rank 9 at L=15"
+      Rxd4 is the MCTS bestmove (~91% visit share at the deepest
+      live-stats emit). The network NEVER finds this move — rank
+      stays >= 9 at every BT4 layer (peak rank 9 at L=15). The
+      network's pattern recognition doesn't suggest this move at any
+      layer of computation; discovery is a search artifact. This is
+      the canonical divergent-timescale fixture for the
+      `did_you_consider` handler's network-low/MCTS-rescue worked
+      example.
+    network_emergence_pattern: "Never_rose: rank 43→9; never enters top-5 at any layer"
     expected_summary:
       q_first_approx: 0.56     # V-head only (no visits at first emit)
-      q_peak_approx: 0.96
-      q_peak_at_visits_approx: 125
+      q_peak_approx: 0.95
+      q_peak_at_visits_approx: 88
       q_last_approx: 0.92
+      visit_share_approx: 0.91   # ~91% of root visits — search committed strongly
       trajectory_pattern: "V-head start; rapid climb after first visits; sustained high Q"
+
+  # Quadrant 4 (added in Chunk 6b.5 measurement, 2026-05-19): both
+  # signals dismiss (concordant dismissal of a non-engine-pick).
+  concordant_dismissal:
+    focal_uci: e5g5
+    focal_san: "Qg5"
+    description: |
+      Qg5 is the network's L=0 embedding-only favorite (rank 1 at
+      L=0; the only place the BT4 embedding alone prefers this move).
+      Later layers progressively demote it: rank 27 at L=1, then 43,
+      then drifts back through the 30s before dropping to rank 7 at
+      L=15. MCTS independently demotes it — visit share 0.46%
+      (21 of 4592 visits at the deepest live-stats emit), Q stays
+      modest (~+0.58 to +0.68, never developing). Both signals dismiss
+      Qg5, by independent routes: the network does it via late-layer
+      rank drop; search does it via not allocating visits.
+    network_emergence_pattern: "L=0 top-1 → L=15 rank 7; rose_and_stayed-but-faded"
+    expected_summary:
+      q_first_approx: 0.56     # V-head baseline
+      q_peak_approx: 0.68
+      q_peak_at_visits_approx: 20
+      q_last_approx: 0.64
+      visit_share_approx: 0.005   # well under 5% — concordant dismissal signature
+      trajectory_pattern: "stays near V-head baseline; never develops a meaningful Q profile"
 
 # === Validation history ===
 
@@ -82,3 +113,9 @@ divergent_quadrants:
 # - test_rxd4_q_confirms_within_one_search: PASS (q_peak - q_first = +0.41)
 # - test_rxb1_check_refuted_within_one_search: PASS (q_trough - q_first = -0.38)
 # - test_live_stats_block_count_meaningful_for_10k_search: PASS (25 blocks)
+#
+# Chunk 6b.5 pod measurement 2026-05-19:
+# - Qg5 trajectory captured via extract_mcts_trajectory; classified as
+#   "concordant dismissal" (visit share 0.46%; Q never developed).
+# - Latency check: single-snapshot extract_mcts at nodes=10000 warm =
+#   0.77s; no regression from always-on --log-live-stats.

@@ -11,9 +11,9 @@
 ## Current Status
 
 - **Phase:** 2 — MCTS Integration. Entered 2026-05-19 after Phase 1's informal close. Phase 2 entry brief delivered + acknowledged; Phase 2 plan written (see `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md`).
-- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19; Chunk 6a (v0+v1+v2) done 2026-05-19; Chunk 6b done 2026-05-19; pod validation pass done 2026-05-19; **Chunk 6b.5 — Pre-6c hardening** in progress 2026-05-19. 6b.5 commit A landing: CLAUDE.md protocol pitfall + INTERPRETABILITY_NOTES.md Q-trajectory shape subsection (§4.4) + mcts_trajectory.py trough-prose contract + layer_emergence.py kProOnly cross-reference. 6b.5 commit B pending: pod Qg5 measurement + latency check + meta YAML update. Then Chunk 6c implementation.
+- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19; Chunk 6a (v0+v1+v2) done 2026-05-19; Chunk 6b done 2026-05-19; pod validation pass done 2026-05-19; **Chunk 6b.5 done 2026-05-19** (both commits). All findings landed: protocol-pitfall in CLAUDE.md; Q-trajectory shape methodology + trough-prose contract; Qg5 = concordant-dismissal quadrant (third of three; not the rare 4th); latency check passes at 0.77s warm for single-snapshot MCTS. **Walkthrough position now anchors THREE quadrants in one position** (search-refutes, MCTS-rescue, concordant-dismissal). Next: Chunk 6c — `did_you_consider` handler + v1 prompt + CLI wiring.
 - **Last session:** 2026-05-19
-- **Next session goal:** **Chunk 6c implementation.** `did_you_consider` handler + v1 prompt + CLI wiring. The v1 prompt's three worked examples are now empirically anchored: (1) concordant pick (a starting-position or Italian Game example where the network and MCTS agree on the bestmove), (2) search-refutes (Rxb1+ on the walkthrough position — q_trough=+0.36 at v22 from v_first=+0.74), (3) network-low-MCTS-rescue (Rxd4 on the same walkthrough position — q_peak=+0.96 at v125 from V-head v_first=+0.56 with the network never ranking it in the top-5 at any layer). All numbers from real pod runs; methodology doc §4 worked example updated to match.
+- **Next session goal:** **Chunk 6c implementation.** `did_you_consider` handler + v1 prompt + CLI wiring. The v1 prompt's four worked examples are now empirically anchored: (1) concordant pick (a starting-position or Italian Game example where network and MCTS agree on the bestmove), (2) search-refutes (Rxb1+ on walkthrough — q_trough=+0.36 at v28 from v_first=+0.74), (3) network-low-MCTS-rescue (Rxd4 on walkthrough — q_peak=+0.95 at v88 from V-head v_first=+0.56; never enters network top-5 at any layer), (4) concordant dismissal (Qg5 on walkthrough — L=0 favorite that BOTH later layers AND search dismiss; visit share 0.46%; Q never develops past +0.68). All numbers from real pod runs; methodology doc §4 worked example + fixture meta YAML updated to match.
 
 > **Pod state caveat:** RunPod stop/start cycles wipe everything outside `/workspace` (apt packages, `/workspace/bin/lc0`, `/usr/local/cuda-12.8/bin` PATH). Run `ssh runpod 'bash /workspace/leela-chat/scripts/setup_pod.sh'` after every pod restart — idempotent, takes ~30s on warm restart and ~10 min on first build of Lc0.
 
@@ -1053,6 +1053,56 @@ Open questions / threads (carry to commit B):
 - **`why_this_move` warm latency.** Now that Lc0 spawns with `--log-live-stats` always-on, single-snapshot extractors do extra parsing per call. Expected negligible (~10ms) vs the second-scale search itself, but worth verifying. If >15s warm, per-call CLI-flag toggle or separate-process pattern needed.
 
 Test status: 128 unit tests pass (unchanged from commit B27dfe4; doc-only commit).
+
+---
+
+#### 2026-05-19 (cont., 12) — Chunk 6b.5 commit B: pod Qg5 measurement + latency check
+
+Two pod tasks per the v3 reviewer pass. Both completed cleanly via ssh.
+
+**Pod measurement — Qg5's MCTS behavior on the walkthrough position.**
+
+Single `extract_mcts_trajectory(board, engine=eng)` call (content-aware sampling, default budget=10000). Compared Qg5 against Rxd4 and Rxb1+ at the deepest live-stats emit (root_visits=4592).
+
+Empirical per-candidate summaries:
+
+| Candidate | Visits | Visit share | q_first | q_peak @ v | q_trough @ v | q_last |
+|---|---|---|---|---|---|---|
+| Rxd4 | 4194 | 91.33% | +0.558 | +0.954 @ v=88 | +0.392 @ v=0 | +0.921 |
+| Rxb1+ | 89 | 1.94% | +0.739 | +0.747 @ v=2 | +0.363 @ v=28 | +0.532 |
+| Qg5 | 21 | 0.46% | +0.558 | +0.679 @ v=20 | +0.392 @ v=0 | +0.639 |
+
+**Qg5 quadrant classification: concordant dismissal.** Visit share 0.46% (well under the 5% threshold). Q stays near the V-head baseline (+0.56 → +0.68); never develops a meaningful Q profile because PUCT doesn't allocate visits. So the story: L=0 embedding-only favorite that BOTH later network layers AND search agree isn't the move — by independent routes. Network: rank 1 @ L=0 → rank 7 @ L=15 (late-layer demotion). Search: never gets enough visits to develop a Q (search-time dismissal via visit allocation). **NOT the rare 4th quadrant** (network-changes-mind / search-disagrees) — Qg5 isn't kept by search; it's quietly ignored.
+
+Walkthrough position now anchors **three** distinct quadrants in one position:
+- Rxd4 = network-low / MCTS-rescue (peak rank 9 at L=15; visit share 91%)
+- Rxb1+ = network-keeps-late / search-refutes (late emergence to rank 1; visit share 2%, Q trough at v=28)
+- Qg5 = concordant dismissal (L=0 favorite that BOTH signals lose interest in; visit share 0.5%)
+
+That's three of the four dual-timescale quadrants on a single fixture. The fourth quadrant (network-changes-mind / search-disagrees, would be rare and architecturally interesting) is not present here — backlog item for a future fixture hunt if 6c's v1 prompt demands it.
+
+Fixture metadata YAML at `tests/unit/fixtures/lc0/walkthrough_rxd4.meta.yaml` updated with all three quadrants' measured numbers + the classification logic + the trajectory_pattern descriptions the 6c v1 prompt will draw from.
+
+**Pod latency check — single-snapshot warm.**
+
+Concern: now that `Lc0Engine` spawns with `--log-live-stats` always-on, single-snapshot extractors (`extract_mcts`, used by Handlers 1 + 2) parse the full 25-block live-stats stream per call, then filter to the last block via `_keep_last_block`. Expected overhead: ~10ms (the parser is cheap; the dominant cost is the search itself). Worst case: regression from ~10s to >15s on `why_this_move` warm.
+
+Measured: `extract_mcts(board, engine, nodes=10000)` warm = **0.77s**. Total script wall (Lc0 spawn + BT4 load + 1 warm-up + 1 measured call) = 7.0s. **No regression.** The `_keep_last_block` filter is essentially free relative to search cost.
+
+Conclusion: the `--log-live-stats`-always-on pattern in `Lc0Engine.__init__` is fine for production. No need for a per-call CLI-flag toggle or separate-process pattern. The 0.77s warm cost is the search itself; the live-stats parsing is in the noise.
+
+What surprised me (small):
+
+- **Qg5's `q_trough` and `q_first` are the same value (+0.392).** Both are the V-head-only block where visits=0. That's because Qg5 was first sampled at the block where visits transitioned 0→1; the early V-head-only blocks all show the same Q (+0.39-+0.56 range from the V-head). The summary code correctly identifies the lowest among them as the trough. Edge case but consistent.
+
+- **Three-quadrant coverage in one position is a stronger A1 close than originally planned.** v2 plan called for one hand-picked divergent fixture; we ended up with one position that happens to cover three quadrants because we measured it carefully. The methodology-first discipline kept us from over-engineering a fixture hunt.
+
+Open questions / threads (carry to 6c):
+
+- **Should 6c v1 prompt have three or four worked examples?** With the walkthrough position's three quadrants + a separate concordant-pick example (e.g. starting-position d2d4 where network top-1 and MCTS top-1 agree), we have four examples. Whether to include all four or just the three from the walkthrough is a prompt-design question for 6c.
+
+Test status: 128 unit tests pass (unchanged).
+
 
 
 
