@@ -840,6 +840,11 @@ What's deferred to pod session before Chunk 6c implementation:
 
 - **A1 — Divergent-timescale test fixture.** Requires real Lc0 capture; off-pod blocks the FEN selection on running Lc0 ourselves to verify the candidate position actually shows the network-low / MCTS-rescue signature. The plan's pre-6c gate stands: a `tests/unit/fixtures/lc0/divergent_<name>.txt` (Lc0 verbose-move-stats capture) plus a metadata YAML (FEN, expected MCTS-rescue move, Stockfish-depth-20 PV) must be committed before 6c implementation begins. The 6c v1 prompt's third worked example anchors on this fixture.
 
+  **A1 source-hunt order** (user guidance 2026-05-19):
+  1. Check `update_research/repos/superhuman-ai-consistency-main/` test set first — likely the cleanest divergent candidates.
+  2. Fall back to leela-interp's `interesting_puzzles.pkl` (figshare download required) only if (1) doesn't surface a clean candidate quickly.
+  3. Selection signature: tactical-sacrifice positions where the network *underrates* the sacrifice but MCTS finds it AND Stockfish's bestmove agrees with MCTS — concretely: focal move is Stockfish-top-1, MCTS-top-1, but outside the network policy top-3.
+
 What surprised me:
 
 - **The doc restructure was bigger than I'd estimated.** The slim INTERPRETABILITY_NOTES.md is 290 lines — more than the ~150 target. §3 (Prose Contract) is the most expensive section by a wide margin because it's load-bearing (forbidden / allowed language lists, permanence clause, encoding-vs-use explanation). I left it long; cutting it further would make the contract weaker. The methodology-doc trajectory will be revisited at Phase 4 anyway per the Option-B decision's exit criterion.
