@@ -386,3 +386,49 @@ Add **Stockfish-comparison extraction** to Chunk 5, in the same handler (`what_i
 - BIBLE.md §6.2 — `compare_with_stockfish` handler description (will be revisited at Phase 2 entry given this ADR's overlap).
 - CLAUDE.md §8 — Phase-creep pitfall list (clarifying edit pending).
 - `lc0` binary verified `bestmove d8d4 ponder a3c3` on position 4 at 20k nodes; pod log captured in this session.
+
+---
+
+### ADR-0010: Skip formal eval grading; user is QA; defer Chunks 7 & 10
+
+- **Date:** 2026-05-19
+- **Status:** Accepted
+- **Phase:** Phase 1 — Network-First Chat MVP (and Phase 2 carryover)
+- **Decision-makers:** [initials]
+
+#### Context
+CLAUDE.md §2 Rule 3 ("The eval set is sacred") mandates that the canonical eval set runs before any change to extractors / handlers / LLM / validator code, with per-handler scores compared to baseline. The plan was for Chunk 7 to build that grader (`eval_positions.yaml` reader + LLM-as-judge + must_mention/must_not_mention scoring) and Chunk 10 to gate Phase 1 exit on its results.
+
+The system is currently small (one production handler, ~200 lines of orchestration, 49 tests). The user is sole developer and sole user at this scale. The Chunk 5 audit (2026-05-18) made the practical situation explicit: the user can run `scripts/smoke_test_handler.py` against a dev-fixture set and visually verify outputs in minutes. The formal grader would take a chunk of work to build, then sit idle waiting for friends' eval positions to actually grade against. Friends' authoring may or may not arrive.
+
+The architecture-of-efficiency reframe (chosen 2026-05-19): the next high-value capability is Phase 2 MCTS integration, not formal-eval infrastructure. The user opts to take on the QA role manually while the system is auditable by one person.
+
+#### Decision
+**Skip Chunk 7 (eval grader) and Chunk 10 (Phase 1 exit verification) indefinitely.** Rule 3 is informally relaxed for Phase 1 and Phase 2:
+- The de-facto regression harness is `leela_chat/scripts/smoke_test_handler.py`. Every commit to `leela_chat/extractors/`, `leela_chat/handlers/`, `leela_chat/llm/`, or `leela_chat/validator/` should run the smoke script and the user must visually compare against the prior run.
+- Friends' eval positions, if delivered, become **nice-to-have** manual spot-check material — extra positions to feed into the smoke script — not an ML-style regression baseline.
+- Phase 1 does NOT formally close. The four Phase 1 exit criteria in CLAUDE.md §11 remain on the record, but criteria #1 ("30 eval positions pass on all 3 handlers") and #2 ("zero hallucinated moves in last 100 interactions") are unenforceable without the grader. Criteria #3 (latency <30 s) and #4 ("you personally find it useful") stay as informal checks.
+- This decision is revisited at **Phase 3 entry**. Phase 3 (concept probes) needs a phase-appropriate eval mechanism anyway — ADR-0007 already mandates a behavioral-test metric on top of AUC>0.9. When Phase 3 starts we either build the grader then (against richer findings) or decide it's still skippable.
+
+#### Alternatives considered
+- **Option A — build the grader now anyway.** Cost ~1 chunk of work + maintenance overhead. Value gated on friends' eval-position delivery (uncertain) and on the user actually committing changes the grader could catch (low at this scale). Rejected: net-negative ROI at the current system size.
+- **Option B — partial automation (just `must_not_mention` checking).** Cheaper than full Chunk 7 but still requires friend-authored positions. Rejected: half-built infrastructure that no one would maintain.
+- **Option C — defer to Phase 3 entry.** Functionally identical to this decision, but framed as "delay" rather than "skip." Rejected as a label — calling it a deferral implies a definite return date, which is false. The honest framing is "skipped; revisit at Phase 3 entry if scale demands."
+- **Option D — full eval-driven discipline now.** Wait for friends' eval set, then build the grader, then enforce Rule 3 strictly. Rejected: blocks all downstream work on uncertain external delivery; project paralysis.
+
+#### Consequences
+- **No mechanical regression detection** for Phase 1 and Phase 2. The user is responsible for noticing regressions via the smoke script. Works while the system fits in one head; reassess at Phase 3 entry when probes / SAEs / labels grow the surface beyond manual auditability.
+- **Smoke script gets promoted** from "Chunk 5 dev tool" to "regression harness." Worth making sure the FIXTURES list there covers the kinds of positions where regressions would hurt (which it already mostly does — 10 positions span endgame/middlegame/opening/tactical).
+- **Phase 1 stays informally open** indefinitely. Project trajectory has a permanent "Phase 1 incomplete" mark; this is honest given the architecture-of-efficiency reorder.
+- **Friends' eval-position work isn't wasted.** Their positions become extra smoke-test fixtures the user can spot-check.
+- **CLAUDE.md §11 Phase 1 exit criteria need clarification** — either update them in a follow-up edit, or leave them as historical context with a pointer to this ADR. The latter is cleaner (preserve original intent).
+- **ADR-0007 (Phase 3 behavioral tests) is unaffected** — it still applies. Phase 3 needs *some* eval mechanism, and that's when it gets built (correctly, against the behavioral-test methodology).
+- **Reversal cost is small** — Chunk 7's design hasn't been written down in code; it stays a design idea. If we want to revive it (Phase 3 entry or earlier), no code is wasted.
+
+#### References
+- CLAUDE.md §2 Rule 3 — the rule being relaxed.
+- CLAUDE.md §11 Phase 1 exit criteria — informally no longer enforceable.
+- ADR-0007 — Phase 3 behavioral-test exit criterion (still in force; defines the *eventual* eval shape).
+- PHASE_NOTES.md 2026-05-18 audit — the trigger (user observation that Phase 1 prose was thin pre-Stockfish, and that formal-eval infrastructure isn't the bottleneck on usability).
+- `leela_chat/scripts/smoke_test_handler.py` — the de-facto regression harness.
+- `tests/eval/eval_positions.yaml` — kept (Rule 3 says never remove positions), just unused for now; friends' contributions still go here if they arrive.
