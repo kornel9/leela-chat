@@ -50,6 +50,12 @@ from leela_chat.handlers.what_is_leela_seeing import (
     handle_what_is_leela_seeing,
     templated_fallback as what_templated_fallback,
 )
+from leela_chat.handlers.did_you_consider import (
+    HANDLER_NAME as DYC_HANDLER_NAME,
+    PROMPT_VERSION as DYC_PROMPT_VERSION,
+    handle_did_you_consider,
+    templated_fallback as dyc_templated_fallback,
+)
 from leela_chat.handlers.why_this_move import (
     HANDLER_NAME as WHY_HANDLER_NAME,
     PROMPT_VERSION as WHY_PROMPT_VERSION,
@@ -77,7 +83,9 @@ _DEFAULT_LC0_WEIGHTS = Path(
 
 # Available handlers in this build. Order matters only for ``--help``
 # rendering; the classifier picks by question + position context.
-HANDLERS_AVAILABLE: list[str] = [WHAT_HANDLER_NAME, WHY_HANDLER_NAME]
+HANDLERS_AVAILABLE: list[str] = [
+    WHAT_HANDLER_NAME, WHY_HANDLER_NAME, DYC_HANDLER_NAME,
+]
 
 
 # === Shared session context =================================================
@@ -204,7 +212,7 @@ def _answer_one(
         )
 
     t0 = time.perf_counter()
-    if handler_name == WHY_HANDLER_NAME:
+    if handler_name in (WHY_HANDLER_NAME, DYC_HANDLER_NAME):
         if move_uci is None:
             raise ValueError(
                 f"Handler {handler_name!r} requires --move <UCI>."
@@ -214,14 +222,24 @@ def _answer_one(
             raise ValueError(
                 f"Move {move_uci!r} is not legal on FEN {fen!r}."
             )
-        findings = handle_why_this_move(
-            board, move,
-            model=ctx.model,
-            stockfish_engine=ctx.stockfish,
-            lc0_engine=ctx.lc0,
-        )
-        fallback_fn = why_templated_fallback
-        prompt_version = WHY_PROMPT_VERSION
+        if handler_name == DYC_HANDLER_NAME:
+            findings = handle_did_you_consider(
+                board, move,
+                model=ctx.model,
+                stockfish_engine=ctx.stockfish,
+                lc0_engine=ctx.lc0,
+            )
+            fallback_fn = dyc_templated_fallback
+            prompt_version = DYC_PROMPT_VERSION
+        else:
+            findings = handle_why_this_move(
+                board, move,
+                model=ctx.model,
+                stockfish_engine=ctx.stockfish,
+                lc0_engine=ctx.lc0,
+            )
+            fallback_fn = why_templated_fallback
+            prompt_version = WHY_PROMPT_VERSION
     else:
         findings = handle_what_is_leela_seeing(
             board,

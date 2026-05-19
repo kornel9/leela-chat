@@ -233,3 +233,44 @@ def test_ask_illegal_move_for_position_exits_2(capsys, monkeypatch):
     out = capsys.readouterr()
     assert "not legal" in out.err.lower()
     assert build_called == [], "should not load model for illegal move"
+
+
+# --- Chunk 6c: did_you_consider handler argv tests --------------------------
+
+
+def test_ask_did_you_consider_handler_passes_through(monkeypatch):
+    """--handler did_you_consider --move <UCI> routes correctly."""
+    captured = _patch_heavy(monkeypatch)
+    cli_main.main([
+        "ask", "--fen", START_FEN, "--question", "Did you consider d4?",
+        "--move", "d2d4", "--handler", "did_you_consider",
+    ])
+    assert captured["handler_override"] == "did_you_consider"
+    assert captured["move_uci"] == "d2d4"
+
+
+def test_ask_did_you_consider_in_available_handlers_list():
+    """did_you_consider should be a recognized handler choice."""
+    parser = cli_main.build_parser()
+    # argparse stores 'choices' on the action; find the --handler action.
+    ask_subparser = None
+    for action in parser._actions:
+        if hasattr(action, "choices") and action.choices:
+            if "did_you_consider" in action.choices:
+                ask_subparser = action
+                break
+    # Either the top-level parser OR the ask subparser has the choices.
+    if ask_subparser is None:
+        # Subparser-only: probe via the parser's subparsers.
+        for action in parser._actions:
+            if hasattr(action, "choices") and "ask" in (action.choices or {}):
+                ask_p = action.choices["ask"]
+                for sub_action in ask_p._actions:
+                    if hasattr(sub_action, "choices") and sub_action.choices:
+                        if "did_you_consider" in sub_action.choices:
+                            ask_subparser = sub_action
+                            break
+                break
+    assert ask_subparser is not None, (
+        "did_you_consider should be in the --handler choices list"
+    )
