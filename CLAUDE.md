@@ -263,6 +263,9 @@ This list grows as the project finds new ways to fail. Check it before doing any
 - Committing weights, large data, or `.env` files
 - Working without git, even for "quick experiments"
 
+### External-tool / protocol pitfalls
+- **UCI `setoption` silently accepts unknown or hidden options.** python-chess (and any other UCI bridge) sends `setoption name X value Y` to the engine without validating that X is an exposed option. Lc0's `kProOnly` options (e.g. `LogLiveStats`) are *not* listed in `uci` option output and are *not* settable via `setoption`, but `setoption` calls naming them are accepted without error. This means an unverified `engine.configure({"X": True})` call can be a project-wide silent no-op. Lc0 v0.32.1 `LogLiveStats` (Chunk 6a v1, 2026-05-19) is the canonical example — single-search live-stats was actually single-snapshot for ~24 hours because synthetic-fixture tests passed against a stream that real Lc0 wasn't producing. **Required pattern for any new UCI-option-based behavior:** at engine spawn, query the option list (`uci\nquit` to the engine, parse `option name ...` lines) and assert the option is present, OR drive the behavior via a CLI flag treated as the source of truth. Same pattern applies to HookedTransformer hookpoint names (verify the hook string against the actual module's HookPoints before relying on it), Lc0 backend-specific quirks, and Stockfish UCI extensions that aren't portable across builds.
+
 ---
 
 ## 9. How to Work in This Repo (When You're Claude Code)

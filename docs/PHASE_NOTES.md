@@ -11,7 +11,7 @@
 ## Current Status
 
 - **Phase:** 2 — MCTS Integration. Entered 2026-05-19 after Phase 1's informal close. Phase 2 entry brief delivered + acknowledged; Phase 2 plan written (see `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md`).
-- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19; Chunk 6a (v0+v1+v2) done 2026-05-19; Chunk 6b done 2026-05-19; **pod validation pass** done 2026-05-19. All pre-6c gates closed: hook-wiring sanity ✓, layer-emergence non-degeneracy ✓, live-stats trajectory ✓, A1 divergent fixture ✓ (the existing walkthrough_rxd4 position covers BOTH divergent quadrants — see fixture metadata YAML). Next: Chunk 6c — `did_you_consider` handler + v1 prompt with three worked examples + CLI wiring. No more pod gates remaining before 6c implementation.
+- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19; Chunk 6a (v0+v1+v2) done 2026-05-19; Chunk 6b done 2026-05-19; pod validation pass done 2026-05-19; **Chunk 6b.5 — Pre-6c hardening** in progress 2026-05-19. 6b.5 commit A landing: CLAUDE.md protocol pitfall + INTERPRETABILITY_NOTES.md Q-trajectory shape subsection (§4.4) + mcts_trajectory.py trough-prose contract + layer_emergence.py kProOnly cross-reference. 6b.5 commit B pending: pod Qg5 measurement + latency check + meta YAML update. Then Chunk 6c implementation.
 - **Last session:** 2026-05-19
 - **Next session goal:** **Chunk 6c implementation.** `did_you_consider` handler + v1 prompt + CLI wiring. The v1 prompt's three worked examples are now empirically anchored: (1) concordant pick (a starting-position or Italian Game example where the network and MCTS agree on the bestmove), (2) search-refutes (Rxb1+ on the walkthrough position — q_trough=+0.36 at v22 from v_first=+0.74), (3) network-low-MCTS-rescue (Rxd4 on the same walkthrough position — q_peak=+0.96 at v125 from V-head v_first=+0.56 with the network never ranking it in the top-5 at any layer). All numbers from real pod runs; methodology doc §4 worked example updated to match.
 
@@ -1021,6 +1021,40 @@ Open questions / threads (carry to pod + 6c):
 - **Cost on pod.** N+1 = 16 forward passes; we haven't measured warm-BT4 latency on the pod yet. The plan says ~800 ms; if it's 5 s, may need to cache per-session (one extraction per board hash).
 
 Test status: 126 unit tests pass (was 109; +17 layer-emergence). Integration suite collects 59 tests off-pod (was 56; +3 layer-emergence integration tests).
+
+---
+
+#### 2026-05-19 (cont., 11) — Chunk 6b.5 commit A: doc-only hardening before 6c
+
+Pre-6c hardening from the v3 reviewer pass. Two findings from the pod-validation session warranted project-persistent capture before 6c locks in worked examples and prompt language. Commit A is off-pod doc edits only; commit B (pod Qg5 measurement + latency check) follows separately.
+
+What I did:
+
+- **CLAUDE.md §8 — new subsection "External-tool / protocol pitfalls."** Lead entry: UCI `setoption` silently accepts unknown / `kProOnly`-hidden options. Required verification pattern (option-readback at engine spawn; OR CLI flag treated as source-of-truth). Cross-references to HookedTransformer hookpoint-name silent-no-op (same class of bug) and future Stockfish UCI extensions. Lc0 v0.32.1 `LogLiveStats` (6a v1, 2026-05-19) recorded as the canonical example with timeline.
+
+- **INTERPRETABILITY_NOTES.md §4 — major restructure.** §4.1 / §4.2 rewritten from v0 *predictions* (which turned out wrong on both rank and Q-trajectory shape) to *empirical pod measurements* (Rxb1+ late-emerging rank 41→1 at L=14-15; Rxd4 never-top-5 with rank 43→9). New §4.4 "Q-trajectory shape — the partial-U pattern" explains the PUCT-redirect math: why a refuted move's Q dips to a trough then partially recovers ("search no longer looking" vs "the move getting better"). Sets up the trough-prose contract that 6c's v1 prompt will enforce.
+
+- **`mcts_trajectory.py` module docstring — trough-prose contract.** Two-tier prose contract section: (a) cross-cutting forbidden/allowed list referenced from §3 of INTERPRETABILITY_NOTES.md (no "decided/realized/discovered"); (b) Q-trajectory-specific forbidden/allowed list referenced from §4.4 (no "monotonic drop", no "Q recovered → move improved"; instead "Q hit a trough of X around visit Y, then visits stagnated as PUCT redirected elsewhere"). This docstring is the SoT for the 6c prompt.
+
+- **`layer_emergence.py` module docstring — kProOnly cross-reference.** New "External-tool pitfall reference (CLAUDE.md §8)" section noting that hookpoint name strings are NOT validated at attach-time — same class of bug as the Lc0 UCI `setoption` silent-no-op. Cites the hook-wiring sanity test as the project's defense.
+
+What did NOT change in 6b.5 commit A:
+- The `_keep_last_block` always-on filter for `--log-live-stats` (the working solution from the pod session). If the latency check (commit B) shows regression, address there.
+- The 6c handler/prompt — that's the next chunk, after 6b.5 closes.
+- The walkthrough_rxd4.meta.yaml — Qg5 data lands in commit B with the pod measurement.
+
+What surprised me (small):
+
+- **The duplicate §4.3 heading I almost shipped.** My first Edit on §4.1/§4.2 added a "### 4.3 What the LLM should say..." line at the end, not realizing §4.3 already existed below. Caught by grep before commit. Reminder to read structure before bulk-editing in the middle of a section.
+
+Open questions / threads (carry to commit B):
+
+- **Qg5's MCTS quadrant.** Outcome will be either "concordant dismissal" (3rd quadrant; the walkthrough position then anchors three quadrants in one) or "rare network-changes-mind / search-disagrees" (4th quadrant; rare and architecturally most-interesting). Either is useful for 6c's v1 prompt. Measurement is a single ssh call.
+- **`why_this_move` warm latency.** Now that Lc0 spawns with `--log-live-stats` always-on, single-snapshot extractors do extra parsing per call. Expected negligible (~10ms) vs the second-scale search itself, but worth verifying. If >15s warm, per-call CLI-flag toggle or separate-process pattern needed.
+
+Test status: 128 unit tests pass (unchanged from commit B27dfe4; doc-only commit).
+
+
 
 
 

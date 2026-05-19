@@ -176,6 +176,23 @@ The 6b implementation MUST:
    ``extract_network_inference``'s convention.
 
 ================================================================
+External-tool pitfall reference (CLAUDE.md §8)
+================================================================
+
+This extractor uses HookedTransformer hookpoints by name (e.g.
+``blocks.{L}.hook_attn_out``). Hookpoint name strings are NOT
+validated at attach-time — passing an unknown name silently no-ops
+the hook. Same class of pitfall as Lc0's ``LogLiveStats`` UCI
+``setoption`` silently-no-op (CLAUDE.md §8 "External-tool / protocol
+pitfalls"). Verification pattern: integration tests must assert
+behavior depends on the hook, not just that the call doesn't raise.
+The 6b integration test's hook-wiring sanity gate
+(``test_baseline_top1_matches_network_inference_starting_position``)
+is this project's canonical defense against silent-hook-no-op for
+this extractor. Re-validate it whenever the HookedTransformer
+vendored module is bumped or BT4 weights are changed.
+
+================================================================
 Limitations
 ================================================================
 

@@ -112,12 +112,43 @@ identically.
   individual MCTS visit). That would need an Lc0 source patch and is
   not currently planned.
 
-**Prose contract.** Outputs of this module are observational. The
-forbidden / allowed language lists in
-``docs/INTERPRETABILITY_NOTES.md`` §3 apply: describe what changed in
-the trajectory (rank, visits, Q), don't claim what search "decided" or
-"realized." Search is the source of *trajectory* facts; Stockfish is
+**Prose contract — cross-cutting (§3 of INTERPRETABILITY_NOTES.md).**
+Outputs of this module are observational. Don't claim what search
+"decided" / "realized" / "discovered." Describe what changed in the
+trajectory; search is the source of *trajectory* facts; Stockfish is
 the source of *content* facts (which move refutes which).
+
+**Prose contract — Q-trajectory specific (§4.4 of
+INTERPRETABILITY_NOTES.md).** Refuted moves show partial-U Q
+trajectories — initial Q matches policy-prior optimism, DROPS to a
+trough as search finds the refutation, then PARTIAL RECOVERY as PUCT
+redirects visits elsewhere and the move stops being expanded.
+**The recovery is NOT the move getting better.** It's "search no
+longer looking." The refutation signature is the *trough* plus visit
+stagnation, not q_last.
+
+Forbidden phrasings about Q trajectory:
+
+- "Q dropped monotonically from X to Y"
+- "by visit N, Q had fallen to..." (when N is past the trough)
+- "Q recovered to X" framed as positive ("move improved")
+- "the move's Q stabilized at Y" when Y is post-trough drift
+- "the trajectory ended at Q=Y" (q_last drift is not informative on
+  its own; cite q_trough + visit stagnation)
+
+Allowed phrasings about Q trajectory:
+
+- "Q hit a trough of X around visit Y" (the trough is load-bearing)
+- "then visits stagnated at ~N as PUCT redirected elsewhere"
+- "the post-trough drift to Z is not Q recovering; it's search no
+  longer sampling that branch"
+- "the refutation signature is trough + visit stagnation, not the
+  final Q value"
+- "Q reached the trough at visit Y, and remained low while visits
+  stagnated"
+
+The 6c v1 prompt enforces this contract; this docstring is the
+source-of-truth.
 """
 from __future__ import annotations
 

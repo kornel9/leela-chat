@@ -143,27 +143,41 @@ Lc0 plays **Rxd4** (`d8d4`). Network policy ranks Rxb1+ first (~27%),
 Rxd4 only fourth (~7%). MCTS at 10 000 visits inverts this: Rxd4
 collects ~840 visits, Rxb1+ ~20.
 
-### 4.1 Network-time story (predicted)
+### 4.1 Network-time story (empirical, pod 2026-05-19)
 
-- **Rxb1+**: rank stays #1 across every measured BT4 layer. Its
-  `network_dismissal` tag is **never_rose** — except it *started* at
-  top-1, so technically the right tag is **rose_and_stayed**. The
-  network alone, even at layer 15, ranks it first. The mechanism that
-  catches Kxb1 lies beyond the per-position forward pass; search is
-  what reveals it.
-- **Rxd4**: enters top-10 around mid-network, stays there at the final
-  layer (~4th). Tag: **rose_and_stayed**.
+The v0 predictions about Rxb1+ being "ranked #1 throughout all 15
+layers" and Rxd4 "entering top-10 around mid-network" turned out
+wrong. Real measurements:
 
-### 4.2 Search-time story (predicted)
+- **Rxb1+**: rank **41** at L=0; stays in the 30-50 range through L=13;
+  rank **2** at L=14; rank **1** at L=15. The network commits to
+  Rxb1+ only at the very last two layers — late emergence, not stay-
+  top-1-throughout. Tag: **rose_and_stayed** (in top-5 by some layer,
+  final rank ≤ 10).
+- **Rxd4**: rank **43** at L=0; never enters top-5 at any layer;
+  peak rank **9** at L=15. The network never finds this move. Tag:
+  **never_rose** (rank > 5 at every measured layer).
 
-- **Rxb1+**: early in the tree (~500 visits across all candidates), Q
-  is roughly +0.7 — matches the optimistic policy prior. By 10 000
-  visits in the same tree, Q has dropped to ~+0.4 as the refutation
-  propagates and PUCT redirects visits elsewhere. Tag:
-  **explored_and_refuted**.
-- **Rxd4**: ~50 visits early because the prior is low; Q ~+0.85. By
-  10 000 visits in the same tree, visits dominate (~840), Q has grown
-  to ~+0.95. Tag: **explored_and_confirmed**.
+This is itself an interesting story for the prose: Rxb1+ is a *late-
+emerging* network commitment (not a continuous one), and Rxd4 is a
+*pure-search discovery* (the network's pattern recognition doesn't
+suggest it at any layer of computation). §4.4 covers the substantive
+chess finding this enables.
+
+### 4.2 Search-time story (empirical, pod 2026-05-19)
+
+The v0 predictions about Q "dropping monotonically toward end-of-
+search" turned out wrong on shape. The real Q trajectory has the
+partial-U pattern documented in §4.4. Measured summaries:
+
+- **Rxb1+**: `q_first=+0.74 q_peak=+0.75@v=2 q_trough=+0.36@v=22
+  q_last=+0.52 blocks=25`. Tag: **explored_and_refuted**. The trough
+  at v=22 is the refutation signature; the post-trough drift to +0.52
+  is search no longer sampling, not the move recovering (§4.4).
+- **Rxd4**: `q_first=+0.56 q_peak=+0.96@v=125 q_trough=+0.42@v=0
+  q_last=+0.92 blocks=25`. q_first/q_trough are the same V-head-only
+  point (visits=0 at first emit); the move climbs to its peak as
+  visits accumulate. Tag: **explored_and_confirmed**.
 
 ### 4.3 What the LLM should say (Chunk 6c v1 prompt target)
 
@@ -193,8 +207,60 @@ field is the load-bearing data point, not `q_last`. Methodology
 locked accordingly in Chunk 6a v2.
 
 This is the v1 worked example. A second case — the divergent
-*network-low / MCTS-rescue* quadrant — is gated on a hand-picked
-fixture (deferred to pod session before Chunk 6c implementation).
+*network-low / MCTS-rescue* quadrant — was empirically closed in the
+pod-validation session: the walkthrough position covers both
+divergent quadrants (Rxd4 = network-low / MCTS-rescue;
+Rxb1+ = network-keeps-late / search-refutes). Single position;
+multiple anchor cases.
+
+### 4.4 Q-trajectory shape — the partial-U pattern
+
+The v0 prediction that refuted moves show a monotonic Q drop ("Q goes
+from +0.7 at 1000 visits to +0.4 at 10 000 visits") turned out wrong
+on shape. The empirical Q trajectory for a refuted move is a
+**partial-U**: high initial Q matching the policy prior's optimism,
+DROP to a trough as search expands the move's subtree and finds the
+refutation, then PARTIAL RECOVERY to a less-bad final value as visits
+stagnate.
+
+**The recovery is not "the move getting better."** It's PUCT's
+selection rule redirecting visits away from the now-refuted move:
+
+- PUCT picks the next leaf to expand via `argmax(Q + U)` where `U`
+  decreases with visit count and `Q` is the move's mean action value.
+- Once the refutation registers in `Q` (drops by say 0.3), both terms
+  start penalizing this move relative to others:
+  - `Q` is now lower → less attractive on the value side.
+  - `U` also decreases because each visit reduces the move's PUCT
+    exploration bonus.
+- New visits go elsewhere. The move's Q stops being updated by fresh
+  expansions of its sharp/refuted lines and instead drifts toward a
+  less-mixed sample of its subtree — sometimes drifting back toward
+  less-bad partial-exploration values.
+
+**So:** the trough is the refutation signature; the post-trough drift
+is "search no longer looking," not "the move recovering." The prose
+must reflect this — see the prose contract in the
+`mcts_trajectory.py` module docstring for the forbidden / allowed
+language list, and §3 above for the cross-cutting prose contract that
+applies to all observational extractors.
+
+**Empirical (pod 2026-05-19, Rxb1+ on the walkthrough):**
+- v=1 (block 0): Q=+0.74 (V-head optimism + 1 visit, attractive-
+  looking attack)
+- v=22 (block ~15): Q=+0.36 (trough; refutation has registered)
+- v=93 (block ~19, deepest emit): Q=+0.52 (partial drift back as
+  PUCT redirected to Rxd4 and the visit-count grew slowly)
+
+The trough at v=22 is what tells us search refuted the move. The
++0.52 at v=93 is *not* a recovery of the move's evaluation — it's a
+mixed-but-stale Q from fewer fresh expansions.
+
+**Implication for "search_dismissal" tags.** A move can be
+`explored_and_refuted` even if its `q_last > q_first - 0.20` — the
+diagnostic is `q_trough - q_first` and visit-growth stagnation, not
+the q_last delta. See `mcts_trajectory.py` for the implementation
+contract.
 
 ---
 
