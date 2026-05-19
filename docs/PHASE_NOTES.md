@@ -10,10 +10,10 @@
 
 ## Current Status
 
-- **Phase:** 1 — Network-First Chat MVP (informally closed; see 2026-05-19 entry and ADR-0010)
-- **Active chunk:** none — Phase 1 chunks 1-6 done, 7/10 skipped per ADR-0010, 8/9 deferred until after Phase 2.
+- **Phase:** 2 — MCTS Integration. Entered 2026-05-19 after Phase 1's informal close. Phase 2 entry brief delivered + acknowledged; Phase 2 plan written (see `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md`).
+- **Active chunk:** Phase 2 Chunk 1 done 2026-05-19 (Lc0Engine wrapper + 11 unit + 2 pod integration tests). Next: Chunk 2 — MCTS parser turning info-string lines into Pydantic findings.
 - **Last session:** 2026-05-19
-- **Next session goal:** Phase 2 entry brief (MCTS integration). Adds the search signal source that handler v3 prompts already acknowledge is missing.
+- **Next session goal:** Phase 2 Chunk 2 — `parse_verbose_move_stats(lines) -> MCTSFindings`. Pure-Python parser; unit tests with frozen Lc0 v0.32.1 outputs.
 
 > **Pod state caveat:** RunPod stop/start cycles wipe everything outside `/workspace` (apt packages, `/workspace/bin/lc0`, `/usr/local/cuda-12.8/bin` PATH). Run `ssh runpod 'bash /workspace/leela-chat/scripts/setup_pod.sh'` after every pod restart — idempotent, takes ~30s on warm restart and ~10 min on first build of Lc0.
 
@@ -597,4 +597,65 @@ Phase 1 exit-criteria status (informal closure per ADR-0010):
 
 Next session goal:
 - **Phase 2 Entry Brief** (CLAUDE.md §10) — MCTS integration. Mandatory reading from PRIOR_WORK.md (Lc0 `--verbose-move-stats` doc, McGrath Hydra Effect for Phase 6 prep-awareness pass), tooling (Stockfish wrapper already shipped in Chunk 5; new piece is the MCTS tree parser — ADR-0006 documents the option-space, decision still pending), go/no-go decisions (parser sourcing: Option A wrap superhuman-ai-consistency vs Option B clean-room port). Phase 2 is a multi-chunk effort; brief will propose the chunking before any code lands.
+
+---
+
+## Phase 2 — MCTS Integration
+
+### Exit criteria (per Phase 2 plan, adjusted under ADR-0010)
+
+- [ ] MCTS extractor produces clean Pydantic on ~30+ positions (smoke against dev fixtures + walkthrough + fresh).
+- [ ] Handler 1 v4 prompt surfaces real disagreement on the Rxd4 walkthrough position (`source=llm`, prose names the policy-vs-MCTS visit-share gap explicitly).
+- [ ] Handler 2 `why_this_move` explains a chosen move usefully on ~5 positions.
+- [ ] Handler 3 `did_you_consider` distinguishes "tactically refuted" from "didn't search enough" on ~5 positions.
+- [ ] No regression: `pytest tests/ -q` stays clean; CLI REPL still functional.
+- [ ] Subjective utility check: user finds the system more useful than at Phase-1-close.
+
+(Original criterion "6 handlers total pass eval" reinterpreted per ADR-0010 — no grader.)
+
+### Locked Phase 2 decisions (2026-05-19, from Phase 2 Entry Brief)
+
+- **G2.1** — Parser sourcing: **Option B (clean-room port)**. Reasoning: superhuman-ai-consistency has zero tests, conflicting deps (chess==1.9.4 vs our 1.11), and a lossy schema (collapses W/D/L into a single WL float). Porting buys Pydantic typing, edge-case tests, schema fields we need (per-child PV, mate flag, search-complete marker), and dep-conflict-free integration. Reference repo stays on disk for grammar consultation.
+- **G2.2** — Chunk plan: 7 chunks (subprocess wrapper → parser → extractor → Handler-1 v4 → Handler-2 → Handler-3 → manual QA). Architecture-of-efficiency reorder: handlers 2/3 deferred from Phase 1 to land here against the final findings shape.
+- **G2.3** — Pydantic models preserve per-child raw counts (not aggregated stats). Phase 6 counterfactuals (e.g. "what if Lc0 had searched longer / with different cpuct / with policy ablated?") require raw N/Q/P/wins/draws/losses per child — aggregates foreclose them. Cost: ~1.5 KB extra Pydantic per call; trivially worth it.
+
+### Chunk plan (per Phase 2 plan)
+
+| # | What | Status |
+|---|---|---|
+| 1 | Lc0 subprocess wrapper (`Lc0Engine`) | ✅ done 2026-05-19 |
+| 2 | MCTS parser (`parse_verbose_move_stats(lines) -> MCTSFindings`) | pending |
+| 3 | MCTS extractor (`extract_mcts(board, *, engine, nodes)`) | pending |
+| 4 | Handler 1 v4 — incorporate MCTS findings | pending |
+| 5 | Handler 2 `why_this_move` | pending |
+| 6 | Handler 3 `did_you_consider` | pending |
+| 7 | Manual QA + CLI polish if surfaced | pending |
+
+### Session log
+
+#### 2026-05-19 (cont.) — Phase 2 entered + Chunk 1 done
+
+What I did:
+- Delivered Phase 2 Entry Brief (CLAUDE.md §10) — reading list, tooling check, G2.1/G2.2/G2.3 with my recommendations. User deferred all Tier 1 reading ("reference inline as needed"), asked for the MCTS-basics + G2.3 sections of the plan expanded; both expanded with worked examples on the Rxd4 position. G2.1/G2.2/G2.3 all accepted as proposed.
+- Chunk 1 (`Lc0Engine` wrapper) implemented in `leela_chat/engine/lc0_engine.py` (+ `engine/__init__.py` re-exports). Uses `chess.engine.SimpleEngine.popen_uci([binary, "--verbose-move-stats", "--weights=<path>"])` to spawn Lc0 with verbose stats enabled. Key design choice: capture info-string lines via the streaming `engine.analysis(...)` context manager (iterating over per-line InfoDicts) rather than `engine.analyse(...)` (which would aggregate and overwrite `info["string"]` keeping only the last). Each loop iteration: `info_string_lines.append(info["string"])` when present.
+- 11 unit tests in `tests/unit/test_lc0_engine.py` covering constructor (path validation, CLI args, extra_args plumbing), analyse_verbose (line collection, bestmove reporting, missing-bestmove tolerance, EngineError tolerance, nodes-limit passthrough), and lifecycle (context manager, quit-error tolerance). All pass locally.
+- 2 integration tests in `tests/integration/test_lc0_engine_integration.py` (auto-skipped off-pod) — run real Lc0 against starting position (500 nodes) and the walkthrough Rxd4 position (2000 nodes). Pod run: 13/13 pass, 11.45s total including BT4 GPU load.
+- Renamed the integration test to `test_lc0_engine_integration.py` after pytest balked at the basename collision with the unit test. Convention worth keeping: when a feature has both unit and integration tests, suffix the integration file with `_integration.py` rather than adding `__init__.py` package markers under `tests/`.
+
+What surprised me:
+- **Lc0's actual line format differs slightly from what I had in the Phase 2 plan's example.** Real v0.32.1 output:
+  ```
+  d2d4  (293 ) N:      96 (+ 0) (P: 12.28%) (WL:  0.04399) (D: 0.649) (M: 198.6) (Q:  0.04399) (U: 0.05111) (S:  0.09506) (V:  0.0364)
+  ```
+  Differences from my plan's draft format: (a) move-index in parens after the UCI move (Lc0 internal — discard during parse); (b) `N: X (+ Y)` form encodes in-flight visits — `+ Y` is visits-in-flight separate from completed `X`; (c) V comes at the END not in the middle; (d) field order is N, P, WL, D, M, Q, U, S, V. Plus a final `node ...` summary line for the root aggregate. Chunk 2's parser regex will handle all of these. Captured here so Chunk 2 doesn't have to re-discover the format.
+- **The streaming `analysis()` approach worked first-try.** I'd half-expected to need to subclass `UciProtocol` to intercept lines, but pulling `info["string"]` from each yielded InfoDict captures every verbose-move-stats line cleanly because the context manager exits BEFORE the bestmove sentinel, but the iterator drains the queue. The relevant python-chess source paths: `chess/engine.py:1798-1810` (`_parse_uci_info` stuffs the post-`info string ` content into `info["string"]`), `chess/engine.py:1756` (`analysis.post(info_dict)` per line), `chess/engine.py:2727-2737` (`AnalysisResult.post` queues each one for iteration).
+- **Lc0 startup chatter goes to stderr** (CUDA detection, weights file loading) which python-chess logs as `<UciProtocol (...)>: stderr >> ...` — not into `info["string"]`. Cosmetic only; doesn't pollute the captured lines.
+
+Open questions / threads:
+- **The in-flight visit count `N: X (+ Y)` form.** For root summary at end-of-search, in-flight should always be 0 (search has concluded). For mid-search captures, in-flight could be nonzero. Parser should store both `visits` (X) and `visits_in_flight` (Y) — useful for Phase 6 if we want to inspect intermediate search states.
+- **The `node ...` summary line.** Lc0 emits one as the final captured line — represents the root node aggregate (subtree sum across all root children). Chunk 2's parser should split candidate lines (move-prefixed) from the node summary line and store the node line's stats separately (likely as `MCTSFindings.root_stats: dict`).
+- **The (move-index) field in parens after the UCI move.** Lc0's internal ordering index. No interpretive value for us; parser can discard.
+
+Next session goal:
+- **Chunk 2** — `leela_chat/extractors/mcts_parser.py`. Pure-function `parse_verbose_move_stats(lines: list[str]) -> MCTSFindings`. Inline Pydantic models (`MCTSChild`, `MCTSFindings`). Unit tests with frozen Lc0 v0.32.1 sample outputs (the starting-position 21-line dump captured today + ~5-10 more from the walkthrough positions). No pod needed — pure-Python parser tests run locally.
 
