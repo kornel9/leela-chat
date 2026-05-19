@@ -11,9 +11,9 @@
 ## Current Status
 
 - **Phase:** 2 — MCTS Integration. Entered 2026-05-19 after Phase 1's informal close. Phase 2 entry brief delivered + acknowledged; Phase 2 plan written (see `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md`).
-- **Active chunk:** Phase 2 Chunks 1 + 2 done 2026-05-19 (Lc0Engine + MCTS parser). Next: Chunk 3 — `extract_mcts(board, *, engine, nodes)` glue function composing the wrapper and parser into the handler-facing extractor.
+- **Active chunk:** Phase 2 Chunks 1 + 2 + 3 done 2026-05-19 (Lc0Engine + MCTS parser + extract_mcts glue). Next: Chunk 4 — wire MCTS findings into `what_is_leela_seeing` handler, write v4 prompt teaching policy-vs-MCTS-vs-Stockfish framing.
 - **Last session:** 2026-05-19
-- **Next session goal:** Phase 2 Chunk 3 — `leela_chat/extractors/mcts.py` extractor function. Should be a small wrapper: takes a live Lc0Engine + board + nodes, calls analyse_verbose, feeds output through parse_verbose_move_stats, returns MCTSFindings. Tests: mock both Lc0Engine and parser, verify glue behaviour.
+- **Next session goal:** Phase 2 Chunk 4 — extend `WhatIsLeelaSeeingFindings` Pydantic with an `mcts: MCTSFindings` field, update the handler to call `extract_mcts` alongside `extract_network_inference` + `extract_stockfish_eval`, write `v4.md` prompt that surfaces the policy-vs-MCTS-vs-Stockfish three-way comparison (this is where the walkthrough Rxd4 case finally produces good prose). Smoke against walkthrough positions A/B/C on the pod.
 
 > **Pod state caveat:** RunPod stop/start cycles wipe everything outside `/workspace` (apt packages, `/workspace/bin/lc0`, `/usr/local/cuda-12.8/bin` PATH). Run `ssh runpod 'bash /workspace/leela-chat/scripts/setup_pod.sh'` after every pod restart — idempotent, takes ~30s on warm restart and ~10 min on first build of Lc0.
 
@@ -625,7 +625,7 @@ Next session goal:
 |---|---|---|
 | 1 | Lc0 subprocess wrapper (`Lc0Engine`) | ✅ done 2026-05-19 |
 | 2 | MCTS parser (`parse_verbose_move_stats(lines) -> MCTSFindings`) | ✅ done 2026-05-19 |
-| 3 | MCTS extractor (`extract_mcts(board, *, engine, nodes)`) | pending |
+| 3 | MCTS extractor (`extract_mcts(board, *, engine, nodes)`) | ✅ done 2026-05-19 |
 | 4 | Handler 1 v4 — incorporate MCTS findings | pending |
 | 5 | Handler 2 `why_this_move` | pending |
 | 6 | Handler 3 `did_you_consider` | pending |
@@ -679,4 +679,23 @@ Open questions / threads:
 
 Next session goal:
 - **Chunk 3** — `leela_chat/extractors/mcts.py`. Composes `Lc0Engine.analyse_verbose` + `parse_verbose_move_stats` into a single `extract_mcts(board, *, engine, nodes=10000) -> MCTSFindings` callable. Tests mock both pieces and verify the glue. ~50 LOC, ~5 unit tests, ~30 minutes including PHASE_NOTES entry.
+
+---
+
+#### 2026-05-19 (cont., 3) — Phase 2 Chunk 3 done: MCTS extractor (the glue)
+
+What I did:
+- `leela_chat/extractors/mcts.py` — `extract_mcts(board, *, engine, nodes=10000) -> MCTSFindings`. Pure composition: call `engine.analyse_verbose(board, nodes=nodes)` → feed `info_string_lines` + `bestmove_uci` + `search_complete` into `parse_verbose_move_stats(...)` → return findings. Loguru debug line records `requested / searched / bestmove / top1_visits / complete` for telemetry. ~40 LOC including docstring.
+- 5 unit tests in `tests/unit/test_extract_mcts.py` (mocked Lc0Engine returning frozen fixture lines): happy path on starting position, nodes-kwarg passthrough, board passthrough (with the walkthrough Rxd4 fixture to verify SAN translation uses the correct board), default nodes=10000, search-incomplete propagation.
+- 2 pod integration tests in `tests/integration/test_extract_mcts_integration.py`: end-to-end against real Lc0, checking the walkthrough Rxd4 position surfaces Rxd4 with Q > 0.5 and >200 visits at 2000 nodes, plus a starting-position smoke that confirms 20 children + bestmove on a 500-node search.
+- All 28 MCTS + Lc0 tests pass on pod in 21.93s. Local: 84 pass + 32 skip (the 32 skips include the 4 pod integration tests that auto-skip without `/workspace/bin/lc0`).
+
+What surprised me:
+- **Nothing**, which is actually a good signal. Chunks 1 and 2 were designed so that Chunk 3 was a trivial composition; the absence of surprises means the layer boundaries were right. The most "interesting" thing was confirming that Lc0 at 2000 nodes really does find Rxd4 in the walkthrough case — which we knew from the fixture capture, but seeing it through the full `extract_mcts` pipeline against the live engine is the proof.
+
+Open questions / threads:
+- **Lc0 search-budget tuning.** Default `nodes=10000` is reasonable for Handler 1 (`what_is_leela_seeing`). Handler 3 (`did_you_consider`) may want 50k+ to give low-visit candidates a fair chance. Defer the per-handler-default decision until Chunks 5-6 land.
+
+Next session goal:
+- **Chunk 4** — Update `what_is_leela_seeing` to incorporate MCTS findings. Touches: `leela_chat/handlers/what_is_leela_seeing.py` (add `extract_mcts` call + `mcts: MCTSFindings` field on `WhatIsLeelaSeeingFindings`), `templated_fallback` (extend to render MCTS info), `leela_chat/llm/prompts/what_is_leela_seeing/v4.md` (new prompt teaching three-signal framing with worked example on the Rxd4 case), `leela_chat/cli/__main__.py` (build Lc0Engine in `_build_context`, pass to handler, close in `_close_context`). Smoke against the walkthrough positions; expect Rxd4-case prose to be substantially richer than Phase 1.
 
