@@ -47,6 +47,7 @@ from leela_chat.conversation import ConversationState, Turn
 from leela_chat.handlers.what_is_leela_seeing import (
     HANDLER_NAME as WHAT_HANDLER_NAME,
     PROMPT_VERSION as WHAT_PROMPT_VERSION,
+    PROMPT_VERSION_DETAILED as WHAT_PROMPT_VERSION_DETAILED,
     handle_what_is_leela_seeing,
     templated_fallback as what_templated_fallback,
 )
@@ -59,6 +60,7 @@ from leela_chat.handlers.did_you_consider import (
 from leela_chat.handlers.why_this_move import (
     HANDLER_NAME as WHY_HANDLER_NAME,
     PROMPT_VERSION as WHY_PROMPT_VERSION,
+    PROMPT_VERSION_DETAILED as WHY_PROMPT_VERSION_DETAILED,
     handle_why_this_move,
     templated_fallback as why_templated_fallback,
 )
@@ -182,6 +184,7 @@ def _answer_one(
     *,
     handler_override: str | None = None,
     move_uci: str | None = None,
+    detailed: bool = False,
 ) -> tuple[ValidatedTranslation, float, float]:
     """Run handler + translate for one (fen, question[, move]) tuple.
 
@@ -196,6 +199,11 @@ def _answer_one(
             like ``why_this_move``). When the resolved handler needs a move
             and this is None, raises ``ValueError``. When the resolved
             handler doesn't take a move, this is ignored.
+        detailed: Chunk 6.5 opt-in for Handlers 1 and 2 — enables
+            ``extract_mcts_trajectory`` + ``extract_layer_emergence`` and
+            routes the translator to the v5 / v2 prompts respectively.
+            Ignored for Handler 3 (``did_you_consider`` is always
+            detailed). Adds ~750 ms latency from the N+1 forward passes.
 
     Returns:
         Tuple of (validated translation, handler latency in seconds,
@@ -223,6 +231,12 @@ def _answer_one(
                 f"Move {move_uci!r} is not legal on FEN {fen!r}."
             )
         if handler_name == DYC_HANDLER_NAME:
+            # did_you_consider is always detailed; --detailed is a no-op.
+            if detailed:
+                logger.info(
+                    "--detailed is a no-op for did_you_consider (always "
+                    "detailed by construction)."
+                )
             findings = handle_did_you_consider(
                 board, move,
                 model=ctx.model,
@@ -237,18 +251,24 @@ def _answer_one(
                 model=ctx.model,
                 stockfish_engine=ctx.stockfish,
                 lc0_engine=ctx.lc0,
+                detailed=detailed,
             )
             fallback_fn = why_templated_fallback
-            prompt_version = WHY_PROMPT_VERSION
+            prompt_version = (
+                WHY_PROMPT_VERSION_DETAILED if detailed else WHY_PROMPT_VERSION
+            )
     else:
         findings = handle_what_is_leela_seeing(
             board,
             model=ctx.model,
             stockfish_engine=ctx.stockfish,
             lc0_engine=ctx.lc0,
+            detailed=detailed,
         )
         fallback_fn = what_templated_fallback
-        prompt_version = WHAT_PROMPT_VERSION
+        prompt_version = (
+            WHAT_PROMPT_VERSION_DETAILED if detailed else WHAT_PROMPT_VERSION
+        )
     t1 = time.perf_counter()
     result = translate_and_validate(
         findings=findings,
@@ -270,7 +290,8 @@ def _emit_telemetry(
     total_out = sum(r.output_tokens for r in result.llm_responses)
     print(
         f"[source={result.source} validation_ok={result.validation.ok} "
-        f"handler={handler_s:.2f}s translate={translate_s:.2f}s "
+        f"handler={result.handler_name} prompt=v{result.prompt_version} "
+        f"handler_s={handler_s:.2f} translate_s={translate_s:.2f} "
         f"llm_calls={len(result.llm_responses)} "
         f"tokens=in:{total_in}/out:{total_out}]",
         file=sys.stderr,
@@ -317,6 +338,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
                 ctx, args.fen, args.question,
                 handler_override=handler_override,
                 move_uci=move_uci,
+                detailed=args.detailed,
             )
         except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -429,7 +451,9 @@ def cmd_repl(args: argparse.Namespace) -> int:
             assert state.current_fen is not None  # set by _prompt_initial_fen
             try:
                 result, handler_s, translate_s = _answer_one(
-                    ctx, state.current_fen, raw, handler_override=args.handler
+                    ctx, state.current_fen, raw,
+                    handler_override=args.handler,
+                    detailed=args.detailed,
                 )
             except ValueError as exc:
                 # Shouldn't happen for a question (FEN already validated;
@@ -515,6 +539,16 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
         help=(
             "Emit a one-line telemetry footer to stderr after each response "
             "(source, validation status, latency, token counts). Off by default."
+        ),
+    )
+    p.add_argument(
+        "--detailed",
+        action="store_true",
+        help=(
+            "Opt into Chunk 6.5 dual-timescale signals (MCTS Q-trajectory "
+            "+ BT4 per-layer rank emergence) for Handlers 1 and 2. Adds "
+            "~750 ms latency; routes the translator to v5 / v2 prompts. "
+            "No-op for did_you_consider (always detailed)."
         ),
     )
 

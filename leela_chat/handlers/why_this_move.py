@@ -30,8 +30,18 @@ from typing import TYPE_CHECKING, Literal
 import chess
 from pydantic import BaseModel, ConfigDict, Field
 
+from leela_chat.extractors.layer_emergence import (
+    CandidateLayerTrajectory,
+    NetworkDismissalTag,
+    extract_layer_emergence,
+)
 from leela_chat.extractors.mcts import extract_mcts
-from leela_chat.extractors.mcts_parser import MCTSChild, MCTSFindings
+from leela_chat.extractors.mcts_parser import (
+    MCTSChild,
+    MCTSFindings,
+    MCTSTrajectorySummary,
+)
+from leela_chat.extractors.mcts_trajectory import extract_mcts_trajectory
 from leela_chat.extractors.network_inference import (
     MoveCandidate,
     WDL,
@@ -42,6 +52,10 @@ from leela_chat.extractors.stockfish import (
     StockfishResult,
     extract_stockfish_eval,
 )
+from leela_chat.handlers._dismissal import (
+    SearchDismissalTag,
+    classify_search_dismissal,
+)
 
 if TYPE_CHECKING:
     import chess.engine
@@ -51,7 +65,15 @@ if TYPE_CHECKING:
 
 # Points at leela_chat/llm/prompts/why_this_move/v1.md.
 # Per CLAUDE.md §3: increment, never delete old prompt versions.
+# v1 -> v2 (2026-05-20): Chunk 6.5 --detailed mode adds dual-timescale
+#   focal-move signals — the focal MCTS trajectory_summary (Q + visits
+#   dynamics within one search) and the focal CandidateLayerTrajectory
+#   (per-layer rank emergence across BT4). Both feed pre-computed
+#   network_dismissal + search_dismissal tags that the v2 prompt
+#   narrates with the trough-prose contract. Default mode (no
+#   --detailed) keeps v1 byte-identical.
 PROMPT_VERSION = 1
+PROMPT_VERSION_DETAILED = 2
 
 HANDLER_NAME = "why_this_move"
 
@@ -161,6 +183,46 @@ class WhyThisMoveFindings(BaseModel):
         ),
     )
 
+    # === Chunk 6.5: --detailed-mode dual-timescale signals ===
+    # All four default to None in v1 (default) mode; populated when
+    # ``handle_why_this_move(..., detailed=True)``. The v2 prompt reads
+    # these fields; v1 ignores them (default-mode byte-identity).
+    focal_layer_trajectory: CandidateLayerTrajectory | None = Field(
+        default=None,
+        description=(
+            "Network-time: per-layer rank trajectory for the focal move "
+            "across BT4's 15 layers (--detailed mode only). None when "
+            "the layer-emergence extractor wasn't run."
+        ),
+    )
+    focal_mcts_trajectory_summary: MCTSTrajectorySummary | None = Field(
+        default=None,
+        description=(
+            "Search-time: one-shot summary of the focal move's Q + "
+            "visit evolution within one MCTS tree (--detailed mode "
+            "only). ``q_trough`` is the load-bearing refutation signal "
+            "per the trough-prose contract; NOT ``q_last``. None when "
+            "MCTS-trajectory wasn't run or focal not visited."
+        ),
+    )
+    network_dismissal: NetworkDismissalTag | None = Field(
+        default=None,
+        description=(
+            "Pre-computed from ``focal_layer_trajectory.network_dismissal``. "
+            "One of ``rose_and_stayed`` / ``rose_and_fell`` / "
+            "``never_rose`` / ``unknown``. None in default mode or when "
+            "the focal move wasn't in the layer-emergence top-N."
+        ),
+    )
+    search_dismissal: SearchDismissalTag | None = Field(
+        default=None,
+        description=(
+            "Pre-computed from ``focal_mcts_trajectory_summary`` + "
+            "``focal_mcts_child.visits`` + root visits via "
+            "``classify_search_dismissal``. None in default mode."
+        ),
+    )
+
     model_config = ConfigDict(frozen=True)
 
 
@@ -207,6 +269,7 @@ def handle_why_this_move(
     stockfish_depth: int = 15,
     stockfish_top_n: int = 3,
     mcts_nodes: int = 10000,
+    detailed: bool = False,
 ) -> WhyThisMoveFindings:
     """Build the findings JSON for ``why_this_move`` on the given position+move.
 
@@ -223,6 +286,15 @@ def handle_why_this_move(
         stockfish_depth: Stockfish search depth.
         stockfish_top_n: Stockfish multipv count.
         mcts_nodes: Lc0 search budget.
+        detailed: Chunk 6.5 opt-in. When ``True``, swaps
+            :func:`extract_mcts` for :func:`extract_mcts_trajectory` so the
+            focal child carries a ``trajectory_summary``, AND calls
+            :func:`extract_layer_emergence` with ``focal_uci=move.uci()``
+            to populate the focal layer trajectory. Also derives
+            ``network_dismissal`` (from the layer trajectory) and
+            ``search_dismissal`` (via
+            :func:`classify_search_dismissal`). Default ``False`` keeps
+            the v1 byte-identical contract.
 
     Returns:
         :class:`WhyThisMoveFindings`.
@@ -244,7 +316,12 @@ def handle_why_this_move(
     full_mcts: MCTSFindings | None = None
     mcts_truncated: MCTSFindings | None = None
     if lc0_engine is not None:
-        full_mcts = extract_mcts(board, engine=lc0_engine, nodes=mcts_nodes)
+        if detailed:
+            full_mcts = extract_mcts_trajectory(
+                board, engine=lc0_engine, max_nodes=mcts_nodes,
+            )
+        else:
+            full_mcts = extract_mcts(board, engine=lc0_engine, nodes=mcts_nodes)
         # Truncate children for the prompt; full list still available for
         # focal-move lookup via the pre-extracted focal_mcts_child below.
         mcts_truncated = full_mcts.model_copy(
@@ -275,6 +352,35 @@ def handle_why_this_move(
     focal_is_engine_pick = (engine_pick_uci is not None
                             and engine_pick_uci == focal_uci)
 
+    # === Chunk 6.5: --detailed dual-timescale signals ===
+    focal_layer_trajectory: CandidateLayerTrajectory | None = None
+    network_dismissal: NetworkDismissalTag | None = None
+    focal_mcts_summary: MCTSTrajectorySummary | None = None
+    search_dismissal: SearchDismissalTag | None = None
+    if detailed:
+        layer_emergence = extract_layer_emergence(
+            board, model=model, focal_uci=focal_uci, top_n_per_layer=top_n,
+        )
+        focal_layer_trajectory = next(
+            (c for c in layer_emergence.candidates if c.uci == focal_uci),
+            None,
+        )
+        if focal_layer_trajectory is not None:
+            network_dismissal = focal_layer_trajectory.network_dismissal
+        if focal_mcts_child is not None:
+            focal_mcts_summary = focal_mcts_child.trajectory_summary
+            root_visits = (
+                full_mcts.root_stats.visits
+                if full_mcts is not None and full_mcts.root_stats is not None
+                else 0
+            )
+            search_dismissal = classify_search_dismissal(
+                focal_mcts_child, focal_mcts_summary, root_visits,
+            )
+        elif full_mcts is not None:
+            # Focal move not present in deepest snapshot → search never reached.
+            search_dismissal = "never_explored"
+
     return WhyThisMoveFindings(
         fen=leela.fen,
         side_to_move=leela.side_to_move,
@@ -293,6 +399,10 @@ def handle_why_this_move(
         focal_mcts_rank_by_visits=focal_mcts_rank_by_visits,
         focal_stockfish_candidate=focal_stockfish_candidate,
         focal_stockfish_rank=focal_stockfish_rank,
+        focal_layer_trajectory=focal_layer_trajectory,
+        focal_mcts_trajectory_summary=focal_mcts_summary,
+        network_dismissal=network_dismissal,
+        search_dismissal=search_dismissal,
     )
 
 

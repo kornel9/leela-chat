@@ -66,11 +66,13 @@ def _patch_heavy(monkeypatch: pytest.MonkeyPatch, *, answer_result=None) -> dict
         captured["verbose"] = verbose
         return _fake_ctx()
 
-    def fake_answer(ctx, fen, question, *, handler_override=None, move_uci=None):
+    def fake_answer(ctx, fen, question, *, handler_override=None, move_uci=None,
+                    detailed=False):
         captured["fen"] = fen
         captured["question"] = question
         captured["handler_override"] = handler_override
         captured["move_uci"] = move_uci
+        captured["detailed"] = detailed
         return answer_result or _fake_result(), 0.10, 0.20
 
     monkeypatch.setattr(cli_main, "_build_context", fake_build)
@@ -233,6 +235,51 @@ def test_ask_illegal_move_for_position_exits_2(capsys, monkeypatch):
     out = capsys.readouterr()
     assert "not legal" in out.err.lower()
     assert build_called == [], "should not load model for illegal move"
+
+
+# --- Chunk 6.5: --detailed flag argv tests -----------------------------------
+
+
+def test_ask_default_no_detailed_flag(monkeypatch):
+    """Without --detailed, _answer_one should receive detailed=False."""
+    captured = _patch_heavy(monkeypatch)
+    cli_main.main([
+        "ask", "--fen", START_FEN, "--question", "What is Leela seeing?",
+    ])
+    assert captured["detailed"] is False
+
+
+def test_ask_detailed_flag_threads_through(monkeypatch):
+    """--detailed should set _answer_one's detailed kwarg to True."""
+    captured = _patch_heavy(monkeypatch)
+    cli_main.main([
+        "ask", "--fen", START_FEN, "--question", "What is Leela seeing?",
+        "--detailed",
+    ])
+    assert captured["detailed"] is True
+
+
+def test_ask_detailed_with_handler_2(monkeypatch):
+    """--detailed --handler why_this_move --move <UCI> threads cleanly."""
+    captured = _patch_heavy(monkeypatch)
+    cli_main.main([
+        "ask", "--fen", START_FEN, "--question", "Why d4?",
+        "--move", "d2d4", "--handler", "why_this_move", "--detailed",
+    ])
+    assert captured["detailed"] is True
+    assert captured["handler_override"] == "why_this_move"
+    assert captured["move_uci"] == "d2d4"
+
+
+def test_ask_detailed_with_handler_3_still_accepted(monkeypatch):
+    """--detailed is a no-op for did_you_consider but argparse still accepts it."""
+    captured = _patch_heavy(monkeypatch)
+    cli_main.main([
+        "ask", "--fen", START_FEN, "--question", "Did you consider d4?",
+        "--move", "d2d4", "--handler", "did_you_consider", "--detailed",
+    ])
+    assert captured["detailed"] is True
+    assert captured["handler_override"] == "did_you_consider"
 
 
 # --- Chunk 6c: did_you_consider handler argv tests --------------------------

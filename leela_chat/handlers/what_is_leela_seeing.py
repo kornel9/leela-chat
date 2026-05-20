@@ -21,8 +21,13 @@ from typing import TYPE_CHECKING, Literal
 import chess
 from pydantic import BaseModel, ConfigDict, Field
 
+from leela_chat.extractors.layer_emergence import (
+    LayerEmergenceResult,
+    extract_layer_emergence,
+)
 from leela_chat.extractors.mcts import extract_mcts
 from leela_chat.extractors.mcts_parser import MCTSFindings
+from leela_chat.extractors.mcts_trajectory import extract_mcts_trajectory
 from leela_chat.extractors.network_inference import (
     MoveCandidate,
     WDL,
@@ -57,7 +62,12 @@ if TYPE_CHECKING:
 #   share as the load-bearing metric for "what Leela actually plays."
 #   Worked example pinned on the Rxd4 walkthrough case (the canonical
 #   policy-vs-search disagreement).
+# v4 -> v5 (2026-05-20): Chunk 6.5 --detailed mode adds two trajectory
+#   signals — the MCTS Q + visit live-stats stream (per-child
+#   trajectory_summary) and the BT4 per-layer rank trajectories
+#   (layer_emergence). Default mode (no --detailed) keeps v4 unchanged.
 PROMPT_VERSION = 4
+PROMPT_VERSION_DETAILED = 5
 
 # How many top-by-visits MCTS children to surface to the LLM in this
 # handler's findings. The extractor returns all root candidates (up to ~50);
@@ -118,7 +128,21 @@ class WhatIsLeelaSeeingFindings(BaseModel):
             "Lc0 engine (e.g. test paths). When present, children are "
             "truncated to the top ``MCTS_TOP_N_FOR_LLM`` by visits; the "
             "extractor's full output stays available to Handler 3 "
-            "(`did_you_consider`) which needs the long tail."
+            "(`did_you_consider`) which needs the long tail. In "
+            "--detailed mode each child also carries ``trajectory_*`` "
+            "fields populated from the live-stats stream."
+        ),
+    )
+    layer_emergence: LayerEmergenceResult | None = Field(
+        default=None,
+        description=(
+            "Network-time per-layer rank trajectories for the policy "
+            "top-N (Chunk 6.5 --detailed mode only). None in default "
+            "mode. Each candidate's ``layer_trajectory`` shows how the "
+            "move's rank evolves across BT4's 15 layers; "
+            "``network_dismissal`` tags the qualitative shape "
+            "(``rose_and_stayed`` / ``rose_and_fell`` / ``never_rose`` / "
+            "``unknown``)."
         ),
     )
 
@@ -135,6 +159,7 @@ def handle_what_is_leela_seeing(
     stockfish_depth: int = 15,
     stockfish_top_n: int = 3,
     mcts_nodes: int = 10000,
+    detailed: bool = False,
 ) -> WhatIsLeelaSeeingFindings:
     """Build the findings JSON for ``what_is_leela_seeing`` on the given position.
 
@@ -161,6 +186,15 @@ def handle_what_is_leela_seeing(
         mcts_nodes: Node budget for Lc0 MCTS. 10000 is a reasonable trade-off
             between depth and pod-warm latency (~1-3 s). Increase for the
             rare position where the user explicitly asks for deeper analysis.
+        detailed: Chunk 6.5 opt-in. When ``True`` AND the relevant resources
+            are available, the handler swaps :func:`extract_mcts` for
+            :func:`extract_mcts_trajectory` (free, populates each child's
+            ``trajectory_*`` fields from the live-stats stream) AND calls
+            :func:`extract_layer_emergence` to populate ``layer_emergence``
+            (~750 ms for N+1 forward passes on RTX 3090). The v5 prompt
+            template knows how to read these extra fields; ``--detailed``
+            also routes the translator to v5. Default ``False`` keeps the
+            byte-identical v4 contract for legacy / non-coach paths.
 
     Returns:
         Findings model for the translation layer.
@@ -175,13 +209,30 @@ def handle_what_is_leela_seeing(
 
     mcts_findings: MCTSFindings | None = None
     if lc0_engine is not None:
-        full_mcts = extract_mcts(board, engine=lc0_engine, nodes=mcts_nodes)
+        # In --detailed mode, use extract_mcts_trajectory: same search but
+        # populates per-child trajectory_full / trajectory_selected /
+        # trajectory_summary from the live-stats stream. Cost is
+        # essentially identical to extract_mcts per the 6b.5 latency
+        # check; the extra signal is free.
+        if detailed:
+            full_mcts = extract_mcts_trajectory(
+                board, engine=lc0_engine, max_nodes=mcts_nodes,
+            )
+        else:
+            full_mcts = extract_mcts(board, engine=lc0_engine, nodes=mcts_nodes)
         # Truncate children for the LLM-facing handler projection. The
         # extractor's full output (all root candidates incl. zero-visit
         # tail) is what `did_you_consider` (Handler 3, Chunk 6) will
         # consume; Handler 1 only needs the leading few by visit share.
         mcts_findings = full_mcts.model_copy(
             update={"children": list(full_mcts.children[:MCTS_TOP_N_FOR_LLM])},
+        )
+
+    # Network-time per-layer rank trajectories — only when --detailed.
+    layer_emergence: LayerEmergenceResult | None = None
+    if detailed:
+        layer_emergence = extract_layer_emergence(
+            board, model=model, focal_uci=None, top_n_per_layer=top_n,
         )
 
     return WhatIsLeelaSeeingFindings(
@@ -193,6 +244,7 @@ def handle_what_is_leela_seeing(
         top_moves=leela.top_moves,
         stockfish=sf,
         mcts=mcts_findings,
+        layer_emergence=layer_emergence,
     )
 
 
