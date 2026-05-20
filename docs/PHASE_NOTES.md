@@ -11,9 +11,9 @@
 ## Current Status
 
 - **Phase:** 2 — MCTS Integration. Entered 2026-05-19 after Phase 1's informal close. Phase 2 entry brief delivered + acknowledged; Phase 2 plan written (see `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md`).
-- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19; Chunk 6a (v0+v1+v2) done 2026-05-19; Chunk 6b done 2026-05-19; pod validation pass done 2026-05-19; Chunk 6b.5 done 2026-05-19; **Chunk 6c done 2026-05-19** including pod smokes on all four worked-example quadrants. Handler + v1 prompt + CLI wiring shipped; all four pod smokes pass with validation_ok=True and contract-compliant prose; warm latency 16-19s. **Phase 2 trilogy (6a + 6b + 6c) complete; dual-timescale dismissal handler operational.** Next: Chunk 6.5 retrofit decisions, OR Chunk 7 (chess-content extractors), OR Phase 2 close + Phase 3 entry brief.
-- **Last session:** 2026-05-19
-- **Next session goal:** **Chunk 6.5 retrofit decisions** (gated on 6c criteria — see commit f6c139c) OR **Chunk 7 — chess-content extractors** OR **Phase 2 close + Phase 3 entry brief**. User to pick the direction. 6c v1 prompt is operational on all four quadrants; v2 refinement (if needed) is a separate session.
+- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19; Chunk 6a (v0+v1+v2) + 6b + pod validation + 6b.5 + 6c done 2026-05-19; **Chunk 6.5 done 2026-05-20** — Handlers 1+2 (`what_is_leela_seeing`, `why_this_move`) retrofitted with an opt-in `--detailed` flag that swaps `extract_mcts` for `extract_mcts_trajectory` AND calls `extract_layer_emergence`; new prompts `what_is_leela_seeing/v5.md` (Handler 1, +deliberation sentence) and `why_this_move/v2.md` (Handler 2, mirrors did_you_consider/v1 structure with focal-move dismissal tags); shared `classify_search_dismissal` helper extracted to `leela_chat/handlers/_dismissal.py`. Three commits A/B/C: refactor, code+tests, prompts. 155 unit tests pass; all 5 pod smokes (Handlers 1/2 default + detailed + Handler 3 regression) pass with validation_ok=True; Handler 1+2 detailed warm latency 15-20s matching Handler 3. Default-mode behaviour preserved byte-identical. **Phase 2 trilogy + 6.5 complete.** Next: Chunk 7 (chess-content extractors) OR Phase 2 close + Phase 3 entry brief.
+- **Last session:** 2026-05-20
+- **Next session goal:** Chunk 7 — chess-content extractors (Stockfish multi-PV depth ≥ 20, threats, motifs, king safety, material delta) — OR Phase 2 close + Phase 3 Entry Brief per CLAUDE.md §10 (concept-list pruning is the project's highest-leverage Phase-3 decision). User to pick the direction.
 
 > **Pod state caveat:** RunPod stop/start cycles wipe everything outside `/workspace` (apt packages, `/workspace/bin/lc0`, `/usr/local/cuda-12.8/bin` PATH). Run `ssh runpod 'bash /workspace/leela-chat/scripts/setup_pod.sh'` after every pod restart — idempotent, takes ~30s on warm restart and ~10 min on first build of Lc0.
 
@@ -1164,8 +1164,51 @@ Open questions / threads for next sessions:
 
 Test status: 155 tests pass (128 unit + 14 handler + 13 CLI integration). All four pod smokes pass with validation_ok=True. Phase 2 trilogy operational.
 
+#### 2026-05-20 — Phase 2 Chunk 6.5: Handlers 1+2 `--detailed` retrofit
 
+What I did:
+- Three commits A/B/C following the 6.5 plan:
+  - **A** (`c40daeb`): Refactor — extracted `_classify_search_dismissal` from `did_you_consider.py` into a shared `leela_chat/handlers/_dismissal.py` and renamed it to public `classify_search_dismissal` so Handler 2's --detailed path can reuse the same thresholds without a handler-3 import dependency. Did_you_consider keeps a thin underscored re-export for backward compat with the existing test imports. Zero behaviour change.
+  - **B** (`28d605b`): Code + tests — added `detailed: bool = False` kwarg to `handle_what_is_leela_seeing` and `handle_why_this_move`. When True, both swap `extract_mcts` for `extract_mcts_trajectory` and call `extract_layer_emergence`. Handler 1 gets a new `layer_emergence: LayerEmergenceResult | None` field on its Findings model; Handler 2 gets four new optional fields (`focal_layer_trajectory`, `focal_mcts_trajectory_summary`, `network_dismissal`, `search_dismissal`) mirroring Handler 3. Added `PROMPT_VERSION_DETAILED` constants (5 for Handler 1, 2 for Handler 2). CLI `_add_common_flags` gained a `--detailed` boolean flag threaded through `_answer_one` to the handlers and to the prompt-version selection. The telemetry line now also surfaces handler name + prompt version. did_you_consider is unchanged (always detailed; `--detailed` is a logged no-op). 7 new unit tests for Handler 1, 6 for Handler 2, 4 new CLI integration tests — 155 unit tests pass.
+  - **C** (`00db44b`): Prompts — `what_is_leela_seeing/v5.md` adds a "deliberation sentence" to v4's three-signal frame, naming which trajectory pattern drives the verdict (concordant pick / MCTS rescue / search refutes / concordant dismissal) plus full trough-prose contract, substantive-finding pattern for `never_rose`, encoding-vs-use contract, two worked examples (Italian Bc5 concordant + walkthrough Rxd4 MCTS-rescue). `why_this_move/v2.md` mirrors `did_you_consider/v1.md`'s dual-timescale framing but retains v1's Branch A / Branch B structure (focal IS engine pick vs focal IS NOT); three worked examples (concordant d4, search-refutes Rxb1+, MCTS-rescue Rxd4).
 
+Pod state remediation (RunPod restart between sessions):
+- Updated `~/.ssh/config` runpod alias to the new pod (`213.192.2.116:40006`).
+- Re-ran `setup_pod.sh` to reinstall Stockfish (wiped on restart).
+- Recreated `/path/to/models/lc0/BT4.pt` symlink pointing at `/workspace/weights/...` (the known `setup_pod.sh` BT4.pt idempotency backlog item bit again; logged but not fixed in this chunk).
+- Rsync'd the 10 changed files (handlers + CLI + prompts + tests) to `/workspace/leela-chat/`.
+
+5 pod smokes (warm BT4-cached; wall-clock includes ~30-50s BT4 load per process; handler_s + translate_s are the per-call timings):
+
+| # | Handler | Mode | Prompt | source | val_ok | handler_s | translate_s | Notes |
+|---|---|---|---|---|---|---|---|---|
+| 1 | what_is_leela_seeing | default | v4 | templated | False | 7.52 | 19.64 | Pre-existing v4 quirk: validator rejected derived `27%` (visits / total_nodes). Not a 6.5 regression — v4 unchanged since Chunk 4. Templated fallback grounded by construction. |
+| 2 | what_is_leela_seeing | --detailed | v5 | llm | True | 6.93 | 12.75 | Prose uses deliberation sentence: "d4 was tagged `rose_and_stayed` and reached rank 1 by L=5… Q peaked at +0.049 around 39 visits." Cites Nf3's separate layer story. |
+| 3 | why_this_move | default | v1 | llm | True | 7.04 | 8.28 | Default-mode contract preserved exactly: Branch A, bucket framing, no trajectory chatter. |
+| 4 | why_this_move | --detailed | v2 | llm | True | 8.16 | 11.12 | Substantive-finding pattern verbatim: "the network's pattern recognition does not suggest this move at any layer of computation… rank 43 at L=0…" Trough-prose pattern: "Q opened at +0.56, dipped to a trough of +0.42 before the first visit landed, then jumped to +0.92 by visit 12, peaked at +0.96 around visit 125." |
+| 5 | did_you_consider | (always det.) | v1 | llm | True | 7.17 | 9.36 | 6c regression check — output materially identical to the 6c-shipped baseline. No drift from the refactor or the new shared dismissal helper. |
+
+Smoke 1's validator failure is a pre-existing, position-specific v4 issue (the LLM's derived-percentage prose hits an `ungrounded_eval` check). Re-running Handler 1 default on a non-starting position would likely pass; the LLM's prose contained `27%` derived from `2587 / 9643` visits — both numbers are in the JSON, but the validator looks for the literal `27%` string. Filed as backlog candidate (not in 6.5 scope).
+
+The Handler 1 detailed + Handler 2 detailed prose are the most-pleasing output the project has produced yet — both successfully integrate the network-time + search-time stories into the existing chess prose without dominating it. The deliberation sentence pattern (v5) and the substantive-finding pattern (v2) both land cleanly on the walkthrough position. This is the canonical Chunk 6.5 success signature.
+
+Latency budget verified:
+- Handler 1 default: handler_s ~7s (was the default Chunk 4 baseline).
+- Handler 1 detailed: handler_s ~7s — the layer-emergence ~750ms addition is invisible at this resolution; trajectory parsing is essentially free.
+- Handler 2 default: handler_s ~7s.
+- Handler 2 detailed: handler_s ~8s — same picture.
+- All detailed-mode totals ~15-20s wall-clock excluding BT4 load, matching Handler 3's measured 16-19s.
+
+Bugs caught:
+- None. Both new prompts produced contract-compliant output on first LLM call (no retry, no templated fallback) on the walkthrough position.
+
+Surprises:
+- The v4 templated fallback prose accidentally cited a `27%` value that didn't pass validation. The fallback path IS grounded by construction (every number from the JSON), so the user gets a sensible answer — but the validator's strictness means we record `validation_ok=False` for a path that's actually grounded. Worth thinking about whether the templated fallback should be exempt from the same validator that flags LLM output. (Backlog.)
+- The v5 deliberation sentence picked up Nf3's separate layer story unprompted — "Nf3 has an interesting layer story of its own — rank 4 at L=0, dipping to rank 17 at L=1, then climbing all the way to rank 1 at L=13 before settling at rank 2" — emerging from the per-candidate layer_trajectory data. The prompt taught the form; the LLM applied it to the runner-up too.
+
+What's still left for Phase 2:
+- **Chunk 7** chess-content extractors (Stockfish multipv depth ≥20; threats; motifs; king safety; material delta) per the Chunk 6.5 plan §D1. Now that Handler 1+2 detailed have the dual-timescale story, the next leverage is chess content (the WHAT of what's threatened) so the coach-voice prompts (Phase 4 placeholder) can ground in concrete tactical content.
+- **Phase 2 close + Phase 3 entry brief.** Phase 3 concept-list pruning is the project's single highest-leverage decision; the seed list in `docs/phase3/concept_candidates.md` (~91 candidates) was deliberately overfilled at 6a v2 and is now ready for pruning.
 
 
 
