@@ -53,11 +53,19 @@ from leela_chat.extractors.stockfish import (
     StockfishResult,
     extract_stockfish_eval,
 )
+from leela_chat.handlers._dismissal import (
+    SearchDismissalTag,
+    classify_search_dismissal,
+)
 from leela_chat.handlers.why_this_move import (
     _find_focal_in_mcts,
     _find_focal_in_policy,
     _find_focal_in_stockfish,
 )
+
+# Backward-compat alias for tests that imported the underscored name from
+# this module before the shared-helper refactor.
+_classify_search_dismissal = classify_search_dismissal
 
 if TYPE_CHECKING:
     import chess.engine
@@ -70,50 +78,6 @@ HANDLER_NAME = "did_you_consider"
 
 # MCTS top-N to surface to the LLM (mirrors why_this_move).
 MCTS_TOP_N_FOR_LLM = 10
-
-
-# Pre-computed search-time dismissal tag. Empirically calibrated thresholds
-# from the pod-validation session (2026-05-19) per the trough-prose
-# methodology in INTERPRETABILITY_NOTES.md §4.4:
-# - explored_and_refuted: q_trough materially below q_first AND visit
-#   share modest (< 10% — search was running but PUCT redirected away)
-# - explored_and_confirmed: q_peak materially above q_first AND visit
-#   share substantial (>= 25% — search committed)
-# - never_explored: visits <= 2 at the final block (search budget
-#   didn't reach this candidate)
-# - unknown: insufficient trajectory data
-SearchDismissalTag = Literal[
-    "explored_and_refuted",
-    "explored_and_confirmed",
-    "never_explored",
-    "unknown",
-]
-
-
-def _classify_search_dismissal(
-    focal_child: MCTSChild | None,
-    summary: MCTSTrajectorySummary | None,
-    root_visits: int,
-) -> SearchDismissalTag:
-    """Derive search_dismissal from the focal candidate's trajectory summary.
-
-    Rules — see module docstring + INTERPRETABILITY_NOTES.md §4.4 for
-    methodology. The trough vs first comparison is the load-bearing
-    refutation signature, NOT q_last (post-trough drift = "search no
-    longer sampling," not "move recovering").
-    """
-    if focal_child is None or summary is None:
-        return "unknown"
-    if focal_child.visits <= 2:
-        return "never_explored"
-    visit_share = (focal_child.visits / root_visits) if root_visits else 0.0
-    q_dip = summary.q_trough - summary.q_first
-    q_rise = summary.q_peak - summary.q_first
-    if q_dip <= -0.15 and visit_share < 0.10:
-        return "explored_and_refuted"
-    if q_rise >= 0.10 and visit_share >= 0.25:
-        return "explored_and_confirmed"
-    return "unknown"
 
 
 class DidYouConsiderFindings(BaseModel):
@@ -328,7 +292,7 @@ def handle_did_you_consider(
             if full_mcts is not None and full_mcts.root_stats is not None
             else 0
         )
-        search_dismissal = _classify_search_dismissal(
+        search_dismissal = classify_search_dismissal(
             focal_mcts_child, focal_mcts_summary, root_visits,
         )
     elif full_mcts is not None:
