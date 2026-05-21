@@ -42,6 +42,13 @@ dependencies = [
     "sentencepiece>=0.1,<1.0",
     "rich>=12.6,<16.0",
     "typeguard>=4.0,<5.0",
+    # Lichess Puzzle DB corpus infrastructure (Phase 2 Chunk 6.8). zstandard
+    # decompresses the .csv.zst downloaded from database.lichess.org;
+    # pyarrow parses the resulting ~2GB CSV into a Parquet for fast
+    # theme/rating filtering at sampling time. Also reused by Phase 3+
+    # probe-training data work.
+    "zstandard>=0.22,<1.0",
+    "pyarrow>=16.0,<20.0",
 ]
 
 [dependency-groups]

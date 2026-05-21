@@ -18,6 +18,11 @@ uv.lock.bak
 data/
 weights/
 logs/
+# Lichess Puzzle DB corpus (Phase 2 Chunk 6.8): network-volume artifact;
+# ~500MB compressed + ~2GB uncompressed; not git-friendly. Lives at
+# /workspace/lichess_puzzle_db/ on the pod, NOT inside the repo, but
+# this catch-all guards against accidentally placing a copy in-tree.
+lichess_puzzle_db/
 
 # Secrets
 .env*
