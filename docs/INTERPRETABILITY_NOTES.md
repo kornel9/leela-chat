@@ -278,6 +278,13 @@ implementation detail. This index points to where each lives.
 The prose contract in §3 applies to all observational outputs of these
 extractors.
 
+**Prompt-design patterns** that the project's translator prompts rely
+on (e.g. "teach the form once; the model generalises to homogeneous
+elements" from Chunk 6.5 Smoke 2) live in
+[`docs/PROMPT_PATTERNS.md`](PROMPT_PATTERNS.md). §3 here constrains
+prose *content* (what the LLM may say); PROMPT_PATTERNS.md describes
+the *form* the prompts can rely on the LLM to produce.
+
 ---
 
 ## 6. Cross-cutting limitations
