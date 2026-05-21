@@ -235,6 +235,14 @@ def _check_grounding(
     response_text: str, findings: dict[str, Any],
 ) -> list[ValidationError]:
     flat_values = _flatten_numerics(findings)
+    # Visit-share percentages are structurally derivable from raw counts
+    # (visits / total_nodes_searched). The prompts allow citing them as
+    # either raw count or percentage; only raw counts live as literals in
+    # the flattened set. Compute the derived percentages once and use a
+    # SEPARATE candidate set for the percent loop so derived values don't
+    # leak into signed-number grounding (a "+27" eval shouldn't match a
+    # derived 27% visit share).
+    pct_values = flat_values | set(_collect_derived_percentages(findings))
     errors: list[ValidationError] = []
     seen: set[str] = set()
 
@@ -257,13 +265,64 @@ def _check_grounding(
             continue
         seen.add(span)
         value = float(match.group(1))
-        if not _is_grounded(value, flat_values, is_percent=True):
+        if not _is_grounded(value, pct_values, is_percent=True):
             errors.append(ValidationError(
                 kind="ungrounded_eval",
                 detail=f"Percentage '{span}' is not present in findings within tolerance.",
                 span=span,
             ))
     return errors
+
+
+def _collect_derived_percentages(findings: dict[str, Any]) -> list[float]:
+    """Visit-share style percentages derivable from the findings JSON.
+
+    Phase 1+2 prompts allow citing MCTS visit shares as either a raw count
+    (``842 visits``) OR a percentage of total search (``77% of search``).
+    Only the raw counts live in the findings JSON as literals; the
+    percentage form is structurally derivable from
+    ``mcts.children[i].visits / mcts.total_nodes_searched`` (plus the
+    ``visits_in_flight`` variant and the root_stats analogue). The
+    flat-values grounding check sees only raw counts, so without this
+    helper the validator flags every percent-form visit citation as
+    ``ungrounded_eval``. Returns values in percentage form
+    (e.g. 27.0, not 0.27) — the percent grounding path scales by 100x
+    via ``_is_grounded``'s candidate expansion, so feeding it percent-form
+    values keeps the symmetry with ``_PERCENT_RE``'s extraction.
+
+    Scope is intentionally tight: only visit-share derivations. No
+    general "scan every pair of scalars in findings" logic — that would
+    risk accepting any coincidentally-near percentage. Chunk 7's new
+    extractors (Stockfish multipv, threats, motifs, king-safety,
+    material delta) may add their own derivable percentages; each
+    addition gets its own explicit field-pair mapping plus one
+    false-positive test, per the Chunk 6.6 plan's forward-reference.
+    """
+    out: list[float] = []
+    mcts = findings.get("mcts")
+    if not isinstance(mcts, dict):
+        return out
+    total = mcts.get("total_nodes_searched")
+    if not isinstance(total, (int, float)) or total <= 0:
+        return out
+    for child in mcts.get("children", []) or []:
+        if not isinstance(child, dict):
+            continue
+        v = child.get("visits")
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            out.append(100.0 * v / total)
+            vif = child.get("visits_in_flight")
+            if isinstance(vif, (int, float)) and not isinstance(vif, bool):
+                out.append(100.0 * (v + vif) / total)
+    root_stats = mcts.get("root_stats")
+    if isinstance(root_stats, dict):
+        rv = root_stats.get("visits")
+        if isinstance(rv, (int, float)) and not isinstance(rv, bool):
+            out.append(100.0 * rv / total)
+            rvif = root_stats.get("visits_in_flight")
+            if isinstance(rvif, (int, float)) and not isinstance(rvif, bool):
+                out.append(100.0 * (rv + rvif) / total)
+    return out
 
 
 def _flatten_numerics(obj: Any, out: set[float] | None = None) -> set[float]:

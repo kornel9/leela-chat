@@ -172,6 +172,111 @@ def test_findings_with_nested_lists_walked():
     assert r.ok, r.errors
 
 
+# === Grounding: derived visit-share percentages (Chunk 6.6) =================
+#
+# The LLM is allowed to cite MCTS visit shares as either a raw count
+# ("842 visits") OR a percentage ("77% of search"). Only the raw counts
+# live in findings as literals; the percentage form is derivable from
+# (visits / total_nodes_searched). The validator extends the percent
+# candidate set with these derivations so the LLM doesn't get false-
+# negatived for a structurally-correct phrasing.
+#
+# Pre-existing v4 failure that motivated this: smoke 1 of Chunk 6.5
+# returned `27%` derived from 2587/9643 = 0.2683 and the validator
+# flagged ungrounded_eval. See PHASE_NOTES 2026-05-20.
+
+
+def test_visit_share_percentage_grounded_from_visit_count():
+    """The canonical case from the Chunk 6.5 Smoke 1 failure."""
+    findings = {
+        "mcts": {
+            "total_nodes_searched": 9643,
+            "children": [
+                {"uci": "d2d4", "san": "d4", "visits": 2587, "visits_in_flight": 0},
+            ],
+        },
+    }
+    # 2587/9643 = 26.83% — within validator tolerance of "27%".
+    r = validate_response(
+        "Leela commits 27% of search to d4.", fen=START_FEN, findings=findings,
+    )
+    assert r.ok, r.errors
+
+
+def test_visit_share_percentage_grounded_with_in_flight():
+    """(visits + visits_in_flight) / total is also a legal phrasing."""
+    findings = {
+        "mcts": {
+            "total_nodes_searched": 1000,
+            "children": [
+                {"uci": "d2d4", "san": "d4", "visits": 480, "visits_in_flight": 20},
+            ],
+        },
+    }
+    # (480 + 20) / 1000 = 50%. Bare visits would be 48%; the in-flight
+    # variant is what the prompt cites in "X visits + Y in-flight" cases.
+    r = validate_response(
+        "d4 has 50% of search including in-flight.", fen=START_FEN, findings=findings,
+    )
+    assert r.ok, r.errors
+
+
+def test_visit_share_root_grounded_from_root_stats():
+    """mcts.root_stats.visits / total is the "engine spent N% on root" form."""
+    findings = {
+        "mcts": {
+            "total_nodes_searched": 1000,
+            "children": [],
+            "root_stats": {"visits": 950, "visits_in_flight": 0},
+        },
+    }
+    # 950 / 1000 = 95%.
+    r = validate_response(
+        "Engine spent 95% of its visits at root.", fen=START_FEN, findings=findings,
+    )
+    assert r.ok, r.errors
+
+
+def test_visit_share_does_not_create_false_positives():
+    """A percentage that doesn't match any derivable visit share is still
+    flagged ungrounded — derivation widens the candidate pool but does
+    not accept arbitrary percentages."""
+    findings = {
+        "mcts": {
+            "total_nodes_searched": 9643,
+            "children": [
+                {"uci": "d2d4", "san": "d4", "visits": 2587, "visits_in_flight": 0},
+            ],
+        },
+    }
+    # 2587/9643 = 26.83% → derivable as ~27%. "57.3%" matches nothing.
+    r = validate_response(
+        "Some unrelated metric is 57.3%.", fen=START_FEN, findings=findings,
+    )
+    assert not r.ok
+    assert any(e.kind == "ungrounded_eval" and "57.3%" in e.span for e in r.errors)
+
+
+def test_visit_share_handles_zero_total():
+    """Degenerate total_nodes_searched=0 must not divide-by-zero; the
+    derivation helper falls through silently and the validator still
+    flags an ungrounded percentage normally."""
+    findings = {
+        "mcts": {
+            "total_nodes_searched": 0,
+            "children": [
+                {"uci": "d2d4", "san": "d4", "visits": 0, "visits_in_flight": 0},
+            ],
+        },
+    }
+    # No visit-share is derivable. The percent should fail grounding.
+    r = validate_response(
+        "Search committed 27% of nodes.", fen=START_FEN, findings=findings,
+    )
+    assert not r.ok
+    assert any(e.kind == "ungrounded_eval" for e in r.errors)
+
+
 def test_repeated_number_deduplicated():
     r = validate_response("Eval is +5.5, again +5.5.", fen=ITALIAN_FEN, findings={"eval_cp": 42})
     ungrounded = [e for e in r.errors if e.kind == "ungrounded_eval"]
