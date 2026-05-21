@@ -72,20 +72,22 @@ def test_material_signature_kr_vs_k():
 # === solver_first_uci =====================================================
 
 
-def test_solver_first_uci_extracts_index_1():
-    """Per Lichess Puzzle DB: index 0 is opponent setup, index 1 is
-    the solver's first correct move."""
+def test_solver_first_uci_extracts_index_0():
+    """Per current Lichess Puzzle DB convention (database.lichess.org,
+    2024+): FEN's side-to-move is the solver; Moves[0] is the solver's
+    first move; Moves[1] is the opponent's reply."""
     moves = "e2e4 c7c5 g1f3"
-    assert solver_first_uci(moves) == "c7c5"
+    assert solver_first_uci(moves) == "e2e4"
 
 
-def test_solver_first_uci_raises_on_single_move():
-    with pytest.raises(ValueError, match="fewer than 2"):
-        solver_first_uci("e2e4")
+def test_solver_first_uci_single_move_returns_it():
+    """A puzzle with only one move in the sequence still has a solver
+    first move at index 0 — it just doesn't have a continuation."""
+    assert solver_first_uci("e2e4") == "e2e4"
 
 
 def test_solver_first_uci_raises_on_empty():
-    with pytest.raises(ValueError, match="fewer than 2"):
+    with pytest.raises(ValueError, match="empty"):
         solver_first_uci("")
 
 
@@ -199,19 +201,21 @@ def test_sample_by_theme_extracts_focal_move():
     rows = [_row("p1", themes="fork", moves="e2e4 c7c5 g1f3")]
     table = _mk_table(rows)
     out = sample_by_theme("fork", n=1, table=table)
-    assert out[0]["solver_first_uci"] == "c7c5"
+    assert out[0]["solver_first_uci"] == "e2e4"
 
 
 def test_sample_by_theme_skips_malformed_moves():
-    """A row with a single-token Moves field is silently skipped."""
+    """A row with an empty Moves field is silently skipped; single-move
+    rows are accepted (solver has a forced one-move solution)."""
     rows = [
         _row("p1", themes="fork", moves="e2e4 c7c5"),  # OK
-        _row("p2", themes="fork", moves="onlyone"),    # malformed
+        _row("p2", themes="fork", moves="onlyone"),    # single move OK
+        _row("p3", themes="fork", moves=""),           # empty: skipped
     ]
     table = _mk_table(rows)
     out = sample_by_theme("fork", n=10, table=table)
     pids = {r["PuzzleId"] for r in out}
-    assert pids == {"p1"}
+    assert pids == {"p1", "p2"}
 
 
 # === sample_stratified ====================================================

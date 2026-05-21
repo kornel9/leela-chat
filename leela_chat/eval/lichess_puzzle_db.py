@@ -104,26 +104,33 @@ def material_signature(fen: str) -> str:
 def solver_first_uci(moves: str) -> str:
     """Extract the solver's first move from the Moves column.
 
-    Per Lichess Puzzle DB convention: ``Moves`` is space-separated UCI;
-    index 0 is the opponent's setup move that creates the puzzle position,
-    index 1 is the solver's first correct move (the "focal" for our
-    smoke battery).
+    Per the current Lichess Puzzle DB convention (database.lichess.org,
+    2024+): ``FEN`` is the position from which the solver plays first,
+    and ``Moves`` is the space-separated UCI sequence of the resulting
+    line — ``Moves[0]`` is the solver's first move, ``Moves[1]`` is the
+    opponent's reply, ``Moves[2]`` is the solver's second move, etc.
+
+    The side-to-move in ``FEN`` is the solver's color; ``Moves[0]`` is
+    legal on ``FEN``.
+
+    (Earlier versions of the Lichess puzzle data used a different
+    convention where Moves[0] was the opponent's setup; that convention
+    is NOT current. Sanity check: the focal move must be legal on the
+    FEN — verified by python-chess in the handler call sites.)
 
     Args:
         moves: The Moves column value (space-separated UCI).
 
     Returns:
-        UCI of the solver's first move.
+        UCI of the solver's first move (``Moves[0]``).
 
     Raises:
-        ValueError: if the Moves string has fewer than 2 entries.
+        ValueError: if the Moves string is empty.
     """
     parts = moves.split()
-    if len(parts) < 2:
-        raise ValueError(
-            f"Moves column has fewer than 2 entries: {moves!r}"
-        )
-    return parts[1]
+    if not parts:
+        raise ValueError(f"Moves column is empty: {moves!r}")
+    return parts[0]
 
 
 def themes_to_list(themes_value: Any) -> list[str]:
