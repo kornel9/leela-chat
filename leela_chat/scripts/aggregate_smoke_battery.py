@@ -97,13 +97,77 @@ def _classify_illegal_move_error(err: dict, fen: str, prose: str) -> str:
     return "hallucination"
 
 
+def _classify_api_error_subkind(detail: str) -> str:
+    """Sub-classify api_error by detail-string heuristics.
+
+    Anthropic returns the same `api_error` kind for credit exhaustion,
+    rate limits, overloads, and timeouts; we sub-classify by the
+    detail's substring patterns so the banner can surface what actually
+    went wrong instead of saying "check the field." See Chunk 6.8.1
+    plan, Item 3A.
+    """
+    d = (detail or "").lower()
+    if "credit" in d or "balance is too low" in d or "billing" in d:
+        return "credit_exhausted"
+    if "rate" in d or "429" in d:
+        return "rate_limit"
+    if "overload" in d or "529" in d:
+        return "overloaded"
+    if "timeout" in d or "timed out" in d:
+        return "timeout"
+    return "other"
+
+
+def _detect_circuit_breaker_sentinel(rows: list[dict]) -> dict | None:
+    """Find the {_circuit_breaker: True, ...} sentinel row if present.
+
+    The runner writes this as the last JSONL entry when the
+    consecutive-api-error breaker engages (Chunk 6.8.1 Item 3B). Return
+    the sentinel dict (without `_circuit_breaker` mixed into stats) or
+    None if no breaker engaged.
+    """
+    for r in rows:
+        if r.get("_circuit_breaker") is True:
+            return r
+    return None
+
+
 def _render(rows: list[dict], jsonl_path: Path) -> str:
     """Build the markdown summary."""
+    # Filter out any circuit-breaker sentinel before computing stats; it's
+    # a meta-row, not a real (position, handler, mode) data point.
+    sentinel = _detect_circuit_breaker_sentinel(rows)
+    rows = [r for r in rows if not r.get("_circuit_breaker")]
+
     n_total = len(rows)
     if n_total == 0:
         return "# Smoke battery — empty JSONL\n"
 
-    # === Aggregate stats ===
+    # === Three-rate classification (Chunk 6.8.1) ===
+    # LLM-success: the LLM actually returned content (source=llm or llm_retry).
+    n_llm_success = sum(
+        1 for r in rows
+        if r.get("source") in ("llm", "llm_retry") and (r.get("llm_calls") or 0) > 0
+    )
+    llm_success_rate = n_llm_success / n_total if n_total else 0.0
+    # Validation-pass AMONG llm-success runs only — the real prose-quality signal.
+    n_val_pass_among_llm_success = sum(
+        1 for r in rows
+        if r.get("source") in ("llm", "llm_retry")
+        and (r.get("llm_calls") or 0) > 0
+        and r.get("validation_ok") is True
+    )
+    val_pass_rate_among_llm_success = (
+        n_val_pass_among_llm_success / n_llm_success if n_llm_success else 0.0
+    )
+    # Top api_error sub-kinds (when LLM-success is below the gate).
+    api_error_subkinds: Counter = Counter()
+    for r in rows:
+        for e in (r.get("validation_errors") or []):
+            if e.get("kind") == "api_error":
+                api_error_subkinds[_classify_api_error_subkind(e.get("detail", ""))] += 1
+
+    # === Legacy single-rate (demoted but preserved for backward compat) ===
     n_validation_ok = sum(1 for r in rows if r.get("validation_ok") is True)
     val_rate = n_validation_ok / n_total
 
@@ -251,11 +315,58 @@ def _render(rows: list[dict], jsonl_path: Path) -> str:
     lines.append("")
     lines.append(f"Raw data: `{jsonl_path}`")
     lines.append("")
-    lines.append("## Headline aggregate")
+
+    # === Circuit-breaker sentinel banner (if engaged) ===
+    if sentinel is not None:
+        lines.append("## ⚠️ CIRCUIT BREAKER ENGAGED")
+        lines.append("")
+        lines.append(
+            f"The smoke battery runner detected **{sentinel.get('consecutive_api_errors', '?')} "
+            f"consecutive `{sentinel.get('last_error_kind', 'api_error')}` responses** and aborted "
+            f"the run early. Last error detail: "
+            f"`{(sentinel.get('last_error_detail') or '')[:140]}...`"
+        )
+        lines.append("")
+        lines.append(
+            "This is almost always Anthropic credit exhaustion or a persistent "
+            "API outage — fix the underlying issue and re-run via `--reuse-fixture`."
+        )
+        lines.append("")
+
+    # === Three-rate classification (Chunk 6.8.1) ===
+    lines.append("## Headline (three-rate classification)")
+    lines.append("")
+    # LLM-success leads — if it's below the gate, validation numbers are unreliable.
+    if llm_success_rate < 0.95:
+        top_kinds_str = ", ".join(
+            f"`api_error:{k}` ({c})" for k, c in api_error_subkinds.most_common(3)
+        )
+        lines.append(
+            f"**⚠️ LLM-success rate is {llm_success_rate:.1%}** "
+            f"({n_llm_success}/{n_total} calls returned LLM content). "
+        )
+        if top_kinds_str:
+            lines.append(f"Top api_error kinds: {top_kinds_str}.")
+        lines.append(
+            "The validation-pass numbers below reflect only the LLM-success "
+            "calls and may be unreliable until LLM health is restored."
+        )
+        lines.append("")
+    lines.append(f"- **LLM-success rate:** {llm_success_rate:.1%} ({n_llm_success}/{n_total})")
+    lines.append(
+        f"- **Validation-pass among LLM-success:** "
+        f"{val_pass_rate_among_llm_success:.1%} "
+        f"({n_val_pass_among_llm_success}/{n_llm_success}) — "
+        f"{'real prose-quality signal' if llm_success_rate >= 0.95 else 'unreliable; see warning above'}"
+    )
+    lines.append(f"- **Templated-fallback rate:** {templated_rate:.1%} (target ≤ 10%)")
+    lines.append("")
+
+    # === Legacy single-rate + latency + tokens (demoted) ===
+    lines.append("## Aggregate (legacy single-rate + latency)")
     lines.append("")
     lines.append(f"- **Runs:** {n_total} (expected 100; missing = crashes / fixture issues)")
-    lines.append(f"- **Validation_ok rate:** {val_rate:.1%} (target ≥ 90%)")
-    lines.append(f"- **Templated-fallback rate:** {templated_rate:.1%} (target ≤ 10%)")
+    lines.append(f"- **Validation_ok rate (legacy single-rate):** {val_rate:.1%} (target ≥ 90%)")
     lines.append(f"- **Sources:** {dict(by_source)}")
     lines.append(f"- **Latency** (handler_s + translate_s):")
     if total_s:

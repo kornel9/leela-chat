@@ -48,6 +48,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 import chess
+from loguru import logger
 
 # Lazy imports — pyarrow + zstandard only imported when actually used so
 # unit tests that build synthetic in-memory tables don't pay the import
@@ -186,6 +187,36 @@ def load_corpus(path: Path | str = DEFAULT_PARQUET_PATH):
     return pq.read_table(str(p))
 
 
+def _is_solver_move_legal(fen: str, solver_uci: str) -> bool:
+    """Return True iff ``solver_uci`` parses cleanly AND is legal on ``fen``.
+
+    Permanent immunity to the Lichess `Moves[0]`/`Moves[1]` convention bug
+    class (Chunk 6.8): if `solver_first_uci` ever returns a move that's the
+    opponent's reply (opposite color from FEN's side-to-move), that move
+    will be illegal on the FEN and we catch it at sampling time rather
+    than at smoke-battery-runtime.
+
+    Wraps ``chess.Move.from_uci()`` in try/except because the corpus has
+    5.94M rows and any data-drift edge case (truncated UCI, wrong format,
+    missing promotion piece) must be handled gracefully rather than crash
+    the whole sampling pass.
+
+    Args:
+        fen: Position in FEN.
+        solver_uci: The candidate solver move in UCI.
+
+    Returns:
+        ``True`` iff the move parses AND is legal on the FEN-derived board.
+        ``False`` for either parse failure OR illegality.
+    """
+    try:
+        board = chess.Board(fen)
+        move = chess.Move.from_uci(solver_uci)
+    except (ValueError, IndexError):
+        return False
+    return move in board.legal_moves
+
+
 # === sampling API =========================================================
 
 
@@ -250,9 +281,12 @@ def sample_by_theme(
     # Theme filter requires per-row inspection because themes are
     # space-separated strings (or lists). Materialize as Python.
     rows: list[dict] = []
+    examined_count = 0
+    dropped_count = 0  # legality + parse failures (Chunk 6.8.1 guard)
     for batch in filtered.to_batches(max_chunksize=10000):
         records = batch.to_pylist()
         for rec in records:
+            examined_count += 1
             tags = themes_to_list(rec.get("Themes"))
             tag_set = set(tags)
             # All required themes present?
@@ -270,7 +304,21 @@ def sample_by_theme(
             try:
                 focal = solver_first_uci(rec["Moves"])
             except ValueError:
-                continue  # malformed; skip silently
+                continue  # malformed Moves field; skip silently
+            # Permanent guard against the Lichess Moves[0]/Moves[1]
+            # convention-bug class: the solver's first move MUST be
+            # legal on the puzzle's FEN. If not, drop the row with
+            # a WARNING log (data-drift visibility); if `solver_first_uci`
+            # ever regresses to returning the opponent's reply, we catch
+            # it at sample time, not at smoke-battery runtime.
+            if not _is_solver_move_legal(rec["FEN"], focal):
+                logger.warning(
+                    f"sample_by_theme: dropping puzzle {rec.get('PuzzleId')}: "
+                    f"solver move {focal!r} is not legal on FEN "
+                    f"{rec['FEN'][:40]}..."
+                )
+                dropped_count += 1
+                continue
             rows.append({
                 "PuzzleId": rec["PuzzleId"],
                 "FEN": rec["FEN"],
@@ -280,6 +328,27 @@ def sample_by_theme(
                 "OpeningTags": rec.get("OpeningTags"),
                 "material_signature": material_signature(rec["FEN"]),
             })
+
+    # If any rows were dropped due to legality / parse failures,
+    # escalate log level by drop ratio: a small absolute count over a
+    # large examined_count is expected data-integrity noise (e.g. 5.94M
+    # rows have edge cases); a high ratio is a real signal (either
+    # `solver_first_uci` has a bug OR the corpus drifted).
+    if dropped_count > 0 and examined_count > 0:
+        ratio = dropped_count / examined_count
+        if ratio <= 0.001:  # ≤ 0.1%: expected noise
+            logger.info(
+                f"sample_by_theme: dropped {dropped_count} of "
+                f"{examined_count} rows ({ratio:.3%}) due to illegal/"
+                f"malformed solver moves"
+            )
+        else:  # > 0.1%: real signal worth investigating
+            logger.warning(
+                f"sample_by_theme: dropped {dropped_count} of "
+                f"{examined_count} rows ({ratio:.2%}) due to illegal/"
+                f"malformed solver moves — drop rate is unusually high; "
+                f"investigate solver_first_uci OR corpus drift"
+            )
 
     # Deterministic sample.
     if len(rows) <= n:

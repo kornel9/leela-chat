@@ -11,9 +11,9 @@
 ## Current Status
 
 - **Phase:** 2 — MCTS Integration. Entered 2026-05-19 after Phase 1's informal close. Phase 2 entry brief delivered + acknowledged; Phase 2 plan written (see `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md`).
-- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19; Chunk 6 trilogy done 2026-05-19; Chunk 6.5 done 2026-05-20; Chunk 6.6 + 6.7 done 2026-05-21. **Chunk 6.8 INFRASTRUCTURE done 2026-05-21; SUBSTANTIVE smoke results blocked on Anthropic credit balance.** Landed: Lichess Puzzle DB corpus on the network volume (5,939,980 rows; 341 MB Parquet); stratified-sample API in `leela_chat/eval/lichess_puzzle_db.py` (reusable by Phase 3+ probe-training); download + integrity-check script; smoke battery runner; aggregator with per-theme + per-difficulty-band slicing + Branch-A-vs-B distribution + illegal_move classification + eyeball rubric grid; first dated summary at `tests/eval/smoke_summaries/2026-05-21.md`. Caught and fixed a Lichess `Moves[0]`-vs-`Moves[1]` convention bug (was using opponent's reply as focal; should use solver's first move). 181 unit tests pass. **The 100-call smoke battery itself returned 100/100 templated fallbacks** — every Anthropic call returned HTTP 400 "credit balance too low"; the orchestrator's templated path engaged correctly (0 hallucinated moves, 0 Rule 1 violations) but the substantive question "does v5/v2 hold beyond walkthrough Rxd4?" is unanswered until the user tops up credits and re-runs via `--reuse-fixture` against the same 20-position set. Phase 2 trilogy + 6.5/6.6/6.7 + 6.8-infrastructure complete; substrate clean for Chunk 7 conditional on the substantive smoke re-run going green.
+- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19; Chunk 6 trilogy done 2026-05-19; Chunk 6.5 done 2026-05-20; Chunk 6.6 + 6.7 done 2026-05-21. **Chunk 6.8 done 2026-05-21** (infrastructure + substantive re-run after credit top-up; hard gates pass at 94% validation_ok, 6% templated). **Chunk 6.8.1 done 2026-05-21** — post-mortem hardening from 6.8's two bugs: (1) CLAUDE.md §8 `--dry-run` pitfall promoted to permanent guardrail; (2) legality assertion in `sample_by_theme` with skip-with-warning + drop-rate log escalation (permanent immunity to the Moves[0]/Moves[1] convention bug class); (3) aggregator three-rate classification with top-api_error-kinds banner + circuit-breaker sentinel detection; (4) runner consecutive-api-error circuit breaker with JSONL sentinel write + exit code 3. 197 unit tests pass (was 181; +16 across 6.8 + 6.8.1). The 6.8 re-run surfaced real prompt fragility outside walkthrough Rxd4 (~4-5 LLM hallucinations + 4 forbidden-language hits; all caught by the validator before reaching the user — Rule 1 upheld). v6 / v3 prompt-iteration chunk slots between 6.8.1 and Chunk 7 to address the fragility findings; 6.8.1 hardening ships regardless. Phase 2 substrate clean for Chunk 7 conditional on v6/v3 prompt iteration first.
 - **Last session:** 2026-05-21
-- **Chunk 7 entry criteria** (HARD prerequisites, promoted from soft "must include" in Chunk 6.7 commit B; must hold before any new Chunk-7 extractor lands). **Additional Chunk 6.8 carry-over: the smoke battery's substantive results MUST land cleanly (validation_ok ≥ 90% on real LLM calls, not on templated fallbacks) before Chunk 7. Currently blocked on Anthropic credit balance per the 2026-05-21 session log; re-run via `--reuse-fixture` after top-up.**
+- **Chunk 7 entry criteria** (HARD prerequisites, promoted from soft "must include" in Chunk 6.7 commit B; must hold before any new Chunk-7 extractor lands). **Chunk 6.8 substantive results landed: 94% validation_ok on real LLM calls (above the 90% gate); 6% templated (below the 10% gate). HOWEVER, real prompt fragility was surfaced — ~4-5 LLM hallucinations + 4 forbidden-language contract violations outside walkthrough Rxd4 (all caught by the validator before reaching the user). A v6 / v3 prompt-iteration chunk should slot between 6.8.1 and Chunk 7 to address the fragility findings before more extractors compound them.**
   1. **Extractor invocation is parallelised.** Current sequential `handler_s` is ~7-8s detailed (extractors + ~750ms layer emergence). Chunk 7 adds ~2-4s of additional extractor time pre-parallelisation → projected post-Chunk-7 detailed latency ~20-25s, with Phase 3 probes pushing it over Phase 1's `<30s` exit criterion (CLAUDE.md §11). Chunk 7's FIRST deliverable is a per-extractor latency baseline on the walkthrough Rxd4 fixture + an `asyncio.gather` (or `concurrent.futures.ThreadPoolExecutor`) wrapper around extractor invocation so the slowest single extractor sets the floor instead of the sum. Parallelisation must demonstrably hold detailed-mode `handler_s` under ~10s before any new Chunk-7 extractor lands. The Phase 2 exit criterion in CLAUDE.md §11 has been amended to mention this ceiling explicitly.
   2. **Per-new-extractor derivation checkpoint** honoured for each of the 5 planned extractors. For each, ask: "does the prompt that will consume this extractor cite percentages or ratios derived from two of the extractor's fields rather than literal scalars present in the JSON?" If yes → extend `leela_chat/validator/__init__.py::_collect_derived_percentages` (or a parallel `_collect_derived_*` helper if the derivation is not a percentage) with the explicit field-pair mapping AND add one false-positive test per addition. See CLAUDE.md §8 "Implementation pitfalls — Validator derivation" for the canonical pattern (added in Chunk 6.7 commit A).
 - **Alternative direction:** Phase 2 close + Phase 3 Entry Brief per CLAUDE.md §10 — concept-list pruning of `docs/phase3/concept_candidates.md` (~91 seed candidates) is the project's highest-leverage Phase-3 decision.
@@ -1298,4 +1298,57 @@ Next step (blocking on user action):
 - Then: Chunk 7 OR Phase 2 close + Phase 3 entry brief.
 
 Bumped backlog candidate from this chunk:
-- **Pre-flight API check in smoke battery runner.** A 1-token test call at battery startup; if it returns api_error, log clearly and exit with code 3 (distinct from successful templated runs). Saves wasting 30+ min of pod time + telemetry noise on a fully-blocked run.
+- **Pre-flight API check in smoke battery runner.** A 1-token test call at battery startup; if it returns api_error, log clearly and exit with code 3 (distinct from successful templated runs). Saves wasting 30+ min of pod time + telemetry noise on a fully-blocked run. **[Closed by Chunk 6.8.1 — see consecutive-api-error circuit breaker below.]**
+
+#### 2026-05-21 (cont.) — Phase 2 Chunk 6.8 commit E: substantive re-run
+
+After topping up Anthropic credits + a 30-sec sanity-check ask call:
+- Re-ran battery via `--reuse-fixture` (same 20-position fixture).
+- 100 calls in ~26 min wall clock (avg ~15.7s/call — matches detailed-mode latency budget).
+- **Hard gates ALL PASS:** validation_ok 94% (≥ 90% gate ✓); templated 6% (≤ 10% gate ✓); sources 79 llm + 15 llm_retry + 6 templated; latency median 13.1s / p95 27.9s / p99 32.0s.
+- **Per-category breakdown:** tactical 95% / quiet_middlegame 96% / endgame 90% / opening 93% — all above the 90% gate.
+- **Per-difficulty-band (counter-intuitively):** 1800-2200 93% / 2200-2600 90% / 2600-3000 100% / 3000-3400 100% — the HARDER bands validated more cleanly than the easier ones.
+- **Branch B coverage 100% (60/60 H2+H3 runs):** every focal move was different from MCTS@1000-nodes pick — exactly the stress case the smoke battery was built for. The dual-timescale prose contracts mostly held; the residual ~5-8% is real prompt fragility.
+
+Real findings (not regressions; substantive prompt-quality observations):
+
+- **8 illegal_move classifications.** Validator caught all 8 BEFORE reaching the user — Rule 1 upheld via templated fallback. Per-FEN triage suggests ~4 are real LLM hallucinations (e.g., `Nf3+` on a position with no white knight; `Bxg4`/`Nxg4` cited as black-to-move when they're white moves on the FEN) and ~3-4 are parser FPs or PV-coverage gaps (e.g., `Kxf3` is a legitimate Stockfish PV continuation the validator's trusted-moves walk didn't recognise).
+- **4 forbidden-language hits** in the eyeball rubric: `saw` ×3, `monotonic` ×1. Real encoding-vs-use + trough-prose contract violations per INTERPRETABILITY_NOTES.md §3.
+
+Implications:
+- v5 / v2 prompts hold MOSTLY outside walkthrough Rxd4 but produce real hallucinations on ~5-8% of hard-puzzle H2-detailed calls.
+- A **v6 / v3 prompt-iteration chunk** is warranted before Chunk 7 to address these findings.
+- The validator architecture worked exactly as designed: every hallucination caught; zero unsafe prose reached the user.
+
+Backlog items surfaced:
+- Runner gap: preserve LLM's failed-attempt prose in the JSONL so future runs can distinguish parser FPs from real hallucinations without manual FEN inspection.
+- Validator PV-coverage gap: some legitimate PV continuations (e.g., `Kxf3` from a Stockfish PV) weren't in the trusted set.
+- v6 / v3 prompt-iteration chunk (slots between 6.8.1 and Chunk 7).
+
+#### 2026-05-21 (cont.) — Phase 2 Chunk 6.8.1: post-mortem hardening
+
+Three permanent guardrails for future batch-script work, motivated by the 6.8 bug retrospective:
+
+- **Item 1 (CLAUDE.md §8 implementation-pitfall):** `--dry-run` modes that bypass the failure surface are not verification. Required pattern: scale the iteration COUNT (`--positions 1`), not the iteration CONTENT (`--no-llm`, `--skip-context`). Canonical failure: Chunk 6.8's `run_smoke_battery.py --dry-run` skipped both `_build_context` (where credit-exhaustion HTTP 400 surfaces) AND `_answer_one` (where focal-move legality is checked); both Chunk 6.8 bugs (Moves[0]/Moves[1] + credit exhaustion) were invisible to the dry-run.
+
+- **Item 2 (legality assertion in puzzle sampling):** `leela_chat/eval/lichess_puzzle_db.py::sample_by_theme` now calls `_is_solver_move_legal(fen, focal_uci)` on every candidate row; rows with illegal-on-FEN solver moves are dropped with a WARNING log. Drop-rate escalation: ≤0.1% logs at INFO (expected noise across 5.94M rows); >0.1% logs at WARNING (real signal worth investigating). Permanent immunity to the Moves[0]/Moves[1] convention bug class.
+
+- **Item 3A (aggregator three-rate classification + top-api_error-kinds banner):** `aggregate_smoke_battery.py::_render` computes THREE rates separately — `llm_success_rate` (calls where source=llm/llm_retry AND llm_calls>0), `validation_pass_rate_among_llm_success` (the REAL prose-quality signal), and `templated_fallback_rate` (demoted to legacy). If `llm_success_rate < 95%`, a banner fires at the top with the top 3 api_error sub-kinds (`credit_exhausted` / `rate_limit` / `overloaded` / `timeout` / `other`) + their counts, so future readers don't have to grep the JSONL to understand why the run is dead.
+
+- **Item 3B (runner circuit breaker + JSONL sentinel):** `run_smoke_battery.py` now tracks consecutive api_error responses; after 3-in-a-row, aborts the loop with sys.exit(3) AND writes a `{"_circuit_breaker": True, ...}` sentinel row to the JSONL. Downstream tooling (the aggregator, future monitoring) can detect the abort without parsing exit codes. The 3-consecutive threshold catches sustained failure (credit exhaustion, persistent outage); a comment in the code notes it doesn't catch intermittent ~50% failure patterns (acceptable for v1).
+
+Test additions:
+- 5 new tests in `test_lichess_puzzle_db.py`: legality skip (illegal-on-FEN), malformed-UCI skip, happy path + reframed existing tests to use legal FEN+moves fixtures.
+- 7 new tests in NEW `tests/unit/test_aggregate_smoke_battery.py`: api_error sub-kind classification (credit/rate/overload/timeout/other/empty), sentinel detection (present/absent), three-rate computation (clean run / dead-API banner / mixed kinds banner / sentinel banner / val-pass-among-llm-success isolation).
+- 197 unit tests pass (was 181; +16). All green.
+
+Net Chunk 6.8 + 6.8.1 outcome:
+- Lichess Puzzle DB corpus on the network volume → Phase 3+ probe-training data unblocked.
+- 20-position smoke battery operational; deterministic from seed=0; reproducible across runs.
+- Substantive results: 94% validation_ok on real LLM calls, with real prompt fragility surfaced.
+- Three permanent guardrails against the next batch-script's failure modes.
+- Validator architecture proven under adversarial conditions: 0 hallucinated moves reached the user across 100 calls.
+
+Next session direction:
+- **v6 / v3 prompt-iteration chunk** to address the 8 illegal_move hallucinations + 4 forbidden-language hits.
+- THEN Chunk 7 (chess-content extractors) with the latency-parallelisation + per-new-extractor-derivation-checkpoint criteria from Chunk 6.7.

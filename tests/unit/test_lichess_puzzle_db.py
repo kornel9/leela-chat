@@ -32,15 +32,25 @@ def _mk_table(rows: list[dict]) -> "pa.Table":
     return pa.table(by_col)
 
 
+START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+
+
 def _row(
     pid: str,
     *,
-    fen: str = "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3",
-    moves: str = "e1g1 f6e4",
+    fen: str = START_FEN,
+    moves: str = "e2e4 c7c5",
     rating: int = 1900,
     themes: str = "fork middlegame short",
     opening_tags: str | None = None,
 ) -> dict:
+    """Synthetic puzzle row for tests.
+
+    Default `fen` + `moves` pair MUST be consistent — the solver's
+    first move (Moves[0]) must be legal on the FEN — because Chunk
+    6.8.1's `_is_solver_move_legal` guard drops illegal rows. Tests
+    that override `fen` typically must also override `moves`.
+    """
     return {
         "PuzzleId": pid, "FEN": fen, "Moves": moves, "Rating": rating,
         "Themes": themes, "OpeningTags": opening_tags,
@@ -163,11 +173,14 @@ def test_sample_by_theme_excludes_themes():
 
 def test_sample_by_theme_excludes_material_signature():
     """Confirms the K+N+N gap can be filtered out per project memory."""
+    # Both FENs are white-to-move; pick legal white moves for each.
     knn_fen = "8/8/8/4k3/8/2NK4/4N3/8 w - - 0 1"
     other_fen = "8/8/8/4k3/8/2KR4/8/8 w - - 0 1"  # K+R vs K
     rows = [
-        _row("p1", fen=knn_fen, themes="endgame"),
-        _row("p2", fen=other_fen, themes="endgame"),
+        # knn: white knight on c3 → c3a4 is a legal knight move
+        _row("p1", fen=knn_fen, themes="endgame", moves="c3a4 e5d4"),
+        # K+R vs K: white rook on d3 → d3d8 is legal (gives check)
+        _row("p2", fen=other_fen, themes="endgame", moves="d3d8 e5e4"),
     ]
     table = _mk_table(rows)
     out = sample_by_theme(
@@ -206,16 +219,72 @@ def test_sample_by_theme_extracts_focal_move():
 
 def test_sample_by_theme_skips_malformed_moves():
     """A row with an empty Moves field is silently skipped; single-move
-    rows are accepted (solver has a forced one-move solution)."""
+    rows are accepted (solver has a forced one-move solution) — provided
+    the move is also LEGAL on the FEN (Chunk 6.8.1 guard). The default
+    test FEN is white-to-move; `onlyone` won't be a legal move from it."""
     rows = [
         _row("p1", themes="fork", moves="e2e4 c7c5"),  # OK
-        _row("p2", themes="fork", moves="onlyone"),    # single move OK
-        _row("p3", themes="fork", moves=""),           # empty: skipped
+        _row("p2", themes="fork", moves="onlyone"),    # malformed UCI → skipped
+        _row("p3", themes="fork", moves=""),           # empty → skipped
     ]
     table = _mk_table(rows)
     out = sample_by_theme("fork", n=10, table=table)
     pids = {r["PuzzleId"] for r in out}
-    assert pids == {"p1", "p2"}
+    assert pids == {"p1"}
+
+
+# === Chunk 6.8.1: legality assertion on solver_first_uci ==================
+#
+# The Lichess Moves[0]/Moves[1] convention bug from Chunk 6.8 made it
+# possible for `solver_first_uci` to return the opponent's reply by
+# mistake — a move that's opposite-color from the FEN's side-to-move,
+# and therefore illegal on the FEN. The sample_by_theme function now
+# drops any row whose solver move isn't legal on its FEN, with a WARNING
+# log per drop + an INFO/WARNING summary at the end depending on drop
+# ratio. Permanent immunity to the convention-bug class.
+
+
+def test_sample_by_theme_skips_puzzle_with_illegal_solver_move(caplog):
+    """Drop a row where Moves[0] is opposite-color-from-FEN (the
+    canonical Chunk 6.8 bug class). Should log a WARNING + skip."""
+    # Black-to-move FEN. A white knight move (c3a4) cannot be a legal
+    # black move from this position — mirrors the puzzle_3UyA5 case
+    # that surfaced the bug in Chunk 6.8.
+    black_to_move_fen = "r1b1k2r/pp1p1ppp/1qn1pn2/2b5/8/P1N1PN2/1PPQ1PPP/R1B1KB1R b KQkq - 2 7"
+    rows = [
+        _row("p_legal", fen=START_FEN, themes="fork", moves="e2e4 c7c5"),
+        _row("p_illegal", fen=black_to_move_fen, themes="fork", moves="c3a4 d7d5"),
+    ]
+    table = _mk_table(rows)
+    out = sample_by_theme("fork", n=10, table=table)
+    pids = {r["PuzzleId"] for r in out}
+    assert pids == {"p_legal"}
+    # p_illegal is dropped, not raised.
+
+
+def test_sample_by_theme_skips_puzzle_with_malformed_uci():
+    """`chess.Move.from_uci` raises ValueError on malformed UCI; the
+    legality check wraps that in try/except so corpus data-drift doesn't
+    crash the sampling pass."""
+    rows = [
+        _row("p_truncated", fen=START_FEN, themes="fork", moves="e2 c7c5"),
+        _row("p_garbage", fen=START_FEN, themes="fork", moves="xxxxx c7c5"),
+        _row("p_legal", fen=START_FEN, themes="fork", moves="e2e4 c7c5"),
+    ]
+    table = _mk_table(rows)
+    out = sample_by_theme("fork", n=10, table=table)
+    pids = {r["PuzzleId"] for r in out}
+    assert pids == {"p_legal"}
+
+
+def test_sample_by_theme_keeps_legal_solver_move():
+    """The happy path: solver move IS legal on FEN → row passes through."""
+    rows = [_row("p1", fen=START_FEN, themes="fork", moves="e2e4 c7c5")]
+    table = _mk_table(rows)
+    out = sample_by_theme("fork", n=1, table=table)
+    assert len(out) == 1
+    assert out[0]["PuzzleId"] == "p1"
+    assert out[0]["solver_first_uci"] == "e2e4"
 
 
 # === sample_stratified ====================================================
@@ -241,10 +310,12 @@ def test_sample_stratified_per_stratum():
 
 def test_sample_stratified_deduplicates_across_strata():
     """A puzzle matching two strata's filters appears in the first only."""
+    # Italian position with BLACK to move; legal black solver move = g8f6 (Nf6).
     overlapping_fen = "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3"
     # One puzzle matches both forks(1500-2500) and middlegame(1500-2500).
     rows = [
-        _row("shared", fen=overlapping_fen, themes="fork middlegame", rating=1900),
+        _row("shared", fen=overlapping_fen, themes="fork middlegame",
+             moves="g8f6 d2d3", rating=1900),
         _row("only_fork", themes="fork", rating=1900),
         _row("only_mg", themes="middlegame quiet", rating=1900),
     ]

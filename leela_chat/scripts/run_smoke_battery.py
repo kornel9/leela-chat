@@ -22,6 +22,15 @@ Hard gates (evaluated by the summary writer, NOT enforced here):
 - overall validation_ok ≥ 90%
 - 0 unexplained illegal_move errors (per the §8 classification)
 - templated-fallback ≤ 10%
+
+Exit codes (Chunk 6.8.1):
+- 0: success (battery ran to completion).
+- 1: generic error (unhandled exception in the loop body that the CRASH
+     path didn't catch).
+- 2: argument error (argparse default for malformed CLI args).
+- 3: circuit breaker engaged (3+ consecutive api_error responses; the
+     JSONL contains a `{"_circuit_breaker": True, ...}` sentinel row
+     at the end as the canonical machine-readable abort marker).
 """
 from __future__ import annotations
 
@@ -313,10 +322,26 @@ def main() -> None:
         ("did_you_consider",     "detailed"),  # H3 is always detailed
     ]
 
+    # Chunk 6.8.1 Item 3B — consecutive-api-error circuit breaker.
+    # NOTE: The 3-consecutive threshold catches sustained failure (credit
+    # exhaustion, persistent outage). It does NOT catch an intermittent
+    # ~50% failure pattern (e.g., 2 errors, 1 success, 2 errors, 1 success
+    # repeating) because the counter resets on each success. That pattern
+    # would waste ~50% of pod time + cost without triggering the breaker.
+    # Acceptable for v1 since credit-exhaustion is binary; if a real
+    # intermittent failure pattern appears, replace with a sliding-window
+    # error-rate check.
+    CIRCUIT_BREAKER_THRESHOLD = 3
+
     t_start = time.perf_counter()
     n_calls = 0
+    consecutive_api_errors = 0
+    last_error_detail = ""
+    circuit_breaker_engaged = False
     with open(log_path, "w") as f:
         for i, pos in enumerate(fixture, 1):
+            if circuit_breaker_engaged:
+                break
             logger.info(f"position {i}/{len(fixture)}: {pos['id']} ({pos['category']}/{pos['stratum']})")
             for handler, mode in matrix:
                 row = _run_one(ctx, pos, handler, mode, dry_run=args.dry_run)
@@ -324,7 +349,51 @@ def main() -> None:
                 f.flush()
                 n_calls += 1
 
+                # Update consecutive-api-error counter. Only `api_error` —
+                # NOT validation failures (illegal_move, ungrounded_eval),
+                # which are signal the battery exists to produce.
+                row_errs = row.get("validation_errors") or []
+                if (row.get("source") == "templated"
+                        and any(e.get("kind") == "api_error" for e in row_errs)):
+                    consecutive_api_errors += 1
+                    last_error_detail = next(
+                        (e.get("detail", "") for e in row_errs if e.get("kind") == "api_error"),
+                        "",
+                    )
+                    if consecutive_api_errors >= CIRCUIT_BREAKER_THRESHOLD:
+                        logger.error(
+                            f"ABORTING: {CIRCUIT_BREAKER_THRESHOLD} consecutive Anthropic "
+                            f"api_error responses. This is likely credit exhaustion or "
+                            f"persistent API outage, not transient overload. Last error: "
+                            f"{last_error_detail[:200]}. Resolve before re-running."
+                        )
+                        # Write a sentinel row so downstream consumers
+                        # (the aggregator, future tooling) can detect the
+                        # abort without parsing subprocess exit codes.
+                        sentinel = {
+                            "_circuit_breaker": True,
+                            "consecutive_api_errors": consecutive_api_errors,
+                            "last_error_kind": "api_error",
+                            "last_error_detail": last_error_detail,
+                            "ts": datetime.datetime.now(datetime.UTC).isoformat(),
+                        }
+                        f.write(json.dumps(sentinel) + "\n")
+                        f.flush()
+                        circuit_breaker_engaged = True
+                        break
+                else:
+                    consecutive_api_errors = 0
+
     elapsed = time.perf_counter() - t_start
+    if circuit_breaker_engaged:
+        logger.error(
+            f"battery aborted by circuit breaker after {n_calls} calls in {elapsed:.1f}s"
+        )
+        # Close context before exiting so resources release cleanly.
+        if not args.dry_run and ctx is not None:
+            from leela_chat.cli.__main__ import _close_context
+            _close_context(ctx)
+        sys.exit(3)
     logger.info(f"battery complete: {n_calls} calls in {elapsed:.1f}s")
 
     # === Step 5: close context ===
