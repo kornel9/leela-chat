@@ -1,0 +1,340 @@
+"""Chunk 6.8 smoke battery — stratified sampling + 100-call matrix.
+
+Runs all 3 handlers in both modes (where applicable) against 20 positions
+sampled stratified from the Lichess Puzzle DB. Captures per-run telemetry
++ prose to JSONL; the aggregate summary is written separately to
+``tests/eval/smoke_summaries/<YYYY-MM-DD>.md``.
+
+This is the MEASURE half of an eval set, NOT the grading half. Prose
+quality / 2200+-player agreement still needs G0.2-friends.
+
+Run on the pod (BT4 + Stockfish + Lc0 + corpus required):
+
+    uv run python -m leela_chat.scripts.run_smoke_battery
+    uv run python -m leela_chat.scripts.run_smoke_battery --positions 1 --dry-run
+
+The `--dry-run` mode skips context-build + LLM calls; useful for off-pod
+pipeline-correctness checks. `--positions N` caps the matrix at the
+first N positions in the sampled fixture (default: all 20).
+
+Hard gates (evaluated by the summary writer, NOT enforced here):
+- 100 JSONL entries
+- overall validation_ok ≥ 90%
+- 0 unexplained illegal_move errors (per the §8 classification)
+- templated-fallback ≤ 10%
+"""
+from __future__ import annotations
+
+import argparse
+import datetime
+import json
+import os
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+import chess
+import yaml
+from loguru import logger
+
+from leela_chat.eval.lichess_puzzle_db import sample_stratified
+
+# 20-position strata — see Chunk 6.8 plan for the rationale.
+STRATA: dict[str, dict] = {
+    # Tactical category — 8 puzzles, theme + rating stratified.
+    # Themes: 2 fork + 2 pin + 1 sacrifice + 1 discoveredAttack + 1 skewer
+    # + 1 mateIn3-or-mateIn4 (per the plan's theme spread).
+    # Rating bands: each theme is anchored to a band that makes sense
+    # for that pattern's typical difficulty.
+    "tactical_fork":      {"themes": "fork",             "n": 2, "rating_range": (1800, 2200)},
+    "tactical_pin":       {"themes": "pin",              "n": 2, "rating_range": (2200, 2600)},
+    "tactical_sac":       {"themes": "sacrifice",        "n": 1, "rating_range": (2600, 3000)},
+    "tactical_disc":      {"themes": "discoveredAttack", "n": 1, "rating_range": (2600, 3000)},
+    "tactical_skewer":    {"themes": "skewer",           "n": 1, "rating_range": (3000, 3400),
+                           "fallback_to_lower": True},
+    "tactical_mateInN":   {"themes": "mateIn3",          "n": 1, "rating_range": (3400, 9999),
+                           "fallback_to_lower": True},
+    # Quiet middlegames — 5 at 1600-1900, excluding tactical themes so
+    # we get genuinely quiet positional content.
+    "quiet_middlegame":   {"themes": "middlegame",       "n": 5, "rating_range": (1600, 1900),
+                           "exclude_themes": ("fork", "pin", "sacrifice", "discoveredAttack", "skewer", "mateIn1", "mateIn2", "mateIn3", "mateIn4")},
+    # Endgames — 4 at 1500-2200, EXCLUDING K+N+N vs K per project memory.
+    "endgame":            {"themes": "endgame",          "n": 4, "rating_range": (1500, 2200),
+                           "exclude_material_signatures": ("KNN_vs_K",)},
+    # Openings — 3 around move 8-15 (Lichess tags `opening` theme).
+    "opening":            {"themes": "opening",          "n": 3, "rating_range": (1700, 2000)},
+}
+
+# Category aggregation: which strata belong to which user-facing category.
+CATEGORY_OF: dict[str, str] = {
+    "tactical_fork": "tactical_puzzle",
+    "tactical_pin": "tactical_puzzle",
+    "tactical_sac": "tactical_puzzle",
+    "tactical_disc": "tactical_puzzle",
+    "tactical_skewer": "tactical_puzzle",
+    "tactical_mateInN": "tactical_puzzle",
+    "quiet_middlegame": "quiet_middlegame",
+    "endgame": "endgame",
+    "opening": "opening",
+}
+
+
+def _build_fixture(seed: int = 0) -> list[dict]:
+    """Sample 20 positions per STRATA and return a flat list of fixture dicts.
+
+    Each dict contains the schema documented in tests/eval/smoke_positions.yaml:
+    id, fen, source, category, stratum, themes, rating, focal_uci, focal_source.
+    """
+    sampled = sample_stratified(STRATA, seed=seed)
+    fixture: list[dict] = []
+    for stratum_name, rows in sampled.items():
+        category = CATEGORY_OF[stratum_name]
+        for r in rows:
+            fixture.append({
+                "id": f"puzzle_{r['PuzzleId']}",
+                "fen": r["FEN"],
+                "source": f"lichess_puzzle:{r['PuzzleId']}",
+                "category": category,
+                "stratum": stratum_name,
+                "themes": list(r["Themes"]),
+                "rating": int(r["Rating"]),
+                "focal_uci": r["solver_first_uci"],
+                "focal_source": "puzzle_solution",
+                "material_signature": r["material_signature"],
+            })
+    return fixture
+
+
+def _write_fixture(fixture: list[dict], path: Path) -> None:
+    """Write the fixture to a YAML file with a clear header."""
+    header = (
+        "# tests/eval/smoke_positions.yaml — Chunk 6.8 smoke battery fixture.\n"
+        "#\n"
+        "# Generated by `python -m leela_chat.scripts.run_smoke_battery`\n"
+        "# from the Lichess Puzzle DB corpus via sample_stratified(seed=0).\n"
+        "#\n"
+        "# NOT THE GRADED EVAL SET — that's tests/eval/eval_positions.yaml\n"
+        "# (G0.2 friends authoring; quality-grading positions with ground truth).\n"
+        "#\n"
+        "# This file is the operational/regression/coverage half: 20 positions\n"
+        "# sampled from Lichess for validation rate + latency + prose-pattern\n"
+        "# generalization measurements. Re-generated deterministically via\n"
+        "# seed=0; commit once for reproducibility.\n"
+        "#\n"
+        "# Per CLAUDE.md §2 Rule 3 the eval set is sacred — that rule applies\n"
+        "# to eval_positions.yaml, NOT to this file. The smoke fixture may be\n"
+        "# regenerated when sampling logic, strata, or seed change.\n"
+        "\n"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        f.write(header)
+        yaml.safe_dump({"positions": fixture}, f, sort_keys=False, default_flow_style=False)
+
+
+def _load_fixture(path: Path) -> list[dict]:
+    """Load the fixture from disk; mostly used for re-runs without re-sampling."""
+    with open(path) as f:
+        data = yaml.safe_load(f)
+    return data["positions"]
+
+
+def _mcts_bestmove(ctx: Any, board: chess.Board) -> str | None:
+    """Quick MCTS call to find Leela's current pick. ~1-2s per call.
+
+    Used to record mcts_bestmove_uci per position so the summary can
+    compute Branch-A-vs-Branch-B distribution against focal_uci.
+    """
+    from leela_chat.extractors.mcts import extract_mcts
+    if ctx.lc0 is None:
+        return None
+    findings = extract_mcts(board, engine=ctx.lc0, nodes=1000)
+    return findings.bestmove_uci
+
+
+def _run_one(
+    ctx: Any,
+    position: dict,
+    handler: str,
+    mode: str,
+    *,
+    dry_run: bool = False,
+) -> dict:
+    """Run one (position, handler, mode) and return a JSONL-shaped dict."""
+    from leela_chat.cli.__main__ import _answer_one
+
+    fen = position["fen"]
+    focal_uci = position["focal_uci"] if handler in ("why_this_move", "did_you_consider") else None
+    detailed = (mode == "detailed")
+
+    out: dict[str, Any] = {
+        "ts": datetime.datetime.now(datetime.UTC).isoformat(),
+        "position_id": position["id"],
+        "fen": fen,
+        "category": position["category"],
+        "stratum": position["stratum"],
+        "themes": position["themes"],
+        "rating": position["rating"],
+        "handler": handler,
+        "mode": mode,
+        "focal_uci": focal_uci,
+        "focal_source": position.get("focal_source"),
+        "mcts_bestmove_uci": position.get("_mcts_bestmove_uci"),
+        "focal_matches_mcts_pick": (
+            focal_uci is not None
+            and position.get("_mcts_bestmove_uci") is not None
+            and focal_uci == position["_mcts_bestmove_uci"]
+        ),
+    }
+
+    if dry_run:
+        out.update({
+            "source": "DRY_RUN",
+            "validation_ok": None,
+            "handler_s": 0.0,
+            "translate_s": 0.0,
+            "llm_calls": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "prose": "(dry-run; no LLM call)",
+        })
+        return out
+
+    try:
+        question = (
+            "What is Leela seeing here?" if handler == "what_is_leela_seeing"
+            else f"Why this move ({focal_uci})?" if handler == "why_this_move"
+            else f"Did you consider {focal_uci}?"
+        )
+        result, handler_s, translate_s = _answer_one(
+            ctx, fen, question,
+            handler_override=handler,
+            move_uci=focal_uci,
+            detailed=detailed,
+        )
+        total_in = sum(r.input_tokens for r in result.llm_responses)
+        total_out = sum(r.output_tokens for r in result.llm_responses)
+        out.update({
+            "source": result.source,
+            "validation_ok": result.validation.ok,
+            "validation_errors": [
+                {"kind": e.kind, "detail": e.detail, "span": e.span}
+                for e in result.validation.errors
+            ],
+            "prompt_version": result.prompt_version,
+            "handler_s": handler_s,
+            "translate_s": translate_s,
+            "llm_calls": len(result.llm_responses),
+            "input_tokens": total_in,
+            "output_tokens": total_out,
+            "prose": result.text,
+        })
+    except Exception as exc:
+        logger.exception(f"smoke_battery: handler {handler}/{mode} on {position['id']} crashed")
+        out.update({
+            "source": "CRASH",
+            "validation_ok": False,
+            "validation_errors": [{"kind": "crash", "detail": str(exc), "span": ""}],
+            "handler_s": 0.0,
+            "translate_s": 0.0,
+            "llm_calls": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "prose": f"(crash: {type(exc).__name__}: {exc})",
+        })
+    return out
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--positions", type=int, default=None,
+                        help="Cap matrix at first N positions (default: all 20)")
+    parser.add_argument("--seed", type=int, default=0,
+                        help="Sampling seed for sample_stratified")
+    parser.add_argument("--fixture-out", default="tests/eval/smoke_positions.yaml",
+                        help="Where to write the sampled fixture YAML")
+    parser.add_argument("--log-out", default=None,
+                        help="JSONL output path (default: logs/smoke_battery_<ts>.jsonl)")
+    parser.add_argument("--reuse-fixture", action="store_true",
+                        help="Skip sampling; load fixture from --fixture-out if present")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Skip context build + LLM calls; just exercise the pipeline")
+    args = parser.parse_args()
+
+    fixture_path = Path(args.fixture_out)
+
+    # === Step 1: build or load the fixture ===
+    if args.reuse_fixture and fixture_path.exists():
+        logger.info(f"loading existing fixture from {fixture_path}")
+        fixture = _load_fixture(fixture_path)
+    else:
+        logger.info("sampling fixture from corpus")
+        fixture = _build_fixture(seed=args.seed)
+        _write_fixture(fixture, fixture_path)
+        logger.info(f"  wrote {len(fixture)} positions to {fixture_path}")
+
+    if args.positions:
+        fixture = fixture[:args.positions]
+
+    logger.info(f"running battery on {len(fixture)} positions ({len(fixture) * 5} LLM calls)")
+
+    # === Step 2: build context (skipped in dry-run) ===
+    ctx = None
+    if not args.dry_run:
+        from leela_chat.cli.__main__ import _build_context, _close_context
+        from leela_chat.llm.client import LLMMode
+        ctx = _build_context(mode=LLMMode.PROD, verbose=False)
+
+    # === Step 3: per-position MCTS bestmove pre-pass ===
+    if not args.dry_run:
+        logger.info("computing MCTS bestmove per position (1000 nodes each)")
+        for i, pos in enumerate(fixture, 1):
+            try:
+                board = chess.Board(pos["fen"])
+                pos["_mcts_bestmove_uci"] = _mcts_bestmove(ctx, board)
+            except Exception as exc:
+                logger.warning(f"MCTS bestmove failed for {pos['id']}: {exc}")
+                pos["_mcts_bestmove_uci"] = None
+            if i % 5 == 0:
+                logger.info(f"  bestmove {i}/{len(fixture)} done")
+
+    # === Step 4: 5-call matrix per position ===
+    timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
+    log_path = Path(args.log_out) if args.log_out else Path(f"logs/smoke_battery_{timestamp}.jsonl")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    logger.info(f"writing JSONL to {log_path}")
+
+    matrix = [
+        ("what_is_leela_seeing", "default"),
+        ("what_is_leela_seeing", "detailed"),
+        ("why_this_move",        "default"),
+        ("why_this_move",        "detailed"),
+        ("did_you_consider",     "detailed"),  # H3 is always detailed
+    ]
+
+    t_start = time.perf_counter()
+    n_calls = 0
+    with open(log_path, "w") as f:
+        for i, pos in enumerate(fixture, 1):
+            logger.info(f"position {i}/{len(fixture)}: {pos['id']} ({pos['category']}/{pos['stratum']})")
+            for handler, mode in matrix:
+                row = _run_one(ctx, pos, handler, mode, dry_run=args.dry_run)
+                f.write(json.dumps(row) + "\n")
+                f.flush()
+                n_calls += 1
+
+    elapsed = time.perf_counter() - t_start
+    logger.info(f"battery complete: {n_calls} calls in {elapsed:.1f}s")
+
+    # === Step 5: close context ===
+    if not args.dry_run and ctx is not None:
+        from leela_chat.cli.__main__ import _close_context
+        _close_context(ctx)
+
+    logger.info(f"results: {log_path}")
+    logger.info("next: write tests/eval/smoke_summaries/<YYYY-MM-DD>.md aggregate summary")
+
+
+if __name__ == "__main__":
+    main()
