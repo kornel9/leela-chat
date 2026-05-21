@@ -46,6 +46,40 @@ VENV_PY=/workspace/leela-chat/.venv/bin/python
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 
+# 0. Fail-fast guard: network volume must be mounted ------------------------
+#
+# If /workspace/leela-chat is missing, the network volume isn't attached to
+# this pod. RunPod network volumes are datacenter-locked: the volume lives
+# in eu-cz-1, and pods in other DCs see an empty /workspace without warning
+# (the dashboard's pod-creation flow doesn't filter region by volume
+# availability — the "Network Volume" option silently shows nothing when
+# the volume is in a different DC). Without this guard, the symptom is
+# 20+ minutes of cascading failures (stockfish + Lc0 + venv all missing,
+# but BT4.pt-load fails ten minutes later); with the guard, ~5 sec to
+# diagnose. Surfaced in PHASE_NOTES 2026-05-21 (Chunk 6.6 session log)
+# after three out-of-DC pods spun up before finding the right one.
+
+log "verifying network volume is mounted"
+if [ ! -d /workspace/leela-chat ]; then
+    log "ERROR: /workspace/leela-chat missing — the network volume is not"
+    log "       attached to this pod. RunPod network volumes are DC-locked;"
+    log "       this pod is likely in a different datacenter than your volume."
+    log ""
+    log "       Action: stop this pod and create a new one in the volume's"
+    log "       datacenter (eu-cz-1 per the 2026-05-21 session). In the"
+    log "       RunPod dashboard, filter pod-creation by DC to eu-cz-1"
+    log "       FIRST, then pick a 3090/4090 instance — the dashboard"
+    log "       does NOT filter region by volume availability, so picking"
+    log "       a pod first and the volume second silently produces this"
+    log "       state."
+    log ""
+    log "       Alternative: pull individual files via the S3-compatible API"
+    log "       at https://s3api-eu-cz-1.runpod.io (slower; doesn't recover"
+    log "       the venv cleanly across architectures)."
+    exit 1
+fi
+log "  /workspace/leela-chat present"
+
 # 1. apt packages -----------------------------------------------------------
 
 log "checking apt packages"
