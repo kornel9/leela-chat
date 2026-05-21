@@ -34,6 +34,14 @@ LC0_VERSION=v0.32.1
 LC0_SRC=/workspace/src/lc0
 LC0_BIN=/workspace/bin/lc0
 BT4_ONNX=/workspace/weights/BT4-1024x15x32h-swa-6147500/BT4-1024x15x32h-swa-6147500.onnx
+BT4_PT=/workspace/weights/BT4-1024x15x32h-swa-6147500/BT4.pt
+# The vendored TransformerLens loader hardcodes this path (see
+# leela_chat/network/__init__.py:36-77 and the upstream-bit-identical
+# leela_chat/_vendor/transformer_lens/loading_from_pretrained.py:1832).
+# The symlink target lives OUTSIDE /workspace so it dies on every
+# pod restart — re-creating it here is the idempotent fix.
+BT4_PT_SYMLINK_DIR=/path/to/models/lc0
+BT4_PT_SYMLINK=$BT4_PT_SYMLINK_DIR/BT4.pt
 VENV_PY=/workspace/leela-chat/.venv/bin/python
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
@@ -105,6 +113,15 @@ else
   log "  MISSING: $BT4_ONNX"
   log "  Re-download via huggingface_hub if needed (ADR-0001 SHA-256)."
   exit 1
+fi
+
+log "ensuring BT4.pt symlink for vendored TransformerLens loader"
+if [ ! -f "$BT4_PT" ]; then
+  log "  WARN: $BT4_PT missing — run 'python -m leela_chat._vendor.bt4_weight_conversion' first"
+else
+  mkdir -p "$BT4_PT_SYMLINK_DIR"
+  ln -sf "$BT4_PT" "$BT4_PT_SYMLINK"
+  log "  symlink ready: $BT4_PT_SYMLINK -> $BT4_PT"
 fi
 
 log "verifying project venv"
