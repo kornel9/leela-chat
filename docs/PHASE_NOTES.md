@@ -11,9 +11,9 @@
 ## Current Status
 
 - **Phase:** 2 — MCTS Integration. Entered 2026-05-19 after Phase 1's informal close. Phase 2 entry brief delivered + acknowledged; Phase 2 plan written (see `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md`).
-- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19; Chunk 6 trilogy done 2026-05-19; Chunk 6.5 done 2026-05-20; **Chunk 6.6 done 2026-05-21** — pre-Chunk-7 hygiene chunk closed three small backlog items: (A) validator now recognises derived visit-share percentages so prose like "27% of search" (= 2587/9643 visits) no longer false-negatives via the new `_collect_derived_percentages` helper; (B) `setup_pod.sh` is idempotent for the `/path/to/models/lc0/BT4.pt` symlink the vendored TransformerLens loader needs; (C) Handler 1 `--detailed` smoke extended to the divergent walkthrough Rxd4 position (covers both candidates' dual-timescale stories in one paragraph); plus optional (D) `docs/PROMPT_PATTERNS.md` capturing the "teach the form once; model generalises to homogeneous elements" pattern from Chunk 6.5 Smoke 2. Four commits A/B/D/C. 160 unit tests pass (was 155; +5 validator tests). All 6 pod smokes pass — Smoke 1 flipped False→True as predicted (the validator-fix verification); Smokes 2-5 stay True (no regression); new Smoke C also True. Pod restart cycle surfaced that RunPod network volumes are DC-locked — three pods spun up out-of-DC before finding one in eu-cz-1 that auto-mounted the volume. **Phase 2 trilogy + 6.5 + 6.6 complete; substrate clean for Chunk 7.** Next: Chunk 7 (chess-content extractors) OR Phase 2 close + Phase 3 entry brief.
+- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19; Chunk 6 trilogy done 2026-05-19; Chunk 6.5 done 2026-05-20; Chunk 6.6 + 6.7 done 2026-05-21. **Chunk 6.8 INFRASTRUCTURE done 2026-05-21; SUBSTANTIVE smoke results blocked on Anthropic credit balance.** Landed: Lichess Puzzle DB corpus on the network volume (5,939,980 rows; 341 MB Parquet); stratified-sample API in `leela_chat/eval/lichess_puzzle_db.py` (reusable by Phase 3+ probe-training); download + integrity-check script; smoke battery runner; aggregator with per-theme + per-difficulty-band slicing + Branch-A-vs-B distribution + illegal_move classification + eyeball rubric grid; first dated summary at `tests/eval/smoke_summaries/2026-05-21.md`. Caught and fixed a Lichess `Moves[0]`-vs-`Moves[1]` convention bug (was using opponent's reply as focal; should use solver's first move). 181 unit tests pass. **The 100-call smoke battery itself returned 100/100 templated fallbacks** — every Anthropic call returned HTTP 400 "credit balance too low"; the orchestrator's templated path engaged correctly (0 hallucinated moves, 0 Rule 1 violations) but the substantive question "does v5/v2 hold beyond walkthrough Rxd4?" is unanswered until the user tops up credits and re-runs via `--reuse-fixture` against the same 20-position set. Phase 2 trilogy + 6.5/6.6/6.7 + 6.8-infrastructure complete; substrate clean for Chunk 7 conditional on the substantive smoke re-run going green.
 - **Last session:** 2026-05-21
-- **Chunk 7 entry criteria** (HARD prerequisites, promoted from soft "must include" in Chunk 6.7 commit B; must hold before any new Chunk-7 extractor lands):
+- **Chunk 7 entry criteria** (HARD prerequisites, promoted from soft "must include" in Chunk 6.7 commit B; must hold before any new Chunk-7 extractor lands). **Additional Chunk 6.8 carry-over: the smoke battery's substantive results MUST land cleanly (validation_ok ≥ 90% on real LLM calls, not on templated fallbacks) before Chunk 7. Currently blocked on Anthropic credit balance per the 2026-05-21 session log; re-run via `--reuse-fixture` after top-up.**
   1. **Extractor invocation is parallelised.** Current sequential `handler_s` is ~7-8s detailed (extractors + ~750ms layer emergence). Chunk 7 adds ~2-4s of additional extractor time pre-parallelisation → projected post-Chunk-7 detailed latency ~20-25s, with Phase 3 probes pushing it over Phase 1's `<30s` exit criterion (CLAUDE.md §11). Chunk 7's FIRST deliverable is a per-extractor latency baseline on the walkthrough Rxd4 fixture + an `asyncio.gather` (or `concurrent.futures.ThreadPoolExecutor`) wrapper around extractor invocation so the slowest single extractor sets the floor instead of the sum. Parallelisation must demonstrably hold detailed-mode `handler_s` under ~10s before any new Chunk-7 extractor lands. The Phase 2 exit criterion in CLAUDE.md §11 has been amended to mention this ceiling explicitly.
   2. **Per-new-extractor derivation checkpoint** honoured for each of the 5 planned extractors. For each, ask: "does the prompt that will consume this extractor cite percentages or ratios derived from two of the extractor's fields rather than literal scalars present in the JSON?" If yes → extend `leela_chat/validator/__init__.py::_collect_derived_percentages` (or a parallel `_collect_derived_*` helper if the derivation is not a percentage) with the explicit field-pair mapping AND add one false-positive test per addition. See CLAUDE.md §8 "Implementation pitfalls — Validator derivation" for the canonical pattern (added in Chunk 6.7 commit A).
 - **Alternative direction:** Phase 2 close + Phase 3 Entry Brief per CLAUDE.md §10 — concept-list pruning of `docs/phase3/concept_candidates.md` (~91 seed candidates) is the project's highest-leverage Phase-3 decision.
@@ -1251,3 +1251,51 @@ What's next:
 - **Phase 2 close + Phase 3 entry brief** (alternative direction; concept-list pruning is the highest-leverage Phase-3 decision).
 
 Test status: 160 unit tests + 17 CLI integration tests + 36 validator-suite tests (subset of unit) pass. 6 pod smokes documented (5 regression + 1 new). Phase 2 trilogy + 6.5 + 6.6 complete.
+
+#### 2026-05-21 (cont.) — Phase 2 Chunk 6.7: pre-Chunk-7 forward-debt closure
+
+Three small refinements per the post-Chunk-6.6 reviewer pass:
+- Commit A (`28ba93a`) — CLAUDE.md §8 implementation-pitfall entry for the per-extractor derivation checkpoint. Promotes the rule from PHASE_NOTES (read-on-demand) to CLAUDE.md (read at every session start per §9), so any future session adding a new extractor with derived-percentage prose can't silently re-introduce the Smoke-1-class false negative the Chunk 6.6 fix closed.
+- Commit B (`8ff9fe9`) — PHASE_NOTES "Next session goal" rewritten as HARD Chunk 7 entry criteria (2 enumerated items: parallelisation + per-extractor derivation checkpoint), plus a 1-line CLAUDE.md §11 Phase 2 anchor referencing Phase 1's already-achieved `<30s` ceiling. Without the anchor, the Phase 2 exit reads as if latency stopped mattering after Phase 1 — but the ceiling silently re-applies.
+- Commit C (`338ea36`) — `setup_pod.sh` empty-/workspace fail-fast guard. Catches RunPod's DC-locked volume issue in ~5 sec instead of ~20 min of cascading failures. Verified on the live pod via happy-path + mock-fail tests (renamed `/workspace/leela-chat` away → script exits 1 with the full error+recipe; restored cleanly).
+
+Net effort: ~40 min, under the user's "under-an-hour-total" budget. No application code touched; no tests changed; 3 pure doc/script commits. Substrate genuinely clean for Chunk 7.
+
+#### 2026-05-21 (cont.) — Phase 2 Chunk 6.8: Lichess Puzzle DB corpus + smoke battery (infrastructure complete, substantive results API-blocked)
+
+What I did:
+
+- Commit A (`45b34e9`) — Lichess corpus infrastructure. `leela_chat/eval/lichess_puzzle_db.py` with `material_signature`, `solver_first_uci`, `themes_to_list`, `load_corpus`, `sample_by_theme`, `sample_stratified` (with `fallback_to_lower` for sparse rating bands). `leela_chat/scripts/download_lichess_puzzles.py` with stream-download + ZSTD decompress + Parquet parse + integrity check (CSV row count ≥ 5M + Parquet row count match). 21 hermetic unit tests against synthetic PyArrow tables. zstandard + pyarrow deps added.
+- Commit B (`6869b6f`) — smoke battery runner + doc + summaries dir. `STRATA` config covers 20 positions: 8 tactical (5 rating bands, 6 themes), 5 quiet middlegame, 4 endgame (EXCLUDING KNN_vs_K per project memory), 3 opening. The 5-call matrix per position. CRASH-safe inner loop.
+- Commit C (`44e3e67`) — bug fix + aggregator + first dated summary. **Caught a `Moves[0]` vs `Moves[1]` Lichess convention bug** in the first pod run: had assumed Moves[1] was the solver's first move (an older convention); the current Lichess Puzzle DB uses Moves[0] = solver (FEN side-to-move IS the solver). First run produced 60 illegal-move CRASH entries for H2 + H3 calls. Fix landed; re-run produced 0 illegal-move errors. **BUT:** the re-run also produced 100/100 templated fallbacks — every Anthropic call returned HTTP 400 "Your credit balance is too low to access the Anthropic API". The orchestrator behaved correctly (templated path engaged; 0 Rule 1 violations; no hallucinated moves) but the substantive question is unanswered.
+
+What this chunk DID verify:
+- Corpus pipeline works end-to-end on the pod. 296 MB download in ~5s; decompress to 1.09 GB in ~5s; parse to 341.5 MB Parquet in ~9s. Total ~20s from cold start to queryable corpus.
+- Sampling deterministic via `seed=0`. The 20-position fixture in `tests/eval/smoke_positions.yaml` reproduces exactly from same corpus + same seed.
+- Battery runner runs 100 calls to completion without crashing under the templated-fallback path.
+- Aggregator with per-theme + per-difficulty + Branch-A-vs-B + illegal-move-classification + eyeball-rubric renders correctly.
+
+What this chunk did NOT verify (the substantive question):
+- v5 / v2 prompts holding outside walkthrough Rxd4.
+- Per-theme prose-mention rates.
+- Per-difficulty Branch-A-vs-B prose-quality observations.
+- Forbidden-language adherence in non-walkthrough prose.
+
+Surprises / lessons:
+- **Lichess Moves convention**: the OLD convention (pre-2023?) had `Moves[0]` as the opponent's setup move. The CURRENT DB uses `Moves[0]` as the solver's first move (FEN side-to-move IS the solver). My initial implementation followed the old convention. Caught by the validator's illegal-move check in the first pod run; the CRASH path captured it cleanly. Fixed in `solver_first_uci`; canonical docstring now states the current convention.
+- **Anthropic credit exhaustion is a silent operational failure mode**: the orchestrator's templated path runs cleanly but `validation_ok=False` on every call. Without the run-status preamble I added at the top of `tests/eval/smoke_summaries/2026-05-21.md`, a future archaeologist might read "100/100 templated fallbacks" as a v5/v2 prompt-fragility finding rather than a billing-account-empty issue. Bumped item: any future smoke battery should pre-flight a single test API call before the 100-call loop to fast-fail on credit exhaustion.
+
+Pod resources after this session:
+- Corpus on the network volume at `/workspace/lichess_puzzle_db/lichess_db_puzzle.parquet` (341.5 MB; 5,939,980 rows). Survives pod restarts (eu-cz-1 volume).
+- Phase 3 probe training data is unblocked at the data-pipeline level — when probe training starts, `sample_by_theme` works against this corpus without further setup.
+
+Test status: 181 unit tests pass (was 160; +21 new for lichess_puzzle_db). 17 CLI integration tests + 36 validator-suite tests still pass. No regressions.
+
+Next step (blocking on user action):
+- **User tops up Anthropic credits.**
+- Re-run battery with `--reuse-fixture` (uses the same 20-position fixture so before/after comparison isolates "what the LLM half adds").
+- Re-run aggregator → fresh dated summary file at `tests/eval/smoke_summaries/<re-run-date>.md`.
+- Then: Chunk 7 OR Phase 2 close + Phase 3 entry brief.
+
+Bumped backlog candidate from this chunk:
+- **Pre-flight API check in smoke battery runner.** A 1-token test call at battery startup; if it returns api_error, log clearly and exit with code 3 (distinct from successful templated runs). Saves wasting 30+ min of pod time + telemetry noise on a fully-blocked run.
