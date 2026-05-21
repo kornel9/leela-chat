@@ -426,7 +426,7 @@ Current phase, exit criteria, and active work live in `docs/PHASE_NOTES.md`. Upd
 - Exit when: 30 eval positions pass on all 3 handlers (`what_is_leela_seeing`, `why_this_move`, `did_you_consider`); zero hallucinated moves in last 100 interactions; <30s latency; you find it useful for your own games.
 
 **Phase 2 — MCTS Integration**
-- Exit when: MCTSNode parsing works on 100 random positions; eval trajectories populated; 6 handlers total pass eval; Stockfish comparison surfaces real disagreements.
+- Exit when: MCTSNode parsing works on 100 random positions; eval trajectories populated; 6 handlers total pass eval; Stockfish comparison surfaces real disagreements; **detailed-mode end-to-end latency remains <30s per Phase 1's already-achieved ceiling** (the Phase 1 criterion silently re-applies to every later phase that adds extractor cost — see Chunk 7 entry criteria in PHASE_NOTES).
 
 **Phase 3 — Concept Probes**
 - Exit when: 70+ probes pass AUC>0.9 quality gate; `describe_position` agreed-with by 2000+ player on 80% of eval; failed probes documented.
