@@ -52,6 +52,7 @@ from leela_chat.extractors.stockfish import (
     StockfishResult,
     extract_stockfish_eval,
 )
+from leela_chat.handlers import Mode
 from leela_chat.handlers._dismissal import (
     SearchDismissalTag,
     classify_search_dismissal,
@@ -269,7 +270,7 @@ def handle_why_this_move(
     stockfish_depth: int = 15,
     stockfish_top_n: int = 3,
     mcts_nodes: int = 10000,
-    detailed: bool = False,
+    mode: Mode = "quick",
 ) -> WhyThisMoveFindings:
     """Build the findings JSON for ``why_this_move`` on the given position+move.
 
@@ -281,20 +282,23 @@ def handle_why_this_move(
         stockfish_engine: Live Stockfish SimpleEngine.
         lc0_engine: Optional live Lc0Engine for MCTS. None → handler still
             produces findings but ``mcts``, ``focal_mcts_*`` fields are None;
-            the v1 prompt degrades gracefully (policy + Stockfish only).
+            the v3 prompt degrades gracefully (policy + Stockfish only).
         top_n: Policy top-N to surface to the prompt.
         stockfish_depth: Stockfish search depth.
         stockfish_top_n: Stockfish multipv count.
         mcts_nodes: Lc0 search budget.
-        detailed: Chunk 6.5 opt-in. When ``True``, swaps
-            :func:`extract_mcts` for :func:`extract_mcts_trajectory` so the
-            focal child carries a ``trajectory_summary``, AND calls
-            :func:`extract_layer_emergence` with ``focal_uci=move.uci()``
-            to populate the focal layer trajectory. Also derives
-            ``network_dismissal`` (from the layer trajectory) and
-            ``search_dismissal`` (via
-            :func:`classify_search_dismissal`). Default ``False`` keeps
-            the v1 byte-identical contract.
+        mode: Per-handler latency mode (per ADR-0012). ``"quick"`` uses
+            :func:`extract_mcts` snapshot and skips layer_emergence — the v3
+            prompt reads the quick-mode subset. ``"deep"`` swaps in
+            :func:`extract_mcts_trajectory` so the focal child carries a
+            ``trajectory_summary``, AND calls :func:`extract_layer_emergence`
+            with ``focal_uci=move.uci()`` to populate the focal layer
+            trajectory. Also derives ``network_dismissal`` (from the layer
+            trajectory) and ``search_dismissal`` (via
+            :func:`classify_search_dismissal`). The v4 prompt
+            (PROMPT_VERSION_DETAILED) reads the dual-timescale signals.
+            Default ``"quick"`` preserves the v3 byte-identical contract
+            (what the old ``detailed=False`` did).
 
     Returns:
         :class:`WhyThisMoveFindings`.
@@ -316,7 +320,7 @@ def handle_why_this_move(
     full_mcts: MCTSFindings | None = None
     mcts_truncated: MCTSFindings | None = None
     if lc0_engine is not None:
-        if detailed:
+        if mode == "deep":
             full_mcts = extract_mcts_trajectory(
                 board, engine=lc0_engine, max_nodes=mcts_nodes,
             )
@@ -352,12 +356,12 @@ def handle_why_this_move(
     focal_is_engine_pick = (engine_pick_uci is not None
                             and engine_pick_uci == focal_uci)
 
-    # === Chunk 6.5: --detailed dual-timescale signals ===
+    # === Chunk 6.5 (Chunk 7 ADR-0012-renamed): deep-mode dual-timescale signals ===
     focal_layer_trajectory: CandidateLayerTrajectory | None = None
     network_dismissal: NetworkDismissalTag | None = None
     focal_mcts_summary: MCTSTrajectorySummary | None = None
     search_dismissal: SearchDismissalTag | None = None
-    if detailed:
+    if mode == "deep":
         layer_emergence = extract_layer_emergence(
             board, model=model, focal_uci=focal_uci, top_n_per_layer=top_n,
         )

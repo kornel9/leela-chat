@@ -37,6 +37,7 @@ from leela_chat.extractors.stockfish import (
     StockfishResult,
     extract_stockfish_eval,
 )
+from leela_chat.handlers import Mode
 
 if TYPE_CHECKING:
     import chess.engine
@@ -159,7 +160,7 @@ def handle_what_is_leela_seeing(
     stockfish_depth: int = 15,
     stockfish_top_n: int = 3,
     mcts_nodes: int = 10000,
-    detailed: bool = False,
+    mode: Mode = "quick",
 ) -> WhatIsLeelaSeeingFindings:
     """Build the findings JSON for ``what_is_leela_seeing`` on the given position.
 
@@ -186,15 +187,17 @@ def handle_what_is_leela_seeing(
         mcts_nodes: Node budget for Lc0 MCTS. 10000 is a reasonable trade-off
             between depth and pod-warm latency (~1-3 s). Increase for the
             rare position where the user explicitly asks for deeper analysis.
-        detailed: Chunk 6.5 opt-in. When ``True`` AND the relevant resources
-            are available, the handler swaps :func:`extract_mcts` for
-            :func:`extract_mcts_trajectory` (free, populates each child's
+        mode: Per-handler latency mode (per ADR-0012). ``"quick"`` uses
+            :func:`extract_mcts` (snapshot) and skips layer_emergence — fits
+            the <30s quick-mode gate. ``"deep"`` swaps in
+            :func:`extract_mcts_trajectory` (free populates per-child
             ``trajectory_*`` fields from the live-stats stream) AND calls
             :func:`extract_layer_emergence` to populate ``layer_emergence``
-            (~750 ms for N+1 forward passes on RTX 3090). The v5 prompt
-            template knows how to read these extra fields; ``--detailed``
-            also routes the translator to v5. Default ``False`` keeps the
-            byte-identical v4 contract for legacy / non-coach paths.
+            (~750 ms for N+1 forward passes on RTX 3090). The v7 prompt
+            template (PROMPT_VERSION_DETAILED) reads the extra fields; the
+            v6 prompt (PROMPT_VERSION) reads the quick-mode subset. Default
+            ``"quick"`` preserves the byte-identical v4 contract for legacy
+            and non-coach paths (this is what the old ``detailed=False`` did).
 
     Returns:
         Findings model for the translation layer.
@@ -209,12 +212,11 @@ def handle_what_is_leela_seeing(
 
     mcts_findings: MCTSFindings | None = None
     if lc0_engine is not None:
-        # In --detailed mode, use extract_mcts_trajectory: same search but
-        # populates per-child trajectory_full / trajectory_selected /
-        # trajectory_summary from the live-stats stream. Cost is
-        # essentially identical to extract_mcts per the 6b.5 latency
-        # check; the extra signal is free.
-        if detailed:
+        # In deep mode, use extract_mcts_trajectory: same search but populates
+        # per-child trajectory_full / trajectory_selected / trajectory_summary
+        # from the live-stats stream. Cost is essentially identical to
+        # extract_mcts per the 6b.5 latency check; the extra signal is free.
+        if mode == "deep":
             full_mcts = extract_mcts_trajectory(
                 board, engine=lc0_engine, max_nodes=mcts_nodes,
             )
@@ -228,9 +230,9 @@ def handle_what_is_leela_seeing(
             update={"children": list(full_mcts.children[:MCTS_TOP_N_FOR_LLM])},
         )
 
-    # Network-time per-layer rank trajectories — only when --detailed.
+    # Network-time per-layer rank trajectories — only in deep mode.
     layer_emergence: LayerEmergenceResult | None = None
-    if detailed:
+    if mode == "deep":
         layer_emergence = extract_layer_emergence(
             board, model=model, focal_uci=None, top_n_per_layer=top_n,
         )

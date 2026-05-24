@@ -62,17 +62,19 @@ def _patch_heavy(monkeypatch: pytest.MonkeyPatch, *, answer_result=None) -> dict
     captured: dict = {}
 
     def fake_build(mode: LLMMode, verbose: bool) -> MagicMock:
-        captured["mode"] = mode
+        # Key renamed in Chunk 7a (was "mode"; collided with the new
+        # handler-mode kwarg captured by fake_answer below).
+        captured["llm_mode"] = mode
         captured["verbose"] = verbose
         return _fake_ctx()
 
     def fake_answer(ctx, fen, question, *, handler_override=None, move_uci=None,
-                    detailed=False):
+                    mode="quick"):
         captured["fen"] = fen
         captured["question"] = question
         captured["handler_override"] = handler_override
         captured["move_uci"] = move_uci
-        captured["detailed"] = detailed
+        captured["mode"] = mode
         # 4-tuple per Chunk 6.9: (result, handler_s, translate_s, findings_dict)
         return answer_result or _fake_result(), 0.10, 0.20, {}
 
@@ -133,14 +135,14 @@ def test_ask_mode_iter_and_prod(monkeypatch):
     captured = _patch_heavy(monkeypatch)
 
     cli_main.main(["ask", "--fen", START_FEN, "--question", "?", "--mode", "iter"])
-    assert captured["mode"] == LLMMode.ITER
+    assert captured["llm_mode"] == LLMMode.ITER
 
     cli_main.main(["ask", "--fen", START_FEN, "--question", "?", "--mode", "prod"])
-    assert captured["mode"] == LLMMode.PROD
+    assert captured["llm_mode"] == LLMMode.PROD
 
     # Default (no flag) should be PROD per ADR-0005.
     cli_main.main(["ask", "--fen", START_FEN, "--question", "?"])
-    assert captured["mode"] == LLMMode.PROD
+    assert captured["llm_mode"] == LLMMode.PROD
 
 
 def test_ask_handler_override_passed_through(monkeypatch):
@@ -238,49 +240,93 @@ def test_ask_illegal_move_for_position_exits_2(capsys, monkeypatch):
     assert build_called == [], "should not load model for illegal move"
 
 
-# --- Chunk 6.5: --detailed flag argv tests -----------------------------------
+# --- Chunk 7a: --quick / --deep / --detailed-alias mode argv tests ----------
 
 
-def test_ask_default_no_detailed_flag(monkeypatch):
-    """Without --detailed, _answer_one should receive detailed=False."""
+def test_ask_default_mode_is_quick(monkeypatch):
+    """Without any mode flag, _answer_one should receive mode='quick' (default)."""
     captured = _patch_heavy(monkeypatch)
     cli_main.main([
         "ask", "--fen", START_FEN, "--question", "What is Leela seeing?",
     ])
-    assert captured["detailed"] is False
+    assert captured["mode"] == "quick"
 
 
-def test_ask_detailed_flag_threads_through(monkeypatch):
-    """--detailed should set _answer_one's detailed kwarg to True."""
+def test_ask_quick_flag_explicit(monkeypatch):
+    """--quick should set _answer_one's mode kwarg to 'quick' (same as default)."""
+    captured = _patch_heavy(monkeypatch)
+    cli_main.main([
+        "ask", "--fen", START_FEN, "--question", "What is Leela seeing?",
+        "--quick",
+    ])
+    assert captured["mode"] == "quick"
+
+
+def test_ask_deep_flag_threads_through(monkeypatch):
+    """--deep should set _answer_one's mode kwarg to 'deep'."""
+    captured = _patch_heavy(monkeypatch)
+    cli_main.main([
+        "ask", "--fen", START_FEN, "--question", "What is Leela seeing?",
+        "--deep",
+    ])
+    assert captured["mode"] == "deep"
+
+
+def test_ask_detailed_alias_threads_to_deep(monkeypatch):
+    """--detailed (deprecated alias) should resolve to mode='deep'."""
     captured = _patch_heavy(monkeypatch)
     cli_main.main([
         "ask", "--fen", START_FEN, "--question", "What is Leela seeing?",
         "--detailed",
     ])
-    assert captured["detailed"] is True
+    assert captured["mode"] == "deep"
 
 
-def test_ask_detailed_with_handler_2(monkeypatch):
-    """--detailed --handler why_this_move --move <UCI> threads cleanly."""
+def test_ask_deep_with_handler_2(monkeypatch):
+    """--deep --handler why_this_move --move <UCI> threads cleanly."""
     captured = _patch_heavy(monkeypatch)
     cli_main.main([
         "ask", "--fen", START_FEN, "--question", "Why d4?",
-        "--move", "d2d4", "--handler", "why_this_move", "--detailed",
+        "--move", "d2d4", "--handler", "why_this_move", "--deep",
     ])
-    assert captured["detailed"] is True
+    assert captured["mode"] == "deep"
     assert captured["handler_override"] == "why_this_move"
     assert captured["move_uci"] == "d2d4"
 
 
-def test_ask_detailed_with_handler_3_still_accepted(monkeypatch):
-    """--detailed is a no-op for did_you_consider but argparse still accepts it."""
+def test_ask_deep_with_handler_3_still_accepted(monkeypatch):
+    """--deep is a no-op upgrade target for did_you_consider — argparse still accepts it."""
     captured = _patch_heavy(monkeypatch)
     cli_main.main([
         "ask", "--fen", START_FEN, "--question", "Did you consider d4?",
-        "--move", "d2d4", "--handler", "did_you_consider", "--detailed",
+        "--move", "d2d4", "--handler", "did_you_consider", "--deep",
     ])
-    assert captured["detailed"] is True
+    assert captured["mode"] == "deep"
     assert captured["handler_override"] == "did_you_consider"
+
+
+def test_ask_quick_and_deep_mutually_exclusive(monkeypatch, capsys):
+    """--quick and --deep in the same invocation must be rejected by argparse."""
+    _patch_heavy(monkeypatch)
+    with pytest.raises(SystemExit):
+        cli_main.main([
+            "ask", "--fen", START_FEN, "--question", "What is Leela seeing?",
+            "--quick", "--deep",
+        ])
+    err = capsys.readouterr().err
+    assert "not allowed with argument" in err or "mutually exclusive" in err
+
+
+def test_ask_deep_and_detailed_mutually_exclusive(monkeypatch, capsys):
+    """--deep and --detailed in the same invocation must be rejected (both ask for deep but argparse enforces single-flag)."""
+    _patch_heavy(monkeypatch)
+    with pytest.raises(SystemExit):
+        cli_main.main([
+            "ask", "--fen", START_FEN, "--question", "What is Leela seeing?",
+            "--deep", "--detailed",
+        ])
+    err = capsys.readouterr().err
+    assert "not allowed with argument" in err or "mutually exclusive" in err
 
 
 # --- Chunk 6c: did_you_consider handler argv tests --------------------------

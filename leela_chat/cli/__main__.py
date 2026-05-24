@@ -44,6 +44,7 @@ from loguru import logger
 
 from leela_chat.classifier import classify
 from leela_chat.conversation import ConversationState, Turn
+from leela_chat.handlers import Mode, VALID_MODES
 from leela_chat.handlers.what_is_leela_seeing import (
     HANDLER_NAME as WHAT_HANDLER_NAME,
     PROMPT_VERSION as WHAT_PROMPT_VERSION,
@@ -177,6 +178,27 @@ def _close_context(ctx: CliContext) -> None:
 # === Per-question core ======================================================
 
 
+def _resolve_handler_mode(args: argparse.Namespace) -> Mode:
+    """Resolve the parsed --quick/--deep/--detailed flags into a single Mode.
+
+    The argparse mutually-exclusive group ensures at most one flag is set;
+    if none is set, we default to quick. ``--detailed`` is a deprecated
+    alias for ``--deep`` (preserved from Chunk 6.5) and triggers an INFO
+    log so users can migrate scripts.
+    """
+    if getattr(args, "detailed", False):
+        logger.info(
+            "--detailed is a deprecated alias for --deep (per ADR-0012). "
+            "Use --deep going forward; --detailed will keep working for "
+            "back-compat but new scripts should migrate."
+        )
+        return "deep"
+    if getattr(args, "deep", False):
+        return "deep"
+    # --quick explicit, or no flag (default)
+    return "quick"
+
+
 def _answer_one(
     ctx: CliContext,
     fen: str,
@@ -184,7 +206,7 @@ def _answer_one(
     *,
     handler_override: str | None = None,
     move_uci: str | None = None,
-    detailed: bool = False,
+    mode: Mode = "quick",
 ) -> tuple[ValidatedTranslation, float, float, dict]:
     """Run handler + translate for one (fen, question[, move]) tuple.
 
@@ -199,11 +221,14 @@ def _answer_one(
             like ``why_this_move``). When the resolved handler needs a move
             and this is None, raises ``ValueError``. When the resolved
             handler doesn't take a move, this is ignored.
-        detailed: Chunk 6.5 opt-in for Handlers 1 and 2 — enables
-            ``extract_mcts_trajectory`` + ``extract_layer_emergence`` and
-            routes the translator to the v5 / v2 prompts respectively.
-            Ignored for Handler 3 (``did_you_consider`` is always
-            detailed). Adds ~750 ms latency from the N+1 forward passes.
+        mode: Per-handler latency mode (per ADR-0012, 2026-05-24).
+            ``"quick"`` is the conversational tier (<30s gate); ``"deep"``
+            is the quality-prioritised tier (<90s gate, enables the
+            dual-timescale signals from Chunk 6.5 + the Chunk 7
+            extractors as they land). Handler 3 (``did_you_consider``) is
+            always-deep by construction — a ``mode="quick"`` request on
+            Handler 3 is auto-upgraded to deep with an INFO log
+            (preserves the old ``--detailed`` no-op semantics).
 
     Returns:
         4-tuple of (validated translation, handler latency in seconds,
@@ -234,11 +259,17 @@ def _answer_one(
                 f"Move {move_uci!r} is not legal on FEN {fen!r}."
             )
         if handler_name == DYC_HANDLER_NAME:
-            # did_you_consider is always detailed; --detailed is a no-op.
-            if detailed:
+            # did_you_consider is always-deep by construction (prompt
+            # contract requires dismissal-tag data the quick-mode config
+            # wouldn't produce). A mode="quick" request is auto-upgraded
+            # with an INFO log — preserves the old --detailed no-op
+            # semantics (per the Chunk 6.5 handler 3 always-detailed
+            # design).
+            if mode == "quick":
                 logger.info(
-                    "--detailed is a no-op for did_you_consider (always "
-                    "detailed by construction)."
+                    "mode='quick' is a no-op for did_you_consider — auto-"
+                    "upgrading to deep (handler is always-deep by "
+                    "construction)."
                 )
             findings = handle_did_you_consider(
                 board, move,
@@ -254,11 +285,11 @@ def _answer_one(
                 model=ctx.model,
                 stockfish_engine=ctx.stockfish,
                 lc0_engine=ctx.lc0,
-                detailed=detailed,
+                mode=mode,
             )
             fallback_fn = why_templated_fallback
             prompt_version = (
-                WHY_PROMPT_VERSION_DETAILED if detailed else WHY_PROMPT_VERSION
+                WHY_PROMPT_VERSION_DETAILED if mode == "deep" else WHY_PROMPT_VERSION
             )
     else:
         findings = handle_what_is_leela_seeing(
@@ -266,11 +297,11 @@ def _answer_one(
             model=ctx.model,
             stockfish_engine=ctx.stockfish,
             lc0_engine=ctx.lc0,
-            detailed=detailed,
+            mode=mode,
         )
         fallback_fn = what_templated_fallback
         prompt_version = (
-            WHAT_PROMPT_VERSION_DETAILED if detailed else WHAT_PROMPT_VERSION
+            WHAT_PROMPT_VERSION_DETAILED if mode == "deep" else WHAT_PROMPT_VERSION
         )
     t1 = time.perf_counter()
     result = translate_and_validate(
@@ -333,15 +364,16 @@ def cmd_ask(args: argparse.Namespace) -> int:
     if handler_override is None and move_uci is not None:
         handler_override = WHY_HANDLER_NAME
 
-    mode = LLMMode(args.mode)
-    ctx = _build_context(mode=mode, verbose=args.verbose)
+    llm_mode = LLMMode(args.mode)
+    handler_mode = _resolve_handler_mode(args)
+    ctx = _build_context(mode=llm_mode, verbose=args.verbose)
     try:
         try:
             result, handler_s, translate_s, _findings = _answer_one(
                 ctx, args.fen, args.question,
                 handler_override=handler_override,
                 move_uci=move_uci,
-                detailed=args.detailed,
+                mode=handler_mode,
             )
         except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -402,8 +434,9 @@ def _print_history(state: ConversationState) -> None:
 
 def cmd_repl(args: argparse.Namespace) -> int:
     """Interactive REPL. Returns process exit code."""
-    mode = LLMMode(args.mode)
-    ctx = _build_context(mode=mode, verbose=args.verbose)
+    llm_mode = LLMMode(args.mode)
+    handler_mode = _resolve_handler_mode(args)
+    ctx = _build_context(mode=llm_mode, verbose=args.verbose)
     state = ConversationState()
     try:
         initial = _prompt_initial_fen()
@@ -456,7 +489,7 @@ def cmd_repl(args: argparse.Namespace) -> int:
                 result, handler_s, translate_s, _findings = _answer_one(
                     ctx, state.current_fen, raw,
                     handler_override=args.handler,
-                    detailed=args.detailed,
+                    mode=handler_mode,
                 )
             except ValueError as exc:
                 # Shouldn't happen for a question (FEN already validated;
@@ -544,14 +577,39 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
             "(source, validation status, latency, token counts). Off by default."
         ),
     )
-    p.add_argument(
+    # Handler latency mode (per ADR-0012, 2026-05-24). Mutually exclusive
+    # group: --quick (default), --deep (full quality tier), --detailed
+    # (DEPRECATED alias for --deep, preserved for backward compat from
+    # Chunk 6.5). See leela_chat.handlers.Mode for the literal.
+    mode_group = p.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--quick",
+        action="store_true",
+        help=(
+            "Quick mode (default): conversational tier. Single MCTS pass "
+            "(snapshot), no per-layer trajectory, no chess-content extractors. "
+            "Handler latency capped at <30s sustained per ADR-0012."
+        ),
+    )
+    mode_group.add_argument(
+        "--deep",
+        action="store_true",
+        help=(
+            "Deep mode: quality-prioritised tier. Enables Chunk 6.5 dual-"
+            "timescale signals (MCTS Q-trajectory + BT4 per-layer rank "
+            "emergence) for Handlers 1 and 2, and (as Chunk 7 sub-chunks "
+            "land) multi-config MCTS ensemble, chess-content extractors, "
+            "network confidence, Stockfish depth 30. Handler latency "
+            "bounded at <90s sustained per ADR-0012. No-op upgrade for "
+            "did_you_consider (always-deep by construction)."
+        ),
+    )
+    mode_group.add_argument(
         "--detailed",
         action="store_true",
         help=(
-            "Opt into Chunk 6.5 dual-timescale signals (MCTS Q-trajectory "
-            "+ BT4 per-layer rank emergence) for Handlers 1 and 2. Adds "
-            "~750 ms latency; routes the translator to v5 / v2 prompts. "
-            "No-op for did_you_consider (always detailed)."
+            "DEPRECATED alias for --deep (preserved from Chunk 6.5). New "
+            "scripts should use --deep. Logs a deprecation INFO when used."
         ),
     )
 

@@ -4,9 +4,9 @@ Default-mode behaviour is covered indirectly by the existing
 classifier / CLI integration / translate tests; this file specifically
 verifies the new ``detailed`` kwarg's wiring:
 
-- Default mode (``detailed=False``) does NOT call ``extract_layer_emergence``
+- Default mode (``mode="quick"``) does NOT call ``extract_layer_emergence``
   and uses ``extract_mcts`` (not ``extract_mcts_trajectory``).
-- Detailed mode (``detailed=True``) calls BOTH new extractors and
+- Detailed mode (``mode="deep"``) calls BOTH new extractors and
   populates the new ``layer_emergence`` field.
 - The Findings model still validates when ``layer_emergence`` is None
   (back-compat for older callers that don't pass ``detailed``).
@@ -189,7 +189,7 @@ def _patch_extractors(
     return tracker
 
 
-# === default mode (detailed=False) =========================================
+# === default mode (mode="quick") =========================================
 
 
 def test_default_mode_uses_extract_mcts_not_trajectory(monkeypatch, board):
@@ -201,7 +201,7 @@ def test_default_mode_uses_extract_mcts_not_trajectory(monkeypatch, board):
     findings = handle_what_is_leela_seeing(
         board,
         model=object(), stockfish_engine=object(), lc0_engine=object(),
-        detailed=False,
+        mode="quick",
     )
     assert tracker.extract_mcts_called is True
     assert tracker.extract_mcts_trajectory_called is False
@@ -216,7 +216,7 @@ def test_default_mode_does_not_call_layer_emergence(monkeypatch, board):
     findings = handle_what_is_leela_seeing(
         board,
         model=object(), stockfish_engine=object(), lc0_engine=object(),
-        detailed=False,
+        mode="quick",
     )
     assert tracker.extract_layer_emergence_called is False
     assert findings.layer_emergence is None
@@ -238,7 +238,7 @@ def test_default_mode_is_default_when_kwarg_omitted(monkeypatch, board):
     assert findings.layer_emergence is None
 
 
-# === detailed mode (detailed=True) =========================================
+# === detailed mode (mode="deep") =========================================
 
 
 def test_detailed_mode_uses_trajectory_not_snapshot(monkeypatch, board):
@@ -250,7 +250,7 @@ def test_detailed_mode_uses_trajectory_not_snapshot(monkeypatch, board):
     findings = handle_what_is_leela_seeing(
         board,
         model=object(), stockfish_engine=object(), lc0_engine=object(),
-        detailed=True,
+        mode="deep",
     )
     assert tracker.extract_mcts_trajectory_called is True
     assert tracker.extract_mcts_called is False
@@ -269,7 +269,7 @@ def test_detailed_mode_calls_layer_emergence(monkeypatch, board):
     findings = handle_what_is_leela_seeing(
         board,
         model=object(), stockfish_engine=object(), lc0_engine=object(),
-        detailed=True,
+        mode="deep",
     )
     assert tracker.extract_layer_emergence_called is True
     assert findings.layer_emergence is not None
@@ -298,7 +298,7 @@ def test_detailed_mode_layer_emergence_called_with_focal_none(monkeypatch, board
     handle_what_is_leela_seeing(
         board,
         model=object(), stockfish_engine=object(), lc0_engine=object(),
-        detailed=True,
+        mode="deep",
         top_n=5,
     )
     assert captured["focal_uci"] is None
@@ -307,7 +307,7 @@ def test_detailed_mode_layer_emergence_called_with_focal_none(monkeypatch, board
 
 def test_detailed_mode_skips_layer_emergence_when_lc0_none(monkeypatch, board):
     """No Lc0 → no MCTS-trajectory call; but layer_emergence (network-only)
-    still runs when detailed=True."""
+    still runs when mode="deep"."""
     tracker = _patch_extractors(
         monkeypatch, mcts=None, mcts_traj=None,
         layer_emergence=_fake_layer_emergence(),
@@ -315,7 +315,7 @@ def test_detailed_mode_skips_layer_emergence_when_lc0_none(monkeypatch, board):
     findings = handle_what_is_leela_seeing(
         board,
         model=object(), stockfish_engine=object(), lc0_engine=None,
-        detailed=True,
+        mode="deep",
     )
     # Layer emergence still ran (it doesn't depend on Lc0).
     assert tracker.extract_layer_emergence_called is True

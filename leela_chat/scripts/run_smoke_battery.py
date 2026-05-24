@@ -247,12 +247,17 @@ def _run_one(
     *,
     dry_run: bool = False,
 ) -> dict:
-    """Run one (position, handler, mode) and return a JSONL-shaped dict."""
+    """Run one (position, handler, mode) and return a JSONL-shaped dict.
+
+    ``mode`` is one of ``"quick"`` or ``"deep"`` per the post-Chunk-7a
+    naming (renamed from the old "default" / "detailed" strings).
+    Threads through to ``_answer_one`` as the handler latency mode
+    per ADR-0012.
+    """
     from leela_chat.cli.__main__ import _answer_one
 
     fen = position["fen"]
     focal_uci = position["focal_uci"] if handler in ("why_this_move", "did_you_consider") else None
-    detailed = (mode == "detailed")
 
     out: dict[str, Any] = {
         "ts": datetime.datetime.now(datetime.UTC).isoformat(),
@@ -299,7 +304,7 @@ def _run_one(
             ctx, fen, question,
             handler_override=handler,
             move_uci=focal_uci,
-            detailed=detailed,
+            mode=mode,  # "quick" or "deep" per the matrix
         )
         total_in = sum(r.input_tokens for r in result.llm_responses)
         total_out = sum(r.output_tokens for r in result.llm_responses)
@@ -406,12 +411,18 @@ def main() -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     logger.info(f"writing JSONL to {log_path}")
 
+    # Post-Chunk-7a (ADR-0012) mode naming: "quick" / "deep" replace the
+    # pre-7a "default" / "detailed" matrix labels. Aggregator just renders
+    # whatever string is in the JSONL row, so this rename produces
+    # different (clearer) labels in the markdown without breaking the
+    # aggregator. did_you_consider stays "deep" (always-deep by construction
+    # — a "quick" request is auto-upgraded inside _answer_one with INFO log).
     matrix = [
-        ("what_is_leela_seeing", "default"),
-        ("what_is_leela_seeing", "detailed"),
-        ("why_this_move",        "default"),
-        ("why_this_move",        "detailed"),
-        ("did_you_consider",     "detailed"),  # H3 is always detailed
+        ("what_is_leela_seeing", "quick"),
+        ("what_is_leela_seeing", "deep"),
+        ("why_this_move",        "quick"),
+        ("why_this_move",        "deep"),
+        ("did_you_consider",     "deep"),  # H3 is always deep
     ]
 
     # Chunk 6.8.1 Item 3B — consecutive-api-error circuit breaker.

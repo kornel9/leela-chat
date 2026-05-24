@@ -403,7 +403,7 @@ def _patch_detailed(
 
 
 def test_default_mode_does_not_call_detailed_extractors(monkeypatch, board):
-    """detailed=False → only extract_mcts is called; new extractors silent."""
+    """mode="quick" → only extract_mcts is called; new extractors silent."""
     tracker = _patch_detailed(monkeypatch, mcts=_fake_mcts_findings(),
                               mcts_traj=None, layer_emergence=None)
     findings = handle_why_this_move(
@@ -429,7 +429,7 @@ def test_detailed_mode_rxd4_mcts_rescue_quadrant(monkeypatch, board):
     findings = handle_why_this_move(
         board, chess.Move.from_uci("d8d4"),
         model=object(), stockfish_engine=object(), lc0_engine=object(),
-        detailed=True,
+        mode="deep",
     )
     assert findings.focal_layer_trajectory is not None
     assert findings.focal_layer_trajectory.peak_rank == 9
@@ -449,7 +449,7 @@ def test_detailed_mode_rxb1_search_refutes_quadrant(monkeypatch, board):
     findings = handle_why_this_move(
         board, chess.Move.from_uci("b8b1"),
         model=object(), stockfish_engine=object(), lc0_engine=object(),
-        detailed=True,
+        mode="deep",
     )
     assert findings.focal_layer_trajectory is not None
     assert findings.focal_layer_trajectory.peak_rank == 1
@@ -471,7 +471,7 @@ def test_detailed_mode_focal_not_in_layer_emergence_top_n_returns_none(monkeypat
     findings = handle_why_this_move(
         board, chess.Move.from_uci("h7h6"),
         model=object(), stockfish_engine=object(), lc0_engine=object(),
-        detailed=True,
+        mode="deep",
     )
     assert findings.focal_layer_trajectory is None
     assert findings.network_dismissal is None
@@ -486,7 +486,7 @@ def test_detailed_mode_focal_mcts_summary_pulled_from_child(monkeypatch, board):
     findings = handle_why_this_move(
         board, chess.Move.from_uci("b8b1"),
         model=object(), stockfish_engine=object(), lc0_engine=object(),
-        detailed=True,
+        mode="deep",
     )
     assert findings.focal_mcts_child is not None
     # Two routes to the same data — must match.
@@ -496,13 +496,13 @@ def test_detailed_mode_focal_mcts_summary_pulled_from_child(monkeypatch, board):
 
 def test_detailed_mode_no_lc0_no_search_dismissal(monkeypatch, board):
     """Without an Lc0 engine, the search-time half stays None even when
-    detailed=True. Network-time half should still populate."""
+    mode="deep". Network-time half should still populate."""
     _patch_detailed(monkeypatch, mcts=None, mcts_traj=None,
                     layer_emergence=_fake_layer_emergence())
     findings = handle_why_this_move(
         board, chess.Move.from_uci("d8d4"),
         model=object(), stockfish_engine=object(), lc0_engine=None,
-        detailed=True,
+        mode="deep",
     )
     assert findings.mcts is None
     assert findings.focal_mcts_child is None
