@@ -424,10 +424,10 @@ Current phase, exit criteria, and active work live in `docs/PHASE_NOTES.md`. Upd
 - Exit when: lczerolens smoke test passes, Lc0 with `--verbose-move-stats` runs, Stockfish callable, BT4 downloaded and hashed, repo skeleton committed, 50 eval positions written.
 
 **Phase 1 — Network-First Chat MVP**
-- Exit when: 30 eval positions pass on all 3 handlers (`what_is_leela_seeing`, `why_this_move`, `did_you_consider`); zero hallucinated moves in last 100 interactions; <30s latency; you find it useful for your own games.
+- Exit when: 30 eval positions pass on all 3 handlers (`what_is_leela_seeing`, `why_this_move`, `did_you_consider`); zero hallucinated moves in last 100 interactions; **<30s latency (now QUICK-mode only per ADR-0012, 2026-05-24; deep mode is bounded at <90s)**; you find it useful for your own games.
 
 **Phase 2 — MCTS Integration**
-- Exit when: MCTSNode parsing works on 100 random positions; eval trajectories populated; 6 handlers total pass eval; Stockfish comparison surfaces real disagreements; **detailed-mode end-to-end latency remains <30s per Phase 1's already-achieved ceiling** (the Phase 1 criterion silently re-applies to every later phase that adds extractor cost — see Chunk 7 entry criteria in PHASE_NOTES).
+- Exit when: MCTSNode parsing works on 100 random positions; eval trajectories populated; 6 handlers total pass eval; Stockfish comparison surfaces real disagreements; **per-mode latency caps held (per ADR-0012, 2026-05-24): quick mode <30s sustained; deep mode <90s sustained; deepest mode explicitly out-of-scope until a future ADR amendment.** (The Phase 1 latency criterion no longer applies uniformly across modes — see Chunk 7 entry criteria in PHASE_NOTES + ADR-0012 for the relaxation rationale.)
 
 **Phase 3 — Concept Probes**
 - Exit when: 70+ probes pass AUC>0.9 quality gate; `describe_position` agreed-with by 2000+ player on 80% of eval; failed probes documented.

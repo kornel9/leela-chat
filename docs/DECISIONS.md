@@ -474,3 +474,61 @@ CLAUDE.md §1 amended to match.
 - ADR-0012 (latency cap relaxation) — companion ADR; the latency relaxation makes the quality bar achievable.
 - ADR-0013 (Tier-2 MCTS deferred) — companion ADR; defers product features that aren't load-bearing for the quality bar.
 - BIBLE.md §1 (project identity) — quality framing originates here; reread when re-evaluating this ADR.
+
+---
+
+### ADR-0012: Latency cap relaxation — per-mode caps replace the uniform <30s gate
+
+- **Date:** 2026-05-24
+- **Status:** Accepted
+- **Phase:** Phase 2 — MCTS Integration (forward-looking through Phase 3+)
+- **Decision-makers:** [initials]
+
+#### Context
+CLAUDE.md §11 Phase 1 exit criterion #3 pinned the uniform latency cap: `<30s` end-to-end. This was set when there was one mode (default conversational chat) and the extractor surface was small. The Chunk 6.7 commit B promotion explicitly extended this: *"detailed-mode end-to-end latency remains <30s per Phase 1's already-achieved ceiling; the Phase 1 criterion silently re-applies to every later phase that adds extractor cost."*
+
+Chunk 7's planned deep-mode additions (per the plan at `~/.claude/plans/tell-me-and-explain-mutable-axolotl.md`) cannot fit under 30s:
+- Multi-config MCTS ensemble (7d): verdict pass at 100k nodes (~30-50s on RTX 3090) + exploration pass at 10-30k nodes (parallel, GPU-contending) ≈ 40-60s.
+- Stockfish at depth 30, multipv=10 (7f) ≈ 10-15s.
+- Focused MCTS for did_you_consider (7c) ≈ similar to verdict pass.
+- LLM translation ≈ 8-15s.
+- Even with parallelisation (Chunk 6.7 entry criterion #1, implemented in 7a), the slowest single track sets the floor and that floor exceeds 30s.
+
+Companion to ADR-0011 (super-GM quality bar): the quality choices that make 2700+-grade prose possible (deeper Stockfish, multi-config ensemble, network confidence + chess-content extractors) drive latency up. Relaxing the cap is the trade ADR-0011 implies.
+
+The relaxation needs to be bounded — unbounded latency turns the conversational product into batch analysis (different product shape; see ADR-0013's deepest-mode deferral). 90s is the chosen ceiling for deep mode: a click-and-coffee upper bound a user is plausibly willing to wait for a deep query.
+
+#### Decision
+Replace the uniform `<30s` latency gate with per-mode caps:
+
+| Mode | Latency cap | Rationale |
+|---|---|---|
+| **quick** | < 30s sustained | Preserves the Phase 1 exit criterion's intent for conversational chat; single MCTS pass + light extractors fit easily under this. |
+| **deep** | < 90s sustained | Bounded relaxation; accommodates multi-config ensemble + Stockfish depth 30 + chess-content extractors + LLM translation; click-and-coffee tolerance. |
+| **deepest** | EXPLICITLY OUT-OF-SCOPE | Functionally a different product (batch analysis, 10-30 min/query). Requires a future ADR amendment + likely a separate CLI entry point if it ever lands. Deferred per ADR-0013. |
+
+CLAUDE.md §11 amended:
+- Phase 1 exit criterion #3: latency cap is quick-mode-only.
+- Phase 2 exit criterion (re Chunk 6.7 commit B's silent re-application): per-mode caps replace the uniform criterion; deep mode at <90s; deepest mode out-of-scope.
+
+#### Alternatives considered
+- **Keep the uniform <30s gate.** Rejected: forces Chunk 7 to cut either Stockfish depth, multi-config ensemble, or chess-content extractors — all of which are foundational for Phase 3+ per ADR-0011's quality bar. The uniform cap was set when scope was small; it doesn't survive contact with the deep-mode design.
+- **Unbounded deep mode.** Rejected: turns the conversational chat product into batch analysis; identity drift. The user explicitly waived cost-as-constraint in the Chunk 7 planning conversation but did NOT waive product-shape constraints. 90s is the conversational ceiling; beyond that, it's a different product.
+- **Multiple intermediate tiers (quick / medium / deep / deepest).** Rejected: too many modes for one chunk to commit to; complicates per-handler mode selection. Two modes (quick, deep) is the minimum that splits conversational latency from quality-prioritised analysis. Deepest is explicitly out-of-scope per ADR-0013.
+- **Adaptive cap (latency = function of position complexity).** Rejected for Chunk 7 scope: this is closely related to the "adaptive search budget" feature deferred per ADR-0013. Possibly Chunk 8+ once Phase 3 reveals which positions benefit.
+
+#### Consequences
+- **Chunk 7's deep-mode features (7d ensemble, 7f Stockfish depth-30, 7k+7l chess-content extractors) become buildable within the latency contract.** The deep-mode latency projection in 7a (proactive trade-off-now decision per the 75s/90s thresholds) enforces this before extractors land.
+- **Conversational product shape preserved.** A 90s ceiling is still recognisably conversational; a 10-30 min query would not be. The product identity stays "chat with Leela about positions" + "deep dive on demand."
+- **--detailed flag becomes alias for --deep (per Chunk 7 plan 7a).** Existing users of --detailed will see materially richer prose AND longer latency. Documented in the 7a commit message + CLI --help text.
+- **Quick-mode discipline tightens.** Quick mode is now the load-bearing conversational floor at <30s. Any extractor added to quick mode must fit; the quick gate is unmoved.
+- **Deepest mode is foreclosed (without ADR amendment).** If a 5M-node super-GM study mode is ever wanted, it needs its own ADR + a separate product framing + likely a separate CLI entry. ADR-0013 codifies the deferral.
+- **Phase 3+ MCTS-consumer latency expectations.** Probes / SAEs / labels training pipelines that USE the MCTS extractors should configure quick-mode or deep-mode explicitly; data-generation pipelines can take the deep-mode hit since they're batch jobs anyway.
+- **Reversal cost.** Modest. Backing out means restoring CLAUDE.md §11 to the uniform cap and dropping deep mode (or relaxing the quality bar in ADR-0011). The two ADRs are coupled — if one reverses, the other likely should too.
+
+#### References
+- CLAUDE.md §11 — Phase 1 + Phase 2 latency criteria, amended in this commit.
+- ADR-0011 (super-GM quality bar) — the companion decision that makes this relaxation necessary.
+- ADR-0013 (Tier-2 deferred) — codifies the deepest-mode deferral.
+- Chunk 7 plan (`~/.claude/plans/tell-me-and-explain-mutable-axolotl.md`) — 7a's deep-mode latency projection enforces the cap; 7b-7f's per-extractor costs roll up into the projection.
+- Chunk 6.7 commit B (PHASE_NOTES 2026-05-21 (cont.)) — the silent re-application this ADR explicitly amends.
