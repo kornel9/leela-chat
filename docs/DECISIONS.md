@@ -532,3 +532,62 @@ CLAUDE.md §11 amended:
 - ADR-0013 (Tier-2 deferred) — codifies the deepest-mode deferral.
 - Chunk 7 plan (`~/.claude/plans/tell-me-and-explain-mutable-axolotl.md`) — 7a's deep-mode latency projection enforces the cap; 7b-7f's per-extractor costs roll up into the projection.
 - Chunk 6.7 commit B (PHASE_NOTES 2026-05-21 (cont.)) — the silent re-application this ADR explicitly amends.
+
+---
+
+### ADR-0013: Tier-2 MCTS features deferred to post-Phase-3 evidence
+
+- **Date:** 2026-05-24
+- **Status:** Accepted
+- **Phase:** Phase 2 — MCTS Integration (forward-looking through Phase 3-7)
+- **Decision-makers:** [initials]
+
+#### Context
+The Chunk 7 planning conversation (2026-05-24) surfaced a proposal to bundle Tier-1-foundational MCTS work (multi-config ensemble, MultiPv, focused MCTS, network confidence, Stockfish depth bump) with Tier-2 product features (position perturbation analysis, multi-strength ensemble, adaptive search budget, iterative-search-and-prune, "deepest mode"). The proposal framed all of these as foundational for Phase 3+ because "Phase 3+ will consume MCTS outputs as input data and changing MCTS configuration mid-Phase-3 requires re-running everything downstream."
+
+The framing was partly correct (MCTS configuration is foundational; changing it mid-Phase-3+ is expensive) and partly wrong (only the Tier-1 items are actually load-bearing for Phase 3+ research consumption). The Tier-2 items are product-grade analysis features whose value to the interpretability research pipeline is conditional on Phase 3+ evidence about which positions / position-types the system handles well vs poorly.
+
+Concretely, what each phase actually consumes:
+- **Phase 3 probes**: stable MCTS verdict per training position + Q value + visits. That's it.
+- **Phase 4 SAE feature characterization**: position characterization = verdict + Stockfish disagreement flag.
+- **Phase 5 label validation**: MCTS-decided ground truth (verdict).
+- **Phase 6 differential analysis**: consistent MCTS config across pairs of positions. (Perturbation infrastructure MIGHT be useful here, but Phase 6 can build it then.)
+- **Phase 7 reasoning pathways**: feature firings + MCTS verdicts.
+
+None of position perturbation, multi-strength ensemble, adaptive search budget, iterative-search-and-prune, or deepest mode is load-bearing for any of these. They are product features that may add user-visible value but don't determine the shape of Phase 3+ training data.
+
+The deferral has a methodological argument too: until Phase 3 produces evidence (which positions get strong vs weak probe coverage; which position-types reveal interpretability gaps), we don't know which Tier-2 features would actually address real failure modes vs which would be guesswork-driven speculation. Front-loading Tier-2 in Chunk 7 commits to product features before the data justifies them.
+
+#### Decision
+Defer the following Tier-2 MCTS features from Chunk 7 to Chunk 8+:
+
+1. **Position perturbation analysis** — generating 8-15 minimally-perturbed variants of a position, running MCTS on each, surfacing "razor-edge vs robust" findings. Genuinely novel feature; needs methodology research (legality preservation, castling/en-passant edge cases, what counts as "minimal") before code. Chunk 8+ once Phase 3 surfaces a position class where it would help.
+2. **Multi-strength ensemble** — running the same network at 1k / 10k / 100k / 1M visits to approximate human-equivalent strength levels. Needs empirical calibration of human-equivalent-strength mapping for the user's specific hardware + network. Chunk 8+.
+3. **Adaptive search budget** — scaling node count based on probe-pass verdict stability + policy entropy. Efficiency optimization, not foundational. Chunk 8+ once Phase 3 identifies which positions probes find hardest.
+4. **Iterative search-and-prune** — sequential deep dives on top-N candidates with fresh budget each. Useful for game-review workflows. Chunk 8+ feature.
+5. **"Deepest mode"** — 5M+ nodes per query, 10-30 min wall clock, full multi-config + perturbation + multi-strength + Stockfish depth 40+. Functionally a different product (batch analysis, not conversational chat). Requires future ADR amendment to ADR-0012's latency contract + likely separate CLI entry point. Chunk 9+ if ever.
+6. **Contempt sweep, Temperature ensemble (stochastic move-selection multi-run), Forced-line MCTS (multi-move forced sequences beyond focal first move), PolicyTemperature tuning experiments, NN cache persistence + tree reuse across session queries, Network policy / value interventions (Phase 6-adjacent), Cross-network consistency at representation level (Phase 4+-adjacent), Maia / multi-network ensemble.** All backlog. Each Chunk-8+ as evidence dictates.
+
+Each Tier-2 feature becomes its own Chunk-8+ work item once Phase 3 has surfaced a concrete failure mode that the feature would address. Captured as a backlog list in PHASE_NOTES.
+
+**Conditional on architectural additive-friendliness:** Chunk 7's mode architecture, findings-JSON Pydantic models, and prompt-loading infrastructure must accommodate Tier-2 additions without rework. See Chunk 7 plan sub-chunk 7a for the extension-friendliness verification (a `tests/integration/test_chunk7_extension_friendliness.py` test exercises this with synthetic stub tracks). If the verification fails, this deferral's premise is compromised and Chunk 7 either does the refactor needed or accepts partial rework for some Tier-2 features.
+
+#### Alternatives considered
+- **Land all Tier-2 features in Chunk 7.** Rejected: phase-sized scope (15 sub-chunks, $400-800 API spend, 10-15 weeks of work) for one chunk; commits to product features before Phase 3 evidence exists to validate their value.
+- **Land position perturbation only (cherry-pick Tier-2).** Rejected: perturbation methodology is genuinely open (legality preservation, "minimal" definition, en passant / castling edge cases) — it's a research project before it's a feature. Including it in Chunk 7 means either rushing methodology or expanding 7g into 3-4 sub-chunks of methodology research.
+- **Defer all Tier-1 + Tier-2 (delay Chunk 7 entirely).** Rejected: chess-content extractors (Chunk 7's 7k+7l) ARE the Phase 2 → Phase 3 bridge deliverable the bible names. Phase 3 needs them to characterize positions for probe training. Delaying Chunk 7 delays Phase 3.
+
+#### Consequences
+- **Chunk 7 scope is bounded** (11 sub-chunks instead of 15+; ~$20-40 in API spend vs $400-800). Manageable as one chunk.
+- **Phase 3 entry brief follows Chunk 7 close, not a Chunk 7.5.** The Chunk 7 plan's Phase D placeholder commits this direction up-front so post-Chunk-7 work doesn't drift toward Chunk 8 Tier-2 work just because it's mechanically the "next chunk in the same phase."
+- **Tier-2 features become evidence-driven.** When Phase 3's probes reveal (say) that the system handles tactical positions well but fails on positional ones, position perturbation analysis on tactical positions becomes wasted work and resources should go to whatever tells us about positional weaknesses instead. Front-loading Tier-2 would have committed to the wrong investments.
+- **Extension-friendliness verification (7a) is load-bearing.** If Chunk 7's architecture isn't actually additive-friendly, the deferral's premise breaks; this ADR's argument depends on Chunk 7 leaving the door open architecturally. The 7a integration test is the contract.
+- **The product looks less ambitious in v1** — no perturbation analysis, no multi-strength ensemble, no deepest mode. Acceptable per the conversational-product framing in ADR-0012; ambitious Tier-2 features can land later without retrofit pain if 7a holds.
+- **Reversal cost.** Low — backing out means landing any of the deferred features in a later chunk. The deferral doesn't burn architecture or close doors; it just sequences.
+
+#### References
+- ADR-0011 (super-GM quality bar) — companion; the quality bar Tier-2 features ostensibly serve.
+- ADR-0012 (latency cap relaxation) — companion; codifies the deepest-mode deferral specifically.
+- Chunk 7 plan (`~/.claude/plans/tell-me-and-explain-mutable-axolotl.md`) — Phase B3 + Out-of-scope section + Phase D placeholder.
+- Chunk 7 plan 7a — extension-friendliness verification (the contract this ADR depends on).
+- BIBLE.md Phase 3-7 sections — what each phase actually consumes (defines the "load-bearing for research" filter this ADR applies).
