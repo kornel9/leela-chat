@@ -185,7 +185,7 @@ def _answer_one(
     handler_override: str | None = None,
     move_uci: str | None = None,
     detailed: bool = False,
-) -> tuple[ValidatedTranslation, float, float]:
+) -> tuple[ValidatedTranslation, float, float, dict]:
     """Run handler + translate for one (fen, question[, move]) tuple.
 
     Args:
@@ -206,8 +206,11 @@ def _answer_one(
             detailed). Adds ~750 ms latency from the N+1 forward passes.
 
     Returns:
-        Tuple of (validated translation, handler latency in seconds,
-        translate latency in seconds).
+        4-tuple of (validated translation, handler latency in seconds,
+        translate latency in seconds, findings.model_dump() dict).
+        The findings dict was added in Chunk 6.9 so the smoke battery
+        runner can serialize trusted-moves arrays for the diagnostic
+        without re-invoking the handler.
     """
     board = chess.Board(fen)
     handler_name = handler_override or classify(
@@ -279,7 +282,7 @@ def _answer_one(
         client=ctx.client,
     )
     t2 = time.perf_counter()
-    return result, t1 - t0, t2 - t1
+    return result, t1 - t0, t2 - t1, findings.model_dump()
 
 
 def _emit_telemetry(
@@ -334,7 +337,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
     ctx = _build_context(mode=mode, verbose=args.verbose)
     try:
         try:
-            result, handler_s, translate_s = _answer_one(
+            result, handler_s, translate_s, _findings = _answer_one(
                 ctx, args.fen, args.question,
                 handler_override=handler_override,
                 move_uci=move_uci,
@@ -450,7 +453,7 @@ def cmd_repl(args: argparse.Namespace) -> int:
             # Treat as question.
             assert state.current_fen is not None  # set by _prompt_initial_fen
             try:
-                result, handler_s, translate_s = _answer_one(
+                result, handler_s, translate_s, _findings = _answer_one(
                     ctx, state.current_fen, raw,
                     handler_override=args.handler,
                     detailed=args.detailed,

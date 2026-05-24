@@ -118,6 +118,72 @@ def _classify_api_error_subkind(detail: str) -> str:
     return "other"
 
 
+def _strip_san_marks(s: str) -> str:
+    """Normalise a SAN for comparison: strip check/mate marks.
+
+    Chunk 6.9 helper. `Kxf3+` and `Kxf3` are the same move semantically
+    but differ in string membership; for diagnostic purposes we treat
+    them as equivalent when checking findings inclusion.
+    """
+    return s.rstrip("+#")
+
+
+def _span_in_findings_summary(span: str, summary: dict) -> bool:
+    """True if the SAN span appears in any trusted-moves array of findings_summary.
+
+    Chunk 6.9 sub-item 1. Distinguishes validator_gap (Y here) from
+    real_hallucination (N here) in the illegal_move classification.
+    Normalises both sides by stripping check/mate marks; matches against
+    every trusted SAN list in the summary.
+
+    Args:
+        span: The validator-flagged SAN string (may include + / # suffixes).
+        summary: The row's `findings_summary` dict (see
+            `run_smoke_battery._extract_findings_summary` for shape).
+
+    Returns:
+        True iff a normalised match is found in any trusted-moves array.
+    """
+    if not span or not summary:
+        return False
+    normalised = _strip_san_marks(span)
+    san_lists = (
+        (summary.get("top_moves_san") or [])
+        + (summary.get("mcts_children_san") or [])
+        + (summary.get("stockfish_top_san") or [])
+        + (summary.get("stockfish_pv_sans") or [])
+    )
+    for s in san_lists:
+        if isinstance(s, str) and _strip_san_marks(s) == normalised:
+            return True
+    # Also check the singleton fields.
+    for k in ("mcts_bestmove_san", "focal_move_san"):
+        v = summary.get(k)
+        if isinstance(v, str) and _strip_san_marks(v) == normalised:
+            return True
+    return False
+
+
+def _excerpt_around_span(prose: str, span: str, radius: int = 80) -> str:
+    """Excerpt ~2*radius chars of prose around the span for human review.
+
+    Chunk 6.9 sub-item 1. If span not found in prose, returns a marker
+    string instead of empty (signals to the reader that the prose may
+    be templated fallback, not the original LLM-failed text).
+    """
+    if not span:
+        return "(no span)"
+    idx = prose.find(span)
+    if idx < 0:
+        return f"(span '{span}' not in prose; row may be templated fallback)"
+    start = max(0, idx - radius)
+    end = idx + len(span) + radius
+    excerpt = prose[start:end].replace("\n", " ").replace("|", "\\|")
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(prose) else ""
+    return f"{prefix}{excerpt}{suffix}"
+
+
 def _detect_circuit_breaker_sentinel(rows: list[dict]) -> dict | None:
     """Find the {_circuit_breaker: True, ...} sentinel row if present.
 
@@ -257,22 +323,46 @@ def _render(rows: list[dict], jsonl_path: Path) -> str:
         and not r.get("focal_matches_mcts_pick", False)
     )
 
-    # === illegal_move classification ===
+    # === illegal_move classification (Chunk 6.9 enhanced) ===
     illegal_records: list[dict] = []
     for r in rows:
         for err in r.get("validation_errors", []) or []:
             if err.get("kind") == "illegal_move":
-                klass = _classify_illegal_move_error(err, r.get("fen", ""), r.get("prose", ""))
+                span = err.get("span", "")
+                # Use the LAST llm_attempt_texts entry (the one the validator
+                # most-recently rejected) if available; fall back to the
+                # templated `prose` for old JSONLs.
+                attempts = r.get("llm_attempt_texts") or []
+                source_prose = attempts[-1] if attempts else (r.get("prose") or "")
+                klass = _classify_illegal_move_error(
+                    err, r.get("fen", ""), source_prose,
+                )
+                # Chunk 6.9: check if the span IS in findings_summary
+                # (validator_gap detection — was theatre before this field
+                # existed; see chunk plan Risks section).
+                in_findings = _span_in_findings_summary(
+                    span, r.get("findings_summary") or {},
+                )
+                # Failed-prose excerpt around the span.
+                excerpt = _excerpt_around_span(source_prose, span, radius=80)
+                # Refined classification: if span IS in findings but
+                # validator flagged it, that's a validator_gap (overrides
+                # the heuristic classifier).
+                if in_findings:
+                    klass = "validator_gap"
                 illegal_records.append({
                     "position": r.get("position_id"),
                     "handler": r.get("handler"),
                     "mode": r.get("mode"),
-                    "span": err.get("span"),
+                    "span": span,
                     "klass": klass,
                     "detail": err.get("detail"),
+                    "in_findings": in_findings,
+                    "failed_prose_excerpt": excerpt,
                 })
     n_halluc = sum(1 for x in illegal_records if x["klass"] == "hallucination")
     n_parser_fp = sum(1 for x in illegal_records if x["klass"] == "parser_fp")
+    n_validator_gap = sum(1 for x in illegal_records if x["klass"] == "validator_gap")
 
     # === Eyeball rubric — first output per (category × handler × mode) cell ===
     cells: dict[tuple, list[dict]] = defaultdict(list)
@@ -379,14 +469,20 @@ def _render(rows: list[dict], jsonl_path: Path) -> str:
 
     lines.append("## illegal_move classification")
     lines.append("")
-    lines.append(f"- **Genuine hallucinations** (Rule 1 violations): {n_halluc}")
-    lines.append(f"- **Validator parser false-positives**: {n_parser_fp}")
+    lines.append(f"- **Genuine hallucinations** (Rule 1 violations the validator caught): {n_halluc}")
+    lines.append(f"- **Validator parser false-positives** (prose-context regex misreads): {n_parser_fp}")
+    lines.append(f"- **Validator gaps** (span IS in findings, validator missed it): {n_validator_gap}")
     if illegal_records:
         lines.append("")
-        lines.append("| Position | Handler/mode | Span | Classification |")
-        lines.append("|---|---|---|---|")
+        lines.append("| Position | Handler/mode | Span | In findings? | Classification | Failed LLM prose excerpt |")
+        lines.append("|---|---|---|---|---|---|")
         for x in illegal_records:
-            lines.append(f"| {x['position']} | {x['handler']}/{x['mode']} | `{x['span']}` | {x['klass']} |")
+            in_f = "✓" if x.get("in_findings") else "✗"
+            excerpt = x.get("failed_prose_excerpt", "")
+            lines.append(
+                f"| {x['position']} | {x['handler']}/{x['mode']} | `{x['span']}` | "
+                f"{in_f} | {x['klass']} | {excerpt} |"
+            )
     lines.append("")
 
     lines.append("## Per-category breakdown")

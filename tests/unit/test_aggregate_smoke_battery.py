@@ -12,7 +12,10 @@ import pytest
 from leela_chat.scripts.aggregate_smoke_battery import (
     _classify_api_error_subkind,
     _detect_circuit_breaker_sentinel,
+    _excerpt_around_span,
     _render,
+    _span_in_findings_summary,
+    _strip_san_marks,
 )
 
 
@@ -190,3 +193,122 @@ def test_render_validation_pass_among_llm_success_is_separated():
     assert "Validation-pass among LLM-success:** 75.0%" in md
     # Banner fires because llm_success < 95%
     assert "⚠️ LLM-success rate" in md
+
+
+# === Chunk 6.9 — failed-prose excerpt + findings_summary diagnostic =======
+
+
+def test_strip_san_marks_drops_check_and_mate():
+    assert _strip_san_marks("Kxf3+") == "Kxf3"
+    assert _strip_san_marks("Qxh1#") == "Qxh1"
+    assert _strip_san_marks("Nf6") == "Nf6"
+    assert _strip_san_marks("") == ""
+
+
+def test_span_in_findings_detects_pv_san_match():
+    """Kxf3+ in prose; Kxf3 in stockfish_pv_sans → validator_gap."""
+    summary = {"stockfish_pv_sans": ["Qxf3+", "Kxf3", "Qxf3"]}
+    assert _span_in_findings_summary("Kxf3+", summary) is True
+    assert _span_in_findings_summary("Kxf3", summary) is True
+    assert _span_in_findings_summary("Kxf3#", summary) is True
+    # Unrelated move: not in findings.
+    assert _span_in_findings_summary("Nxf3+", summary) is False
+
+
+def test_span_in_findings_walks_all_trusted_lists():
+    summary = {
+        "top_moves_san": ["d4"],
+        "mcts_children_san": ["Nf3"],
+        "mcts_bestmove_san": "Bc4",
+        "stockfish_top_san": ["Qd2"],
+        "stockfish_pv_sans": ["e4"],
+        "focal_move_san": "h6",
+    }
+    for span in ["d4", "Nf3", "Bc4", "Qd2", "e4", "h6"]:
+        assert _span_in_findings_summary(span, summary) is True, span
+    assert _span_in_findings_summary("Ra1", summary) is False
+
+
+def test_span_in_findings_empty_summary_returns_false():
+    assert _span_in_findings_summary("Nf3", {}) is False
+    assert _span_in_findings_summary("Nf3", None or {}) is False
+
+
+def test_excerpt_around_span_includes_context():
+    prose = "The position is complex. After Nf3+ White wins material via a discovered attack."
+    excerpt = _excerpt_around_span(prose, "Nf3+", radius=15)
+    # Should include the span + ~15 chars on each side.
+    assert "Nf3+" in excerpt
+    assert "After" in excerpt or "After" in prose[:prose.find("Nf3+")]
+
+
+def test_excerpt_around_span_not_in_prose_returns_marker():
+    """If the span isn't in the prose (e.g. templated fallback), return
+    a clear marker explaining why rather than empty string."""
+    excerpt = _excerpt_around_span("Some templated text.", "Nf3+", radius=80)
+    assert "not in prose" in excerpt
+    assert "templated" in excerpt
+
+
+def test_excerpt_normalises_newlines_and_pipes():
+    """Markdown table cells can't contain raw newlines or unescaped pipes."""
+    prose = "Line 1\nNf3+ is the move | also good is Nc6"
+    excerpt = _excerpt_around_span(prose, "Nf3+", radius=40)
+    assert "\n" not in excerpt
+    # Pipe should be escaped to \| or removed.
+    assert "|" not in excerpt or "\\|" in excerpt
+
+
+def test_render_backward_compat_old_jsonl_without_new_fields():
+    """Old JSONL without llm_attempt_texts + findings_summary still
+    renders without crashing. The illegal_move table will show
+    'span not in prose' excerpts because the templated `prose` field
+    doesn't contain the LLM's failed-attempt spans."""
+    err = {"kind": "illegal_move", "span": "Nf3+", "detail": "..."}
+    rows = [
+        _row(source="templated", validation_ok=False, llm_calls=2, errors=[err]),
+    ]
+    # Strip the new fields from the synthetic row to simulate old JSONL.
+    for r in rows:
+        r.pop("llm_attempt_texts", None)
+        r.pop("findings_summary", None)
+    md = _render(rows, Path("test.jsonl"))
+    # Should render — no crash. The illegal_move table is present.
+    assert "illegal_move classification" in md
+    # In-findings should be ✗ (no findings_summary → can't confirm).
+    assert "✗" in md
+
+
+def test_render_new_jsonl_with_findings_summary_detects_validator_gap():
+    """New JSONL: span IS in findings_summary → classification flips
+    to validator_gap, not real_hallucination."""
+    err = {"kind": "illegal_move", "span": "Kxf3+", "detail": "..."}
+    row = _row(source="templated", validation_ok=False, llm_calls=2, errors=[err])
+    row["llm_attempt_texts"] = [
+        "After Qxf3+ White must play Kxf3+ and Black wins the queen."
+    ]
+    row["findings_summary"] = {
+        "stockfish_pv_sans": ["Qxf3+", "Kxf3", "Qxf3"],
+    }
+    md = _render([row], Path("test.jsonl"))
+    # Classification flips: in-findings → validator_gap.
+    assert "validator_gap" in md
+    assert "Validator gaps" in md  # the new headline bullet
+
+
+def test_render_new_jsonl_with_findings_summary_real_hallucination():
+    """Span NOT in findings_summary AND in failed prose as a move citation
+    → classification stays at 'hallucination' (heuristic) or 'real_hallucination'."""
+    err = {"kind": "illegal_move", "span": "Nf3+", "detail": "..."}
+    row = _row(source="templated", validation_ok=False, llm_calls=2, errors=[err])
+    row["llm_attempt_texts"] = [
+        "White plays Nf3+ attacking the queen — a clean knight fork."
+    ]
+    row["findings_summary"] = {
+        "top_moves_san": ["d4", "e4"],
+        "mcts_children_san": ["d4", "c4"],
+        "stockfish_pv_sans": ["d4", "Nf6"],
+    }
+    md = _render([row], Path("test.jsonl"))
+    # NOT validator_gap (in-findings is ✗).
+    assert "validator_gap" not in md or "Validator gaps** (span IS in findings, validator missed it): 0" in md

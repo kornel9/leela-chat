@@ -73,7 +73,8 @@ def _patch_heavy(monkeypatch: pytest.MonkeyPatch, *, answer_result=None) -> dict
         captured["handler_override"] = handler_override
         captured["move_uci"] = move_uci
         captured["detailed"] = detailed
-        return answer_result or _fake_result(), 0.10, 0.20
+        # 4-tuple per Chunk 6.9: (result, handler_s, translate_s, findings_dict)
+        return answer_result or _fake_result(), 0.10, 0.20, {}
 
     monkeypatch.setattr(cli_main, "_build_context", fake_build)
     monkeypatch.setattr(cli_main, "_close_context", lambda ctx: None)
@@ -118,7 +119,7 @@ def test_ask_invalid_fen_exits_2(capsys, monkeypatch):
         lambda mode, verbose: build_called.append(True) or _fake_ctx(),
     )
     monkeypatch.setattr(cli_main, "_close_context", lambda ctx: None)
-    monkeypatch.setattr(cli_main, "_answer_one", lambda *a, **kw: (_fake_result(), 0.0, 0.0))
+    monkeypatch.setattr(cli_main, "_answer_one", lambda *a, **kw: (_fake_result(), 0.0, 0.0, {}))
 
     code = cli_main.main(["ask", "--fen", "not a fen", "--question", "?"])
     assert code == 2
@@ -204,7 +205,7 @@ def test_ask_invalid_uci_move_exits_2(capsys, monkeypatch):
     monkeypatch.setattr(cli_main, "_close_context", lambda ctx: None)
     monkeypatch.setattr(
         cli_main, "_answer_one",
-        lambda *a, **kw: (_fake_result(), 0.0, 0.0),
+        lambda *a, **kw: (_fake_result(), 0.0, 0.0, {}),
     )
     code = cli_main.main([
         "ask", "--fen", START_FEN, "--question", "?", "--move", "z9z9",
@@ -225,7 +226,7 @@ def test_ask_illegal_move_for_position_exits_2(capsys, monkeypatch):
     monkeypatch.setattr(cli_main, "_close_context", lambda ctx: None)
     monkeypatch.setattr(
         cli_main, "_answer_one",
-        lambda *a, **kw: (_fake_result(), 0.0, 0.0),
+        lambda *a, **kw: (_fake_result(), 0.0, 0.0, {}),
     )
     # e2e5 is not legal from the starting position (pawn can't jump 3 squares).
     code = cli_main.main([

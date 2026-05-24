@@ -149,6 +149,83 @@ def _load_fixture(path: Path) -> list[dict]:
     return data["positions"]
 
 
+def _extract_findings_summary(findings_dict: dict | None) -> dict:
+    """Capture the trusted-moves arrays from a findings dict.
+
+    Chunk 6.9 sub-item 1. Without this, the smoke battery's diagnostic
+    can't detect validator_gap cases (span IS in findings but
+    ``_collect_trusted_moves`` missed it); the validator-fix path in
+    sub-item 2 would be theatre.
+
+    Walks the dict for: every ``san`` / ``uci`` / ``pv_san`` / ``bestmove_san``
+    / ``bestmove_uci`` / ``focal_move_san`` / ``focal_move_uci`` value.
+    Output is a flat dict the aggregator can quickly compare flagged
+    spans against. ~150-300 bytes per row.
+
+    Args:
+        findings_dict: The Pydantic findings model's ``model_dump()`` output,
+            or None / {} if findings weren't available.
+
+    Returns:
+        Flat dict with lists/strings for each trusted-move category.
+    """
+    out: dict[str, Any] = {
+        "top_moves_san": [],
+        "top_moves_uci": [],
+        "mcts_children_san": [],
+        "mcts_children_uci": [],
+        "mcts_bestmove_san": None,
+        "mcts_bestmove_uci": None,
+        "stockfish_top_san": [],
+        "stockfish_top_uci": [],
+        "stockfish_pv_sans": [],  # flattened across stockfish.top_moves[*].pv_san
+        "focal_move_san": None,
+        "focal_move_uci": None,
+    }
+    if not findings_dict:
+        return out
+
+    # Top-level focal callouts (handler 2 + 3).
+    out["focal_move_san"] = findings_dict.get("focal_move_san")
+    out["focal_move_uci"] = findings_dict.get("focal_move_uci")
+
+    # Top moves (policy net candidates; all handlers).
+    for tm in findings_dict.get("top_moves", []) or []:
+        if isinstance(tm, dict):
+            if tm.get("san"): out["top_moves_san"].append(tm["san"])
+            if tm.get("uci"): out["top_moves_uci"].append(tm["uci"])
+
+    # MCTS children + bestmove.
+    mcts = findings_dict.get("mcts") or {}
+    if isinstance(mcts, dict):
+        out["mcts_bestmove_san"] = mcts.get("bestmove_san")
+        out["mcts_bestmove_uci"] = mcts.get("bestmove_uci")
+        for ch in mcts.get("children", []) or []:
+            if isinstance(ch, dict):
+                if ch.get("san"): out["mcts_children_san"].append(ch["san"])
+                if ch.get("uci"): out["mcts_children_uci"].append(ch["uci"])
+
+    # Stockfish top moves + pv_san (flattened).
+    sf = findings_dict.get("stockfish") or {}
+    if isinstance(sf, dict):
+        for sm in sf.get("top_moves", []) or []:
+            if isinstance(sm, dict):
+                if sm.get("san"): out["stockfish_top_san"].append(sm["san"])
+                if sm.get("uci"): out["stockfish_top_uci"].append(sm["uci"])
+                for pv_move in sm.get("pv_san", []) or []:
+                    if isinstance(pv_move, str):
+                        out["stockfish_pv_sans"].append(pv_move)
+
+    # Focal-specific Stockfish PV (handler 2 + 3 detailed mode).
+    fsc = findings_dict.get("focal_stockfish_candidate") or {}
+    if isinstance(fsc, dict):
+        for pv_move in fsc.get("pv_san", []) or []:
+            if isinstance(pv_move, str):
+                out["stockfish_pv_sans"].append(pv_move)
+
+    return out
+
+
 def _mcts_bestmove(ctx: Any, board: chess.Board) -> str | None:
     """Quick MCTS call to find Leela's current pick. ~1-2s per call.
 
@@ -207,6 +284,8 @@ def _run_one(
             "input_tokens": 0,
             "output_tokens": 0,
             "prose": "(dry-run; no LLM call)",
+            "llm_attempt_texts": [],
+            "findings_summary": {},
         })
         return out
 
@@ -216,7 +295,7 @@ def _run_one(
             else f"Why this move ({focal_uci})?" if handler == "why_this_move"
             else f"Did you consider {focal_uci}?"
         )
-        result, handler_s, translate_s = _answer_one(
+        result, handler_s, translate_s, findings_dict = _answer_one(
             ctx, fen, question,
             handler_override=handler,
             move_uci=focal_uci,
@@ -238,6 +317,17 @@ def _run_one(
             "input_tokens": total_in,
             "output_tokens": total_out,
             "prose": result.text,
+            # Chunk 6.9 sub-item 1 — preserve LLM failed-attempt prose
+            # so the aggregator's illegal_move classification can read
+            # the actual hallucinated text (not just the templated
+            # fallback's text, which doesn't contain the flagged spans).
+            "llm_attempt_texts": [r.text for r in result.llm_responses],
+            # Chunk 6.9 sub-item 1 — capture the trusted-moves arrays
+            # the validator walks, so the diagnostic can distinguish
+            # validator_gap (span IS in findings but walk missed it)
+            # from real_hallucination (span NOT in findings). Without
+            # this the validator-fix path in sub-item 2 is theatre.
+            "findings_summary": _extract_findings_summary(findings_dict),
         })
     except Exception as exc:
         logger.exception(f"smoke_battery: handler {handler}/{mode} on {position['id']} crashed")
@@ -251,6 +341,8 @@ def _run_one(
             "input_tokens": 0,
             "output_tokens": 0,
             "prose": f"(crash: {type(exc).__name__}: {exc})",
+            "llm_attempt_texts": [],
+            "findings_summary": {},
         })
     return out
 
