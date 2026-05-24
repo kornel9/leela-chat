@@ -239,9 +239,13 @@ def handle_what_is_leela_seeing(
         )
         if lc0_engine is not None:
             if mode == "deep":
+                # Chunk 7b: deep mode requests MultiPv=5 so the top-5
+                # children get their PV move sequences populated for the
+                # prompt to cite. Quick mode keeps multipv=1 to fit the
+                # <30s gate.
                 mcts_future = ex.submit(
                     extract_mcts_trajectory, board,
-                    engine=lc0_engine, max_nodes=mcts_nodes,
+                    engine=lc0_engine, max_nodes=mcts_nodes, multipv=5,
                 )
             else:
                 mcts_future = ex.submit(

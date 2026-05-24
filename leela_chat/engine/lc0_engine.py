@@ -124,6 +124,28 @@ class Lc0SearchResult(BaseModel):
             "incomplete."
         ),
     )
+    multipv_requested: int = Field(
+        default=1, ge=1,
+        description=(
+            "MultiPv value passed to the engine for this search. "
+            "Added in Chunk 7b. 1 = single-PV (default; quick mode). "
+            ">1 = N principal variations reported via ``principal_variations`` "
+            "below (used by deep mode for cross-PV cross-check)."
+        ),
+    )
+    principal_variations: dict[int, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Per-multipv-index principal variations. Key is the 1-based PV "
+            "index Lc0 reports in info['multipv']; value is the PV move "
+            "sequence in UCI form (info['pv']). Empty dict when "
+            "``multipv_requested == 1`` AND the engine didn't report a PV. "
+            "When multipv > 1, key range is 1..multipv_requested. "
+            "Last-emitted PV per index wins (Lc0 refines PVs across the "
+            "search; we keep the final state). Used by extract_mcts to "
+            "populate MCTSChild.pv_san on the matching root candidates."
+        ),
+    )
 
     model_config = ConfigDict(frozen=True)
 
@@ -202,6 +224,7 @@ class Lc0Engine:
         *,
         nodes: int = 10000,
         log_live_stats: bool = False,
+        multipv: int = 1,
     ) -> Lc0SearchResult:
         """Run an MCTS search; return the raw info-string lines.
 
@@ -228,24 +251,54 @@ class Lc0Engine:
                 engine (it's a ProOnly Lc0 option not accessible via
                 UCI ``setoption``); this kwarg only controls whether
                 the wrapper filters the stream before returning.
+            multipv: MultiPV value to pass to the engine (Chunk 7b). ``1``
+                (default) = single-PV behavior, byte-identical with pre-7b.
+                ``>1`` = N principal variations reported via
+                ``info["multipv"]`` + ``info["pv"]``; the wrapper captures
+                them into ``principal_variations`` on the returned
+                :class:`Lc0SearchResult`. Note: verbose-move-stats output
+                (``info["string"]`` lines) is IDENTICAL regardless of
+                multipv — Lc0 always emits one line per root candidate
+                + a ``node`` summary line. The multipv-distinguishing
+                data lives in ``info["pv"]`` / ``info["multipv"]``.
+                Verified against the v0.32.1 build via the
+                ``lc0_multipv_probe.py`` script during 7b design.
 
         Returns:
             :class:`Lc0SearchResult` with the captured lines, the engine's
-            bestmove, and telemetry. Caller passes
-            ``result.info_string_lines`` to the Chunk-2 parser.
+            bestmove, per-multipv-index principal variations (when
+            multipv > 1), and telemetry. Caller passes
+            ``result.info_string_lines`` to the Chunk-2 parser and uses
+            ``result.principal_variations`` to populate
+            :attr:`MCTSChild.pv_san` on the matching root candidates.
         """
         info_string_lines: list[str] = []
+        # Per-multipv-index PV: key = multipv index (1-based per UCI),
+        # value = PV move sequence in UCI form. Last-write-wins per index
+        # because Lc0 refines PVs across the search and we want the final
+        # state.
+        principal_variations: dict[int, list[str]] = {}
         bestmove_uci: str | None = None
         search_complete: bool = False
         start = time.perf_counter()
 
-        with self._engine.analysis(board, chess.engine.Limit(nodes=nodes)) as analysis:
+        # Pass multipv directly to analysis() — python-chess refuses
+        # configure({"MultiPv": ...}) with "automatically managed" and
+        # the analysis()/analyse() multipv= kwarg is the supported path.
+        with self._engine.analysis(
+            board, chess.engine.Limit(nodes=nodes), multipv=multipv,
+        ) as analysis:
             for info in analysis:
                 s = info.get("string")
                 if isinstance(s, str) and s:
                     info_string_lines.append(s)
-            # When the context exits, the engine has emitted bestmove and
-            # analysis._finished is set. Wait() retrieves the BestMove.
+                # Capture per-PV move sequence when multipv reporting.
+                # info["multipv"] is 1-based; info["pv"] is a list of
+                # chess.Move objects. Last value per multipv index wins.
+                pv_idx = info.get("multipv")
+                pv_moves = info.get("pv")
+                if pv_idx is not None and pv_moves:
+                    principal_variations[int(pv_idx)] = [m.uci() for m in pv_moves]
             try:
                 best = analysis.wait()
                 if best.move is not None:
@@ -261,7 +314,8 @@ class Lc0Engine:
         wall = time.perf_counter() - start
         logger.debug(
             f"lc0 analyse_verbose: nodes={nodes} live_stats={log_live_stats} "
-            f"raw_lines={raw_line_count} returned_lines={len(info_string_lines)} "
+            f"multipv={multipv} raw_lines={raw_line_count} "
+            f"returned_lines={len(info_string_lines)} pvs={len(principal_variations)} "
             f"bestmove={bestmove_uci} wall={wall:.2f}s complete={search_complete}"
         )
         return Lc0SearchResult(
@@ -270,6 +324,8 @@ class Lc0Engine:
             nodes_requested=nodes,
             wall_seconds=wall,
             search_complete=search_complete,
+            multipv_requested=multipv,
+            principal_variations=principal_variations,
         )
 
     def close(self) -> None:

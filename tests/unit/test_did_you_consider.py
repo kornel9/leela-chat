@@ -188,7 +188,7 @@ def _patch_extractors(
     if mcts is not None:
         monkeypatch.setattr(
             handler_mod, "extract_mcts_trajectory",
-            lambda board, *, engine, max_nodes=10000: mcts,
+            lambda board, *, engine, max_nodes=10000, multipv=1: mcts,
         )
     monkeypatch.setattr(
         handler_mod, "extract_layer_emergence",

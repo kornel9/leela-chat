@@ -1615,3 +1615,48 @@ Per user feedback after the 7a retro: ran the depth=25/multipv=8 validation BEFO
 3. **Mid-Chunk-7 chess-content checkpoint added to the plan.** New section between 7f and 7k captures the discipline reminder from the 7a retro: at the end of every structural / MCTS / Stockfish sub-chunk (7a → 7b → 7c → 7d → 7e → 7f), ask "what would it take to get a single chess finding into the prose RIGHT NOW, even hackily?" If the answer is more than ~half a sub-chunk, proceed to the planned next sub-chunk; if the answer is "I could stub a one-extractor version of 7k.1 (threats) by end of session," seriously consider doing that as `7k.0` before 7k.1 proper. The checkpoint is NOT a hard gate — it's a one-question pause to surface "stub-it-early" as a deliberate choice rather than defaulting to "keep plumbing." Natural moments to apply: end of 7d, end of 7f. Document the answer in PHASE_NOTES one-liner each time.
 
 New script: `leela_chat/scripts/stockfish_tradeoff_validation.py` (kept in-tree so it can be re-run at 7f and at 7o to catch regression).
+
+#### 2026-05-24 (cont., 6) — Chunk 7b done (MultiPv MCTS support); first real chess content lands
+
+**7b — MultiPv MCTS support.** Per the Chunk 7 plan. Pod-side probe first (`leela_chat/scripts/lc0_multipv_probe.py`) verified key facts BEFORE design:
+- Lc0 v0.32.1 exposes `MultiPV` in its UCI option list (verified directly by walking python-chess's `engine.protocol.options`).
+- python-chess refuses `configure({"MultiPv": ...})` with `"cannot set MultiPv which is automatically managed"` — the supported path is `engine.analysis(board, limit, multipv=N)`.
+- **Critical structural finding:** Lc0's verbose-move-stats output is IDENTICAL between `multipv=1` and `multipv=5`. The multipv-distinguishing data lives in `info["pv"]` + `info["multipv"]`, NOT in `info["string"]` (verbose-move-stats) lines. **So the parser doesn't need to change at all** — Chunk 7b just captures the per-PV move sequences from python-chess's streaming info dicts and attaches them to the matching root candidates' `pv_san` field (which was empty in Phase 2).
+
+Implementation:
+- `Lc0SearchResult` gained `multipv_requested: int = 1` + `principal_variations: dict[int, list[str]] = {}` (per-multipv-index UCI move sequence; last-write-wins per index across the streaming refinements).
+- `Lc0Engine.analyse_verbose` gained `multipv: int = 1` kwarg; passes through to `engine.analysis(..., multipv=multipv)`; captures `info["pv"]` per `info["multipv"]` during streaming.
+- New helper `leela_chat/extractors/mcts.py::_populate_pv_san` walks `principal_variations` and attaches SAN-converted PV sequences to the matching `MCTSChild.pv_san` (matched on first-move UCI). Per CLAUDE.md §5 immutability: builds new findings via `model_copy`, doesn't mutate.
+- `extract_mcts` + `extract_mcts_trajectory` gained `multipv: int = 1` kwarg; thread through; populate `pv_san` when `multipv > 1`.
+- Handlers 1, 2, 3 in deep mode now pass `multipv=5` to the trajectory extractor; quick mode keeps the default `multipv=1`.
+- Validator: NO change needed. `_collect_trusted_moves` already walks `pv_san` lists generically (per the existing 6.9-era recursion).
+
+**Pod integration check on walkthrough_rxd4 (real Lc0 + real BT4, nodes=2000, multipv=5):** all 5 top children have populated PV sequences ranging from 5 to 12 plies. Verbatim output:
+
+```
+1. Rxd4 (872v Q=+0.944): PV = Rxd4 Qc3 Rxb1+ Kxb1 Qb8+ Rb2 Qd8 Rb4 Be8 c5 Rd7 Qe5
+2. Rbc8 (36v Q=+0.830):  PV = Rbc8 Qxa4 Rxd4 Rxd4 Qxd4+ Rb2 Qg1+ Rb1 Qxg2 Qxa6
+3. Rxb1+ (21v Q=+0.390): PV = Rxb1+ Kxb1 Rxd4 Rxd4 Qxd4 Qxa4 g6 Qd1 Qf2 Bf1
+4. Qf4 (10v Q=+0.523):   PV = Qf4 Rxb8 Rxb8 Rd3 Nd7 g3 Qg5
+5. Ra8 (8v Q=+0.709):    PV = Ra8 Qxa4 Rxd4 Rxd4 Qxd4+
+```
+
+**This is the first real chess content the project has produced from Leela's own search,** not just Stockfish's PV. Previously, MCTS findings carried only `visits` / `Q` / `policy_prob` per candidate; now each top-5 deep-mode candidate has a multi-move continuation that the LLM can cite as "Leela's line continues...". The prompts don't cite `pv_san` from MCTS yet (that's a 7m prompt-version-bump task), but the data substrate is now there.
+
+Tests: 256 pass (was 250 + 4 new MultiPv-specific extractor tests + 2 new handler-wiring tests = 256). 11 existing tests updated to accept the new `multipv` kwarg in `analyse_verbose` and extractor stubs (small surgical edits).
+
+**Mid-Chunk-7 chess-content checkpoint** (per the discipline reminder added to the plan after 7a): asked at 7b close — "what would it take to get a single chess finding into the prose right now, even hackily?" Answer: **~0.3 sub-chunks.** Drop a `## Leela's principal variations for top candidates` section into the deep-mode prompts (v7/v4/v2 → v8/v5/v3) citing `findings.mcts.children[:5][i].pv_san`. The data is already validator-trusted (validator walks `pv_san` per CLAUDE.md §8) so no validator extension needed.
+
+Deferred for now (checkpoint NOT triggered): the 7m sub-chunk is already planned to do this work alongside the chess-content prompt language for 7k+7l's extractors, and bundling the prompt iteration with the chess-content-extractor land is cleaner than two prompt bumps in quick succession. Logged the early-availability of pv_san chess-content as a 7m-pull-forward candidate.
+
+What surprised me:
+- **Parser didn't need any changes.** I expected MultiPv > 1 to emit per-PV verbose-move-stats blocks; the probe showed the verbose-move-stats output is IDENTICAL between multipv=1 and multipv=5. The per-PV data lives in a completely separate stream. This made the implementation roughly half the size I projected.
+- **The pv_san output is genuinely useful prose-quality content.** Looking at Rxd4's 12-ply PV (Rxd4 Qc3 Rxb1+ Kxb1 Qb8+ Rb2 Qd8 Rb4 Be8 c5 Rd7 Qe5) — that's a coherent tactical line a strong-player coach would narrate. The pv_san is not just "more numbers"; it's chess content of the kind the user explicitly said was missing in the 6.9 deferral conversation. 7b accidentally produced what 7k+7l were supposed to be the source of (admittedly only the PV-style chess content, not motif/threat/king-safety findings; those still need 7k+7l).
+- **Total handler-deep-mode latency impact: needs measurement.** The pod integration check ran one ask call with multipv=5 at nodes=2000 — no end-to-end latency comparison done yet. Will measure properly at 7d's parallelisation-gain benchmark (per the 7a retro item now in the plan), which is the right context for it.
+
+What 7b does NOT do:
+- Doesn't bump prompt versions to cite `pv_san` (that's 7m or a 7b.1 micro-iteration if we trigger the checkpoint).
+- Doesn't add the chess-content extractors (threats, king_safety, material_delta, motifs — those are 7k+7l).
+- Doesn't change the validator (the existing `pv_san` walk is already correct).
+
+Next: **7c — focused MCTS for did_you_consider.** Adds `searchmoves` UCI parameter to `Lc0Engine.analyse_verbose`; new `extract_mcts_trajectory_focused` extractor that constrains the search to the focal move; did_you_consider orchestrates a parallel pass (normal MCTS + focused MCTS).

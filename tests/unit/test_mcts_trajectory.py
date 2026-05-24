@@ -118,8 +118,11 @@ class _StubEngine:
 
     def analyse_verbose(
         self, board, *, nodes: int = 10000, log_live_stats: bool = False,
+        multipv: int = 1,
     ) -> Lc0SearchResult:
-        self.calls.append({"nodes": nodes, "log_live_stats": log_live_stats})
+        self.calls.append({
+            "nodes": nodes, "log_live_stats": log_live_stats, "multipv": multipv,
+        })
         assert self._queue, "analyse_verbose called more times than results provided"
         return self._queue.pop(0)
 

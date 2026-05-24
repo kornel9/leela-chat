@@ -509,6 +509,7 @@ def extract_mcts_trajectory(
     budgets: tuple[int, ...] | list[int] | None = None,
     max_nodes: int | None = None,
     target_selected_n: int = 6,
+    multipv: int = 1,
 ) -> MCTSFindings:
     """Run one Lc0 search with live-stats; build a per-candidate dense
     trajectory of the *same tree* plus summary statistics plus a
@@ -529,6 +530,11 @@ def extract_mcts_trajectory(
         target_selected_n: Target number of points in
             ``trajectory_selected`` when using content-aware sampling.
             Ignored if ``budgets`` is given. Default 6.
+        multipv: MultiPV value (Chunk 7b). ``1`` (default) = single-PV;
+            byte-identical with pre-7b. ``>1`` = N principal variations
+            captured; ``pv_san`` populated on matching root candidates
+            via the same :func:`extract_mcts._populate_pv_san` helper.
+            Per-handler-per-mode default: quick=1, deep=5.
 
     Returns:
         :class:`MCTSFindings` from the *final* search state (deepest
@@ -560,7 +566,7 @@ def extract_mcts_trajectory(
 
     # --- one Lc0 search; live-stats stream -------------------------------
     search_result = engine.analyse_verbose(
-        board, nodes=search_budget, log_live_stats=True,
+        board, nodes=search_budget, log_live_stats=True, multipv=multipv,
     )
 
     blocks = _group_live_stats_blocks(search_result.info_string_lines)
@@ -648,14 +654,26 @@ def extract_mcts_trajectory(
             "trajectory": selected,
         }))
 
+    enriched_findings = base.model_copy(update={"children": enriched_children})
+
+    # Chunk 7b: populate pv_san on matching root candidates when multipv > 1.
+    # Reuse the helper from extract_mcts to keep the SAN-conversion logic
+    # in one place.
+    if multipv > 1 and search_result.principal_variations:
+        from leela_chat.extractors.mcts import _populate_pv_san  # local import; avoid cycles
+        enriched_findings = _populate_pv_san(
+            enriched_findings, search_result.principal_variations, board,
+        )
+
     logger.debug(
-        f"mcts_trajectory: search_budget={search_budget} "
+        f"mcts_trajectory: search_budget={search_budget} multipv={multipv} "
         f"emit_blocks={len(findings_per_block)} "
         f"top1={base.children[0].san if base.children else None} "
         f"top1_full_len="
         f"{len(enriched_children[0].trajectory_full) if enriched_children else 0} "
         f"top1_selected_len="
-        f"{len(enriched_children[0].trajectory_selected) if enriched_children else 0}"
+        f"{len(enriched_children[0].trajectory_selected) if enriched_children else 0} "
+        f"pvs_populated={sum(1 for c in enriched_findings.children if c.pv_san)}"
     )
 
-    return base.model_copy(update={"children": enriched_children})
+    return enriched_findings

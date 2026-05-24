@@ -111,3 +111,82 @@ def test_extract_mcts_propagates_search_incomplete() -> None:
     assert findings.bestmove_san is None
     assert findings.children == []
     assert findings.root_stats is None
+
+
+# === Chunk 7b: MultiPv =====================================================
+
+
+def test_extract_mcts_default_multipv_is_one() -> None:
+    """multipv defaults to 1 (single-PV; byte-identical with pre-7b)."""
+    eng = _fake_engine_returning("starting_position", bestmove_uci="d2d4")
+    extract_mcts(chess.Board(), engine=eng)
+
+    _, kwargs = eng.analyse_verbose.call_args
+    assert kwargs.get("multipv", 1) == 1
+
+
+def test_extract_mcts_multipv_kwarg_threads_to_engine() -> None:
+    """Caller's multipv kwarg reaches Lc0Engine.analyse_verbose unchanged."""
+    eng = _fake_engine_returning("starting_position", bestmove_uci="d2d4")
+    extract_mcts(chess.Board(), engine=eng, multipv=5)
+
+    _, kwargs = eng.analyse_verbose.call_args
+    assert kwargs["multipv"] == 5
+
+
+def test_extract_mcts_populates_pv_san_on_matching_children() -> None:
+    """When multipv > 1, principal_variations are mapped to MCTSChild.pv_san
+    by matching the first move's UCI."""
+    text = (FIXTURES_DIR / "walkthrough_rxd4.txt").read_text().splitlines()
+    info_lines = [line for line in text if line and not line.startswith("#")]
+    eng = MagicMock()
+    eng.analyse_verbose.return_value = Lc0SearchResult(
+        info_string_lines=info_lines,
+        bestmove_uci="d8d4",
+        nodes_requested=2000,
+        wall_seconds=0.4,
+        search_complete=True,
+        multipv_requested=3,
+        # Two PVs: PV1 = Rxd4 Qc3, PV2 = Rxb1+ Kxb1. First move of each
+        # in UCI form is the key python-chess populates from info["pv"].
+        # Kept short (2 plies each) to avoid PV-illegality flakiness on
+        # this complex position.
+        principal_variations={
+            1: ["d8d4", "a3c3"],   # Rxd4 Qc3
+            2: ["b8b1", "a1b1"],   # Rxb1+ Kxb1
+        },
+    )
+    board = chess.Board("1r1r2k1/5ppp/p3pn2/4q3/b1PN4/Q4P2/P2RB1PP/KR6 b - - 0 1")
+
+    findings = extract_mcts(board, engine=eng, nodes=2000, multipv=3)
+
+    # Find the child whose uci == d8d4; it should have pv_san populated
+    # with SAN form of the PV sequence.
+    rxd4_child = next((c for c in findings.children if c.uci == "d8d4"), None)
+    rxb1_child = next((c for c in findings.children if c.uci == "b8b1"), None)
+    assert rxd4_child is not None
+    assert rxb1_child is not None
+    assert rxd4_child.pv_san == ["Rxd4", "Qc3"]
+    assert rxb1_child.pv_san == ["Rxb1+", "Kxb1"]
+
+
+def test_extract_mcts_multipv_1_does_not_populate_pv_san() -> None:
+    """When multipv == 1 (default), pv_san is left as the parser produced
+    it (empty for Lc0 v0.32.1)."""
+    text = (FIXTURES_DIR / "walkthrough_rxd4.txt").read_text().splitlines()
+    info_lines = [line for line in text if line and not line.startswith("#")]
+    eng = MagicMock()
+    eng.analyse_verbose.return_value = Lc0SearchResult(
+        info_string_lines=info_lines,
+        bestmove_uci="d8d4",
+        nodes_requested=2000,
+        wall_seconds=0.4,
+        search_complete=True,
+        # multipv_requested defaults to 1; principal_variations defaults to {}
+    )
+    board = chess.Board("1r1r2k1/5ppp/p3pn2/4q3/b1PN4/Q4P2/P2RB1PP/KR6 b - - 0 1")
+
+    findings = extract_mcts(board, engine=eng, nodes=2000)
+
+    # No child should have a populated pv_san — the parser leaves them empty.
+    assert all(not c.pv_san for c in findings.children)

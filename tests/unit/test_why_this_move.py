@@ -362,6 +362,7 @@ class _DetailedCallTracker:
         self.extract_mcts_called = False
         self.extract_mcts_trajectory_called = False
         self.extract_layer_emergence_called = False
+        self.last_multipv: int | None = None  # Chunk 7b
 
 
 def _patch_detailed(
@@ -374,12 +375,14 @@ def _patch_detailed(
     tracker = _DetailedCallTracker()
     import leela_chat.handlers.why_this_move as handler_mod
 
-    def _fake_mcts(board, *, engine, nodes):
+    def _fake_mcts(board, *, engine, nodes, multipv=1):
         tracker.extract_mcts_called = True
+        tracker.last_multipv = multipv
         return mcts
 
-    def _fake_mcts_traj(board, *, engine, max_nodes):
+    def _fake_mcts_traj(board, *, engine, max_nodes, multipv=1):
         tracker.extract_mcts_trajectory_called = True
+        tracker.last_multipv = multipv
         return mcts_traj
 
     def _fake_layer(board, *, model, focal_uci, top_n_per_layer):

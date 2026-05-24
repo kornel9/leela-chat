@@ -265,9 +265,11 @@ def handle_did_you_consider(
             top_n=stockfish_top_n,
         )
         if lc0_engine is not None:
+            # Chunk 7b: handler 3 is always-deep; request MultiPv=5 so
+            # the top-5 candidates carry their PV move sequences.
             mcts_future = ex.submit(
                 extract_mcts_trajectory, board,
-                engine=lc0_engine, max_nodes=mcts_max_nodes,
+                engine=lc0_engine, max_nodes=mcts_max_nodes, multipv=5,
             )
 
     leela, layer_emergence = bt4_future.result()

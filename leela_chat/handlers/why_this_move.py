@@ -342,9 +342,11 @@ def handle_why_this_move(
         )
         if lc0_engine is not None:
             if mode == "deep":
+                # Chunk 7b: deep mode requests MultiPv=5 — see
+                # what_is_leela_seeing for the rationale.
                 mcts_future = ex.submit(
                     extract_mcts_trajectory, board,
-                    engine=lc0_engine, max_nodes=mcts_nodes,
+                    engine=lc0_engine, max_nodes=mcts_nodes, multipv=5,
                 )
             else:
                 mcts_future = ex.submit(

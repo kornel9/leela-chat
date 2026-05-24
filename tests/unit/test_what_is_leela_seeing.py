@@ -148,6 +148,8 @@ class _CallTracker:
         self.extract_mcts_called = False
         self.extract_mcts_trajectory_called = False
         self.extract_layer_emergence_called = False
+        self.last_multipv: int | None = None  # Chunk 7b
+        self.deep_traj_multipv: int | None = None  # Chunk 7b
 
 
 def _patch_extractors(
@@ -161,12 +163,14 @@ def _patch_extractors(
     tracker = _CallTracker()
     import leela_chat.handlers.what_is_leela_seeing as handler_mod
 
-    def _fake_mcts(board, *, engine, nodes):
+    def _fake_mcts(board, *, engine, nodes, multipv=1):
         tracker.extract_mcts_called = True
+        tracker.last_multipv = multipv
         return mcts
 
-    def _fake_mcts_traj(board, *, engine, max_nodes):
+    def _fake_mcts_traj(board, *, engine, max_nodes, multipv=1):
         tracker.extract_mcts_trajectory_called = True
+        tracker.last_multipv = multipv
         return mcts_traj
 
     def _fake_layer(board, *, model, focal_uci, top_n_per_layer):
@@ -258,6 +262,35 @@ def test_detailed_mode_uses_trajectory_not_snapshot(monkeypatch, board):
     assert findings.mcts is not None
     assert findings.mcts.children[0].trajectory_summary is not None
     assert findings.mcts.children[0].trajectory_summary.q_peak == 0.95
+
+
+def test_deep_mode_passes_multipv_5_to_trajectory_extractor(monkeypatch, board):
+    """Chunk 7b: deep mode requests MultiPv=5 (per the per-mode default
+    committed in the plan). Quick mode keeps multipv=1 to fit the <30s gate."""
+    tracker = _patch_extractors(
+        monkeypatch, mcts=None, mcts_traj=_fake_mcts_with_trajectories(),
+        layer_emergence=_fake_layer_emergence(),
+    )
+    handle_what_is_leela_seeing(
+        board,
+        model=object(), stockfish_engine=object(), lc0_engine=object(),
+        mode="deep",
+    )
+    assert tracker.last_multipv == 5
+
+
+def test_quick_mode_passes_default_multipv_1_to_extractor(monkeypatch, board):
+    """Chunk 7b: quick mode preserves multipv=1 (the pre-7b behavior)."""
+    tracker = _patch_extractors(
+        monkeypatch, mcts=_fake_mcts_snapshot(), mcts_traj=None,
+        layer_emergence=None,
+    )
+    handle_what_is_leela_seeing(
+        board,
+        model=object(), stockfish_engine=object(), lc0_engine=object(),
+        mode="quick",
+    )
+    assert tracker.last_multipv == 1
 
 
 def test_detailed_mode_calls_layer_emergence(monkeypatch, board):
