@@ -11,7 +11,7 @@
 ## Current Status
 
 - **Phase:** 2 — MCTS Integration. Entered 2026-05-19 after Phase 1's informal close. Phase 2 entry brief delivered + acknowledged; Phase 2 plan written (see `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md`).
-- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19; Chunk 6 trilogy done 2026-05-19; Chunk 6.5 done 2026-05-20; Chunk 6.6 + 6.7 + 6.8 + 6.8.1 done 2026-05-21; Chunk 6.9 done 2026-05-24 (subjective gate cleared by AI scoring per user delegation; user manual re-scoring deferred to Chunk 7's 7o once chess-content extractors land per CLAUDE.md §2 Rule 1 constraint). **Active: Chunk 7 plan Phase B** — three pre-Chunk-7 ADRs (ADR-0011 quality bar shift to super-GM 2700+; ADR-0012 deep-mode latency cap relaxation to <90s; ADR-0013 Tier-2 MCTS deferred to post-Phase-3 evidence) + walkthrough fixture preservation + 2500+ rater recruitment doc + Active Chunk pointer to Chunk 7. Then Phase C is Chunk 7 proper (11 sub-chunks Tier-1-foundational MCTS + chess-content extractors 7k+7l as the core deliverable + ADR-0014 pinning MCTS baseline + smoke battery + user re-scoring at 7o).
+- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19; Chunk 6 trilogy done 2026-05-19; Chunk 6.5 done 2026-05-20; Chunk 6.6 + 6.7 + 6.8 + 6.8.1 done 2026-05-21; Chunk 6.9 done 2026-05-24 (subjective gate cleared by AI scoring per user delegation; user manual re-scoring deferred to Chunk 7's 7o once chess-content extractors land per CLAUDE.md §2 Rule 1 constraint). **Chunk 7 plan Phase B done 2026-05-24** — ADR-0011 (quality bar shift to super-GM 2700+), ADR-0012 (deep-mode latency cap relaxation to <90s; quick mode preserves <30s; deepest mode out-of-scope), ADR-0013 (Tier-2 MCTS deferred to post-Phase-3 evidence) all landed; walkthrough_rxd4 v5/v2 baseline prose preserved as test fixture; 2500+ rater recruitment in Pending user action items (does NOT block). **Active: Chunk 7 Phase C** — 11 sub-chunks Tier-1-foundational MCTS + chess-content extractors 7k+7l as the core deliverable + ADR-0014 pinning MCTS baseline + smoke battery + user re-scoring at 7o (+ conditional 7p iteration pass if 7o lands marginal).
 - **Last session:** 2026-05-24
 - **Chunk 7 entry criteria** (HARD prerequisites, promoted from soft "must include" in Chunk 6.7 commit B; must hold before any new Chunk-7 extractor lands). **Chunk 6.9 closed the prompt-fragility carry-over from 6.8: validation_ok 100%, illegal_move 0, templated 0%, forbidden-language hits 1/100 down from 4/100. AI subjective quality at parity or better on all 5 scored cells; user re-scoring deferred to post-7k+7l per the user-delegation close.**
   1. **Extractor invocation is parallelised.** Current sequential `handler_s` is ~7-8s detailed (extractors + ~750ms layer emergence). Chunk 7 adds ~2-4s of additional extractor time pre-parallelisation → projected post-Chunk-7 detailed latency ~20-25s, with Phase 3 probes pushing it over Phase 1's `<30s` exit criterion (CLAUDE.md §11). Chunk 7's FIRST deliverable is a per-extractor latency baseline on the walkthrough Rxd4 fixture + an `asyncio.gather` (or `concurrent.futures.ThreadPoolExecutor`) wrapper around extractor invocation so the slowest single extractor sets the floor instead of the sum. Parallelisation must demonstrably hold detailed-mode `handler_s` under ~10s before any new Chunk-7 extractor lands. The Phase 2 exit criterion in CLAUDE.md §11 has been amended to mention this ceiling explicitly.
@@ -1468,3 +1468,30 @@ Honest reflection on this resolution:
 
 Phase B starts next session direction:
 - ADR-0011 (quality bar shift), ADR-0012 (latency cap relaxation), ADR-0013 (Tier-2 deferral), walkthrough fixture preservation, rater recruitment doc, Active Chunk pointer to Chunk 7.
+
+#### 2026-05-24 (cont., 2) — Chunk 7 plan Phase B done
+
+Phase B of the Chunk 7 plan landed in 6 commits. Net effect: the project-identity changes that were buried in the Chunk 7 proposal are now explicit ADRs, the walkthrough fixture is preserved against future regression, and the rater recruitment user-action-item is captured without blocking Chunk 7 sub-chunks.
+
+Commit chain:
+- `637fe41` B1 — ADR-0011 quality bar shift to super-GM (2700+); CLAUDE.md §1 amendment.
+- `e336036` B2 — ADR-0012 latency cap relaxation; CLAUDE.md §11 amendment (per-mode caps replace uniform <30s gate; quick <30s, deep <90s, deepest out-of-scope).
+- `5042b11` B3 — ADR-0013 Tier-2 MCTS features deferred to post-Phase-3 evidence (perturbation, multi-strength, adaptive, iterative-search-and-prune, deepest mode + the longer backlog list all explicitly Chunk-8+).
+- `8b60160` B4 — `tests/eval/fixtures/walkthrough_rxd4_v5_baseline_prose.md` created; carries the v2 prose from A1 + the structural patterns the v2 prompt commits to (substantive-finding pattern, trough-prose contract, encoding-vs-use contract, Stockfish PV as tactical narration, cross-bucket framing) as the regression reference.
+- `de30118` B5 — Pending user action items section added; 2500+ rater recruitment as first entry (does NOT block Chunk 7).
+- (this commit) B6 — Active Chunk pointer to Chunk 7; this retrospective.
+
+What surprised me (small things):
+- **The forbidden-language CONTRACT reframing** (originally Phase B1 of an earlier plan draft) didn't need a standalone pre-Chunk-7 prompt bump per the user's refinement — the structural-rule reframing folds naturally into 7m's prose contract extension when there's already new contract content to integrate. Skipping the standalone bump saved a version-number-space burn (no v8/v9 mid-Phase-B; v6/v7 hold until 7m).
+- **The walkthrough fixture pattern** turned out to be useful beyond just preserving the v5 prose: writing out the "structural patterns the v2 prompt commits to" section forced me to articulate the contract more explicitly than `INTERPRETABILITY_NOTES.md` §3 currently does (which talks about each contract individually but doesn't tie them together as a "what does this prompt actually guarantee" checklist). Worth carrying this pattern forward — Chunk 7's 7m can drop a similar "what does v8/v9 guarantee" checklist next to the walkthrough fixture.
+
+Net Phase B outcome:
+- Three pre-Chunk-7 ADRs landed cleanly; project-identity contract documented before Chunk 7 code touches it.
+- Walkthrough fixture preserved for future regression checks.
+- Rater recruitment open as a user action item without blocking code.
+- 200 unit tests still pass (no code changes in Phase B; ADR / doc only).
+
+Phase C starts next session direction:
+- **7a (mode architecture + extractor parallelisation + extension-friendliness verification + deep-mode latency projection)** is the first sub-chunk per the plan. Per the user's refinement, 7a includes a proactive latency-projection step that runs per-extractor benchmarks BEFORE 7b-7f's extractors land — at >75s projected deep-mode total, pick the trade-off now rather than discovering at 7o we're over budget.
+- 7a also includes the `tests/integration/test_chunk7_extension_friendliness.py` integration test that exercises three architectural properties (per-handler MCTS config accepts new tracks without rewriting; findings-JSON Pydantic models extensible-by-default; prompt-loading accommodates new findings-shape variants). This test is the contract that makes ADR-0013's Tier-2 deferral safe.
+- 7b-7f follow in sequence (MultiPv, focused MCTS, multi-config ensemble, network confidence, Stockfish bump) per the plan.
