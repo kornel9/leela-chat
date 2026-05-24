@@ -106,6 +106,18 @@ def _populate_pv_san(
 
     Per CLAUDE.md S5 (Pydantic immutability + ``frozen=True``): build a
     new findings via ``model_copy`` rather than mutating in place.
+
+    **Silent partial-PV degradation (intentional):** if the SAN walk fails
+    midway (Lc0 has been observed to emit truncated or otherwise malformed
+    PVs on very short searches), this function logs a WARNING and keeps
+    whatever SAN sequence was built up to the failure point — the
+    candidate's ``pv_san`` gets the partial line, not raised exception, not
+    empty list. Rationale: partial PV is better than no PV for prose
+    citation, and the validator's ``_collect_trusted_moves`` walks each
+    SAN entry independently so the partial sequence stays trusted. The
+    silent-degradation behaviour is a deliberate choice, not a bug — if
+    you're debugging "Leela's PV is shorter than I expected for top
+    candidate X," check the loguru output for the warning.
     """
     import chess as chess_mod
 

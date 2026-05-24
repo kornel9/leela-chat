@@ -1660,3 +1660,54 @@ What 7b does NOT do:
 - Doesn't change the validator (the existing `pv_san` walk is already correct).
 
 Next: **7c — focused MCTS for did_you_consider.** Adds `searchmoves` UCI parameter to `Lc0Engine.analyse_verbose`; new `extract_mcts_trajectory_focused` extractor that constrains the search to the focal move; did_you_consider orchestrates a parallel pass (normal MCTS + focused MCTS).
+
+#### 2026-05-24 (cont., 7) — Chunk 7b.1 done (pv_san citation lands in deep-mode prose) + meta-rule codified
+
+Per user feedback after the 7b retro: the bundling-into-7m approach for pv_san was wrong — not just "delays user feedback" but "makes attribution impossible at 7m." Shipped 7b.1 alongside two related items.
+
+**7b.1.A (CLAUDE.md + docstring):**
+1. CLAUDE.md §8 Process pitfalls new rule: **any sub-chunk that adds a findings-JSON field MUST ship its prose-version bump in the SAME sub-chunk's commit chain.** Two reasons documented: silent-plumbing-cycle prevention; attribution-debt avoidance (per-sub-chunk prose updates keep attribution clean — one citation pattern at a time validated against the canonical walkthrough fixture; bundled iteration would couple 6+ patterns at debug time). Canonical example: 7b's pv_san field was almost deferred to 7m; caught and shipped as 7b.1.
+2. CLAUDE.md §8 External-tool pitfalls new entry: **python-chess `configure()` REJECTS "automatically managed" options with a loud EngineError** — separate failure mode from the silent-no-op pitfall. Supported path is `engine.analyse(..., multipv=N)` / `analysis(..., multipv=N)`; the managed-options list is empirically discoverable via the EngineError message; authoritative list is python-chess's `_configure` blocklist.
+3. `_populate_pv_san` docstring extended noting silent-partial-PV degradation is intentional.
+
+**7b.1.B (three new prompt versions):**
+- `what_is_leela_seeing/v8.md` iterates v7: new "When to cite Leela's MCTS PV vs Stockfish's" section; both worked examples updated with pv_san data; four new anti-patterns (no moves outside pv_san; no evals at PV-end positions; no apology when pv_san empty; surface engine-PV agreement/disagreement).
+- `why_this_move/v5.md` iterates v4: strict-citation Guard 1 extended to `mcts.children[*].pv_san`; rule 5 INVERTED (pv_san no longer "always []"); output structure items 6 (Branch A + B) updated to prefer Leela's PV over Stockfish's when available.
+- `did_you_consider/v3.md` iterates v2: same shape — strict-citation extended; output item 6 framed as "Leela's intended continuation from [engine pick]"; focal's own pv_san framed for refuted-dismissal narration.
+
+Handler `PROMPT_VERSION_DETAILED` constants bumped: `what_is_leela_seeing` 7→8; `why_this_move` 4→5; `did_you_consider` `PROMPT_VERSION` 2→3. Per CLAUDE.md §3: v7/v4/v2 retained on disk.
+
+**7b.1.C (spot-check + latency delta on walkthrough_rxd4):**
+
+End-to-end `cli ask --deep --move d8d4 --handler why_this_move` produced (validation_ok=True, source=llm, prompt=v5, handler_s=6.62s, translate_s=11.70s):
+
+> Yes, Rxd4 is Leela's committed pick — 4221 of 4798 visits (88%) at Q +0.92, squarely in the winning bucket. [...continues 6 sentences...] **Leela's intended continuation from Rxd4 is Qc3 Rxb1+ Kxb1 Qb8+ Qb2 Rd8, which echoes Stockfish's PV (Rxd4 Qc3 Rxb1+ Kxb1 Qb8+) — White's queen has nowhere to hide after the d4-knight falls.**
+
+(Full prose preserved in commit `<this-commit>`.) Per the user's foundation-validation framing:
+- ✅ PV citation pattern is clean (validator passed; every move trusted).
+- ✅ Cites Leela's PV appropriately alongside Stockfish's (surfaces engine convergence).
+- ✅ PV-depth variance handled gracefully (this run produced 6-ply top-1 PV vs 12-ply in the 7b retro sample; prompt cited what was there without padding).
+- ✅ Avoids hallucinating positions reached through the PV (anti-pattern v8 respected).
+- ⚠ Class-2 risk to watch: "White's queen has nowhere to hide" — interpretive narration about a PV-mechanism, not strictly grounded in extractor findings. Borderline acceptable today; flagged for 7m/7o smoke battery to see if generalizes.
+
+**Latency delta measurement (isolated extract_mcts_trajectory calls, post-warmup, walkthrough_rxd4, max_nodes=10000):**
+
+| Call | Wall-clock | Top-1 pv_san length |
+|---|---|---|
+| multipv=1 (cold) | 0.77s | 0 |
+| **multipv=5** (warm) | **0.29s** | 15 |
+| multipv=1 (warm control) | 0.30s | 0 |
+
+**multipv=5 vs multipv=1 warm-state delta: essentially zero.** Much better than projected — the Lc0 internal cost of tracking 5 PVs vs 1 PV is negligible compared to the search cost itself. Deep-mode latency budget is dominated by Stockfish (7f) + multi-config ensemble (7d), NOT by multipv=5. 7d now has a clean baseline.
+
+**Known issue flagged for 7m: PV depth variance (5-12 plies on the SAME position across runs).** Lc0's PV length depends on search budget + when multipv tracking refreshed. v8/v5/v3 handle it implicitly (cite what's there); 7m's prompt design may want to differentiate "short vs long PV" framing. Recommend test position with consistently-short PV before 7m for contrast.
+
+**Other 7b retro items resolved:** `_populate_pv_san` move-to-shared deferred (per user); `multipv_requested` unused field kept (per user); PV walk's permissive error handling docstring extended.
+
+**Net 7b.1 outcome:**
+- pv_san citation visible in deep-mode prose; validator passes; latency cost is ~0 (measured).
+- Two CLAUDE.md §8 amendments codify the bundling rule (hard) + the python-chess managed-options pitfall.
+- 256 unit + integration tests still pass.
+- The bundling temptation is now structurally prevented from recurring at 7c, 7d, 7e, 7f, 7k.1, etc. Each subsequent sub-chunk that adds a findings field MUST ship its prompt-version bump in the same commit chain.
+
+Next-next: **7c will follow the bundling rule** — any new findings fields it adds (`focused_visits`, `focused_q_trajectory`, etc.) ship with their own prompt-version bump before 7d starts.

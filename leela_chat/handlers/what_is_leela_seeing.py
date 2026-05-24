@@ -69,7 +69,14 @@ if TYPE_CHECKING:
 #   trajectory_summary) and the BT4 per-layer rank trajectories
 #   (layer_emergence). Default mode (no --detailed) keeps v4 unchanged.
 PROMPT_VERSION = 6
-PROMPT_VERSION_DETAILED = 7
+# v7 → v8 (2026-05-24, Chunk 7b.1): deep-mode prompts learn to cite
+# Leela's MCTS principal variations (`mcts.children[i].pv_san`) populated
+# for top-5 candidates by Chunk 7b's MultiPv=5 deep-mode default. New
+# section "When to cite Leela's MCTS PV vs Stockfish's"; both worked
+# examples updated with pv_san data; four new anti-patterns. Validator
+# unchanged (recursive walk already trusts pv_san). Per CLAUDE.md §3:
+# v7.md retained.
+PROMPT_VERSION_DETAILED = 8
 
 # How many top-by-visits MCTS children to surface to the LLM in this
 # handler's findings. The extractor returns all root candidates (up to ~50);

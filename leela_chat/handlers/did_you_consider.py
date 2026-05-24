@@ -74,7 +74,13 @@ if TYPE_CHECKING:
 
     from leela_chat.engine.lc0_engine import Lc0Engine
 
-PROMPT_VERSION = 2
+# v2 → v3 (2026-05-24, Chunk 7b.1): handler-3 always-deep prompt now
+# cites Leela's MCTS pv_san (populated for top-5 by Chunk 7b's MultiPv=5
+# default, which this always-deep handler inherits). Strict-citation
+# Guard 1 extended to mcts.children[*].pv_san; output structure item 6
+# updated to prefer Leela's intended continuation for the engine pick.
+# Per CLAUDE.md §3: v2.md retained.
+PROMPT_VERSION = 3
 HANDLER_NAME = "did_you_consider"
 
 # MCTS top-N to surface to the LLM (mirrors why_this_move).

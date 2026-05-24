@@ -75,7 +75,13 @@ if TYPE_CHECKING:
 #   narrates with the trough-prose contract. Default mode (no
 #   --detailed) keeps v1 byte-identical.
 PROMPT_VERSION = 3
-PROMPT_VERSION_DETAILED = 4
+# v4 → v5 (2026-05-24, Chunk 7b.1): deep-mode prompt now cites Leela's
+# MCTS pv_san (populated for top-5 candidates by Chunk 7b's MultiPv=5
+# default). Strict-citation Guard 1 extended to mcts.children[*].pv_san;
+# rule 5 inverted (pv_san is no longer "always []"); Branch A item 6 +
+# Branch B item 6 updated to prefer Leela's PV over Stockfish's when
+# available. Per CLAUDE.md §3: v4.md retained.
+PROMPT_VERSION_DETAILED = 5
 
 HANDLER_NAME = "why_this_move"
 
