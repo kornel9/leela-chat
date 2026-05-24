@@ -1589,3 +1589,29 @@ What this trio of sub-chunks does NOT do:
 - No end-to-end smoke battery yet (that's 7o).
 
 Next: **7b — MultiPv MCTS support.** Adds MultiPv UCI option to lc0_engine.py + per-mode defaults (quick=1, deep=5) + per-PV-line data in `extract_mcts` / `extract_mcts_trajectory` + validator extension for the per-PV trusted-moves walk per CLAUDE.md §8 derivation pitfall.
+
+#### 2026-05-24 (cont., 5) — Pre-7b Stockfish trade-off validation + three durable notes from 7a retro
+
+Per user feedback after the 7a retro: ran the depth=25/multipv=8 validation BEFORE 7b lands (vs deferring to 7f), so the design signal is in front of 7d (multi-config MCTS ensemble), not behind it. Three configs measured on the walkthrough_rxd4 fixture (pod, Stockfish 16, RTX 3090 box; warmup pass at depth=10/multipv=1):
+
+| Config | Wall-clock (s) | Fits 90s gate alone? | Notes |
+|---|---|---|---|
+| depth=25, multipv=8 [7a.2 COMMITTED trade-off] | **54.95** | YES (~35s margin) | fits but eats most of the budget |
+| depth=22, multipv=5 [conservative fallback] | **4.26** | YES, comfortable | ample headroom for other extractors |
+| depth=30, multipv=1 [extreme: max depth, min PVs] | **28.93** | YES, comfortable | ample headroom for other extractors |
+
+**Key insight: multipv dominates cost, not depth.** depth-30/multipv-1 (28.93s) is HALF the cost of depth-25/multipv-8 (54.95s). The Chunk-7 plan's original 7f goal of "Stockfish at depth 30 with multipv=10" was correctly vetoed by the 7a.2 measurement of 235s, but the cost-curve shows the sweet spot is likely depth=28-30 with multipv=3-5 (need to measure at 7f-land time), NOT depth=25-with-many-multipv. depth=25/multipv=8 stands as the committed deep-mode default per 7a.2; 7f should measure the cost-curve more thoroughly before finalising in ADR-0014 (7n).
+
+**Adversarial-Stockfish premise survives.** 54.95s for depth-25/multipv-8 fits the 90s gate; with BT4 thread (~0.6s) + Lc0 verdict-pass (~7s) running in parallel + LLM translate (~8-15s) sequential after, end-to-end deep-mode is ~70-80s. Tight but fits. Cold-start variance + position-specific variance + LLM token-count variance need watching at 7o full battery — if median deep-mode latency lands at >80s, drop multipv to 5 (and update ADR-0014).
+
+**7d design implication:** Stockfish is available as a deep-mode cross-check; the multi-config MCTS ensemble premise doesn't need to plan on Stockfish being unavailable. The 7d entry can assume the cross-check exists.
+
+**Three durable notes addressing other 7a retro items:**
+
+1. **Handler 3 API asymmetry documented.** Added a long docstring note to `handle_did_you_consider` explaining that unlike Handlers 1 + 2, this handler does NOT take a `mode: Mode` parameter — auto-upgrade happens in `_answer_one`. Also added an "API asymmetry — known debt" callout in the `Mode` literal's docstring in `leela_chat/handlers/__init__.py`. Future Chunk-8+ per-mode features on Handler 3 should ADD the mode parameter AND remove the auto-upgrade branch in `_answer_one`. Captured both places so the next person doesn't rediscover the exception the hard way.
+
+2. **Parallelisation-gain measurement scheduled into 7d.** Plan file's 7d section now requires a one-shot parallelisation-gain measurement (serial vs parallel handler latency on walkthrough fixture, recorded in PHASE_NOTES) at 7d-land time. Per the 7a retro: "the 7a.2 parallelisation gain was 'probably 1-2s' unverified — at 7d the answer stops being 'probably' and starts being load-bearing (verdict + exploration in parallel is the difference between ~10s and ~20s of MCTS time)."
+
+3. **Mid-Chunk-7 chess-content checkpoint added to the plan.** New section between 7f and 7k captures the discipline reminder from the 7a retro: at the end of every structural / MCTS / Stockfish sub-chunk (7a → 7b → 7c → 7d → 7e → 7f), ask "what would it take to get a single chess finding into the prose RIGHT NOW, even hackily?" If the answer is more than ~half a sub-chunk, proceed to the planned next sub-chunk; if the answer is "I could stub a one-extractor version of 7k.1 (threats) by end of session," seriously consider doing that as `7k.0` before 7k.1 proper. The checkpoint is NOT a hard gate — it's a one-question pause to surface "stub-it-early" as a deliberate choice rather than defaulting to "keep plumbing." Natural moments to apply: end of 7d, end of 7f. Document the answer in PHASE_NOTES one-liner each time.
+
+New script: `leela_chat/scripts/stockfish_tradeoff_validation.py` (kept in-tree so it can be re-run at 7f and at 7o to catch regression).

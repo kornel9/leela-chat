@@ -199,6 +199,20 @@ def handle_did_you_consider(
 ) -> DidYouConsiderFindings:
     """Build the findings JSON for ``did_you_consider`` on (board, move).
 
+    **API asymmetry note (Chunk 7a.1):** unlike :func:`handle_what_is_leela_seeing`
+    and :func:`handle_why_this_move`, this handler does NOT take a
+    ``mode: Mode`` parameter. ``did_you_consider`` is always-deep by
+    construction — its prompt contract requires the dismissal-tag /
+    dual-timescale data the quick-mode config wouldn't produce. The
+    Mode auto-upgrade happens in :func:`leela_chat.cli.__main__._answer_one`
+    (logs INFO and proceeds with deep behavior for a ``mode="quick"`` request).
+    If a future Chunk-8+ feature needs per-mode dispatch on this handler
+    (e.g., a per-mode chess-content extractor set), ADD a ``mode: Mode``
+    parameter here AND remove the auto-upgrade branch in ``_answer_one``
+    — the contract has an exception today; new per-mode work undoes it.
+    See ``leela_chat.handlers.Mode`` docstring for the always-deep
+    upgrade semantics.
+
     Args:
         board: Position to assess.
         move: The focal move. Must be legal on ``board``.
