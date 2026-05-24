@@ -73,7 +73,7 @@ if TYPE_CHECKING:
 
     from leela_chat.engine.lc0_engine import Lc0Engine
 
-PROMPT_VERSION = 1
+PROMPT_VERSION = 2
 HANDLER_NAME = "did_you_consider"
 
 # MCTS top-N to surface to the LLM (mirrors why_this_move).

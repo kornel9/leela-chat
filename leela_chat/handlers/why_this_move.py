@@ -72,8 +72,8 @@ if TYPE_CHECKING:
 #   network_dismissal + search_dismissal tags that the v2 prompt
 #   narrates with the trough-prose contract. Default mode (no
 #   --detailed) keeps v1 byte-identical.
-PROMPT_VERSION = 1
-PROMPT_VERSION_DETAILED = 2
+PROMPT_VERSION = 3
+PROMPT_VERSION_DETAILED = 4
 
 HANDLER_NAME = "why_this_move"
 
