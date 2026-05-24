@@ -22,6 +22,30 @@
 
 ---
 
+## Pending user action items
+
+_Items that need user attention but do NOT block code work. Tracked here so they don't get lost; updated as items land or get superseded._
+
+### 2500+ rater recruitment for Chunk 7's subjective scoring (opened 2026-05-24, Phase B5)
+
+**Goal:** recruit at least one 2500+ rater for Chunk 7's 7o subjective-scoring sample, with 2600+ preferred. Per ADR-0011 (quality bar shift to super-GM 2700+), a 2400+ rater is no longer sufficient as a single rater — the productionization gate requires 2500+ minimum, and the design target is super-GM-grade prose that 2700+ would approve.
+
+**Why it matters:** Chunk 7 closes (per plan 7o) on subjective-quality scoring of deep-mode prose. The user's own 2000+ scoring is a valuable sanity check but no longer sufficient as the sole subjective signal per ADR-0011. Without at least one 2500+ rater, the 7o close decision falls back to AI scoring + user-as-sanity-check, which is weaker than the productionization bar implies.
+
+**Pool candidates:**
+- Strong-player friends (any IM / GM the user has personal contact with).
+- Online chess communities the user is in (Lichess Forums, Chess.com strong-player groups, lc0 Discord).
+- Club / federation contacts.
+- Coaches who do online lesson work — pay for one rating session.
+
+**Compensation acceptable per user direction** (cost not a constraint). A rater scoring 10 cells of side-by-side prose ≈ 1-2 hours of careful reading; reasonable to compensate at typical chess-coaching rates.
+
+**Does NOT block Chunk 7 sub-chunks.** Phase B6 (Active Chunk pointer to Chunk 7) does not block on rater confirmation per the plan's "track but don't block" decision. If rater recruitment lands during Chunk 7 sub-chunks, incorporate scores at 7o. If recruitment stalls indefinitely, 7o falls back to user-scoring-only with the gap noted in PHASE_NOTES.
+
+**Status:** open. Update this section when a rater commits or when fallback path is taken.
+
+---
+
 ## Phase 0 — Environment and Foundations
 
 ### Exit criteria (from BIBLE.md / CLAUDE.md §10)
