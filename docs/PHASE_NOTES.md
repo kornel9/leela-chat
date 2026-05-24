@@ -1556,3 +1556,36 @@ What 7a.2 does NOT do:
 - Doesn't ship the chess-content extractors (7k+7l) or any MCTS additions; those are their own sub-chunks.
 
 Next: 7a.3 (extension-friendliness verification — integration test + Pydantic extensible-by-default audit).
+
+#### 2026-05-24 (cont., 4) — Chunk 7a.3 done (extension-friendliness verification); closes Chunk 7a as a sub-chunk-trio
+
+**7a.3 — extension-friendliness verification.** Three architectural properties verified by `tests/integration/test_chunk7_extension_friendliness.py` (10 new tests; 250 total now pass):
+
+**Property A — Findings models accept extra fields.** Added `ConfigDict(frozen=True, extra="allow")` to all three top-level findings models (`WhatIsLeelaSeeingFindings`, `WhyThisMoveFindings`, `DidYouConsiderFindings`). `frozen=True` is preserved (immutability stays); `extra="allow"` lets Chunk-8+ extractors attach new findings (e.g., hypothetical `perturbation_summary`) without modifying the model class. Strict per-extractor validation stays at the extractor-level models (`StockfishResult`, `MCTSFindings`, etc.); the top-level wrapper is intentionally permissive.
+
+**Property B — Prompt loader is field-name-agnostic.** Inspected `_load_prompt` in `leela_chat/llm/translate.py`: it's a thin file-read (`_PROMPTS_DIR / handler_name / f"v{version}.md"` + `read_text()`). No hardcoded findings-field-name knowledge in the loader code. A Chunk-8 prompt-version bump that cites new fields touches only the prompt markdown + handler PROMPT_VERSION constant.
+
+**Property C — Handler extractor invocation is localized-extensible.** The 7a.2 ThreadPoolExecutor pattern is the structural extension point: adding a new extractor means editing ONE handler file's thread block + adding ONE Pydantic field (or using extra="allow") + bumping PROMPT_VERSION_DETAILED + adding the new prompt file. No cross-file infrastructure changes. Verified by `inspect.getsource` checks that all three handlers import + use `ThreadPoolExecutor` + `ex.submit()`.
+
+Honest framing built into the test file's docstrings: the plan's original phrasing "without rewriting the handler" was too strong. The accurate contract is "extension-with-localized-edits-per-handler that don't cascade." A meta-test (`test_extension_friendliness_contract_documented`) keeps the contract visible to future Chunk-8+ work: if you find yourself doing cross-file refactors beyond the four bounded edit-points (handler file, prompt markdown, handler constant, optional validator-helper extension per CLAUDE.md §8), the extension is fighting the architecture and ADR-0013's deferral premise needs revisiting.
+
+**Chunk 7a as a whole — summary.** Three sub-chunks (7a.1 + 7a.2 + 7a.3) shipped cleanly:
+
+- 7a.1 (`4fb783d`): mode infrastructure (Mode literal + per-handler API + CLI --quick/--deep + --detailed alias deprecation). Backward-compat preserved via the deprecated --detailed alias.
+- 7a.2 (`fc014ef`): ThreadPoolExecutor parallelisation across BT4/Stockfish/Lc0 threads in all three handlers + per-extractor latency baseline script + deep-mode latency projection that PROACTIVELY caught the Stockfish-depth-30/multipv-10 235s blow-through. Decision committed: deep-mode Stockfish downgrades to depth=25/multipv=8 at 7f-land time; ADR-0012 cap preserved.
+- 7a.3 (this commit): extra="allow" on top-level findings models + 10 new integration tests verifying the three extension properties.
+
+Hard gates as 7a closes:
+- Quick-mode handler_s gate <30s: not yet load-tested end-to-end (need cold-start measurement at smoke battery; deferred to 7o full battery).
+- Deep-mode handler_s gate <90s: projected ~25-35s end-to-end at the planned 7f Stockfish config; comfortable margin.
+- Tests: 250 pass (200 baseline + 10 mode tests at 7a.1 + 10 extension tests at 7a.3 = 220 new + pre-existing; full count 250).
+- Architectural extensibility for Chunk-8+ Tier-2 features: verified at test level.
+
+What this trio of sub-chunks does NOT do:
+- No new chess content yet (that's 7k+7l).
+- No multi-config MCTS ensemble yet (that's 7d).
+- No Stockfish bump yet (that's 7f — and now constrained by the 7a.2 projection).
+- No new prompt versions yet (that's 7m).
+- No end-to-end smoke battery yet (that's 7o).
+
+Next: **7b — MultiPv MCTS support.** Adds MultiPv UCI option to lc0_engine.py + per-mode defaults (quick=1, deep=5) + per-PV-line data in `extract_mcts` / `extract_mcts_trajectory` + validator extension for the per-PV trusted-moves walk per CLAUDE.md §8 derivation pitfall.

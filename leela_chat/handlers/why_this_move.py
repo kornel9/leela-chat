@@ -225,7 +225,9 @@ class WhyThisMoveFindings(BaseModel):
         ),
     )
 
-    model_config = ConfigDict(frozen=True)
+    # frozen=True + extra="allow": see WhatIsLeelaSeeingFindings.model_config
+    # for the rationale (Chunk 7a.3 extension-friendliness per ADR-0013).
+    model_config = ConfigDict(frozen=True, extra="allow")
 
 
 def _find_focal_in_policy(

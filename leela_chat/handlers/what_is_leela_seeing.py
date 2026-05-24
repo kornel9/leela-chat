@@ -148,7 +148,14 @@ class WhatIsLeelaSeeingFindings(BaseModel):
         ),
     )
 
-    model_config = ConfigDict(frozen=True)
+    # frozen=True: model is immutable post-construction (the v1 contract;
+    # findings flow forward; nothing mutates them in-place).
+    # extra="allow" (added in Chunk 7a.3 for extension-friendliness per
+    # ADR-0013): Tier-2 / Chunk-8+ extractors can attach new findings
+    # fields here without modifying this class. The strict per-extractor
+    # schema lives at the EXTRACTOR-level Pydantic models (e.g.,
+    # MCTSFindings, StockfishResult); this top-level wrapper is permissive.
+    model_config = ConfigDict(frozen=True, extra="allow")
 
 
 def handle_what_is_leela_seeing(
