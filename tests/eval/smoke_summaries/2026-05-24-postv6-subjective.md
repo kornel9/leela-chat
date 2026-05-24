@@ -1,6 +1,10 @@
 # Subjective quality scoring — v5/v2 (baseline) vs v6/v7/v3/v4/v2 (Chunk 6.9)
 
-> **Status:** open for user manual re-scoring per Chunk 7 plan Phase A. AI scoring (filled 2026-05-24, completed at Chunk 6.9 close) is preserved as a placeholder; the **USER scoring sections per cell are the authoritative gate** for whether 6.9 hard-closes ships-clean or needs iteration.
+> **Status:** 6.9 closed 2026-05-24 via user delegation to AI evaluation. User manual re-scoring deferred to post-Chunk-7 (specifically post-7k+7l, when chess-content extractors land and the prose can finally cite forks/pins/threats/king-safety/material). User's reasoning: the current Phase 1 / Phase 2 prose is necessarily number-heavy per CLAUDE.md §2 Rule 1 (LLM cannot cite chess content that isn't in the findings JSON; no chess-content extractors exist yet); a 2000+ player cannot contribute meaningfully when there's no chess content to evaluate. User will manually re-score in Chunk 7's 7o smoke-battery once 7k+7l have added threats/king_safety/material_delta/motifs to the findings JSON.
+>
+> Empty User scoring tables per cell are preserved as **forward-looking infrastructure**: they're for Chunk 7's 7o subjective-scoring run, not for retroactive 6.9 scoring. Same structure, used at a later phase when prose actually contains chess content.
+>
+> AI scoring (filled 2026-05-24) is the authoritative signal for the 6.9 close decision per this delegation. Per AI scoring: 3 v6 wins, 2 ties, 0 v5 wins → ship v6 (≥ 3 of 5 ship rule cleared). 6.9 hard-closes.
 >
 > Per the Chunk 6.9 plan Step 4d: hard gates ARE quantitative (in the aggregator's dated summary file `2026-05-24-postv6.md`); THIS file is the subjective half that catches regressions the quantitative gates miss.
 
