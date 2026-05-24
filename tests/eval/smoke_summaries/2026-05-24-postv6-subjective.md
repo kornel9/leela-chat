@@ -1,12 +1,8 @@
 # Subjective quality scoring — v5/v2 (baseline) vs v6/v7/v3/v4/v2 (Chunk 6.9)
 
-> Filled 2026-05-24 after the Chunk 6.9 v6/v7/v3/v4/v2 battery re-run
-> completed and the new dated summary
-> (`tests/eval/smoke_summaries/2026-05-24-postv6.md`) was generated.
+> **Status:** open for user manual re-scoring per Chunk 7 plan Phase A. AI scoring (filled 2026-05-24, completed at Chunk 6.9 close) is preserved as a placeholder; the **USER scoring sections per cell are the authoritative gate** for whether 6.9 hard-closes ships-clean or needs iteration.
 >
-> Per the Chunk 6.9 plan Step 4d: hard gates ARE quantitative (in the
-> aggregator's dated summary file); THIS file is the subjective half
-> that catches regressions the quantitative gates miss.
+> Per the Chunk 6.9 plan Step 4d: hard gates ARE quantitative (in the aggregator's dated summary file `2026-05-24-postv6.md`); THIS file is the subjective half that catches regressions the quantitative gates miss.
 
 ## Quantitative gates summary (from the postv6 dated summary)
 
@@ -30,14 +26,31 @@ across all 3 handlers; covers focal + dismissal tags + dual-timescale).
 The walkthrough_rxd4 cell uses **`why_this_move/detailed`** (matches
 the Chunk 6.5/6.8 Smoke 4 protocol; v6 output from Step 4a pre-flight).
 
-## Criteria (per cell, score 1-5)
+## How to score (user manual re-scoring instructions)
+
+You are scoring 5 cells. For each cell, read the v5 prose and v6 prose side-by-side, then fill the **User scoring** table at the bottom of the cell with 1-5 values per dimension per version.
+
+### The four dimensions (each 1-5)
 
 1. **Insight** — does the prose surface something a strong player wouldn't have seen at a glance?
 2. **Accuracy** — does it correctly characterise the position's nature?
 3. **Concreteness** — does it cite specific lines/moves/numbers vs. hedging in abstractions?
 4. **Style** — does it read like a strong-player coach or like a hedged language model?
 
-Sum the 4 scores per position; compare per-position totals v5 vs v6.
+### "Indistinguishable" is a valid verdict
+
+If you genuinely cannot tell which version is better on a given dimension (or for a given cell overall), write `—` instead of a score and note "indistinguishable" in the User notes for the cell. That's data too — it tells us the prompt change didn't move the needle on that cell, which is just as informative as a clear win or loss.
+
+### Decision protocol (applied after all 5 cells scored)
+
+- **v6 user-sum ≥ v5 user-sum on ≥ 3 of 5 cells** → 6.9 hard-closes; ship v6.
+- **v6 user-sum < v5 user-sum on ≥ 3 of 5 cells** → quality regression even though quantitative gates passed; do NOT ship v6 as-is; iterate (v8/v6/v5/v3 micro-iteration) or revert. Comment in PHASE_NOTES.
+- **Split decision (2-2-1 etc.)** → user calls it; document the call in PHASE_NOTES with reasoning.
+- **Any single cell materially worse on v6** (regardless of overall sums) → investigate before ship; could indicate a specific class of failure the average hides.
+
+### Scoring discipline (worth flagging)
+
+Reading 5 pairs of prose carefully and scoring each takes ~30-45 min. Don't rush — this is the only gate that catches the regression types neither AI scoring nor the quantitative gates can see. Notes are as valuable as numbers; even one observation per cell ("the v6 version buries the trough story in a subordinate clause") is signal.
 
 ---
 
@@ -53,7 +66,7 @@ Sum the 4 scores per position; compare per-position totals v5 vs v6.
 
 > Leela's MCTS pick is Ke6, not Kg5 — and Kg5 walks into a mate-in-3 for White. Black is winning overall (root Q +0.98, WDL gives Black 99.3%), but Kg5 itself sits in the losing bucket from Black's perspective at Q −0.98 on just 5 visits (under 0.1% of the 10,413-node search). Network-time, Kg5 was BT4's top-ranked move at L=0 through L=2, then settled at rank 2 from L=3 onward, with its probability… *[truncated in source]*
 
-### Scoring
+### AI scoring (placeholder; user re-scoring is the authoritative signal)
 
 | Criterion | v5 | v6 | Notes |
 |---|---|---|---|
@@ -62,6 +75,18 @@ Sum the 4 scores per position; compare per-position totals v5 vs v6.
 | Concreteness | 4 | 4 | Both cite specific numbers (visits, Q, layer ranks) |
 | Style | 4 | 4 | Both read like coach prose; v6 slightly more direct |
 | **Sum** | **15** | **16** | v6 ≥ v5 |
+
+### User scoring (fill 1-5 per cell; "—" for indistinguishable; "Sum" auto-derives)
+
+| Criterion | v5 | v6 |
+|---|---|---|
+| Insight | _ | _ |
+| Accuracy | _ | _ |
+| Concreteness | _ | _ |
+| Style | _ | _ |
+| **Sum** | _ | _ |
+
+**User notes:** _(free text — what stood out; what reads better or worse; anything the AI scoring missed)_
 
 ---
 
@@ -77,7 +102,7 @@ Sum the 4 scores per position; compare per-position totals v5 vs v6.
 
 > Leela's pick is Rcc8, not Qf6 — Black is winning here (Rcc8 at Q +0.81, 8242 of 10003 visits, ~82%, with eval around −2.21 from Black's side). Qf6 is a concordant dismissal: both signals discard it independently. Network-time, the network's pattern recognition doesn't suggest Qf6 at any layer of computation — rank 21 at L=0, drifting between the high 20s and low 40s through every measured layer, e… *[truncated]*
 
-### Scoring
+### AI scoring (placeholder; user re-scoring is the authoritative signal)
 
 | Criterion | v5 | v6 | Notes |
 |---|---|---|---|
@@ -86,6 +111,18 @@ Sum the 4 scores per position; compare per-position totals v5 vs v6.
 | Concreteness | 4 | 4 | Both cite per-layer ranks + visit counts + Q |
 | Style | 4 | 4 | Near-identical voice |
 | **Sum** | **16** | **16** | Tie |
+
+### User scoring (fill 1-5 per cell; "—" for indistinguishable; "Sum" auto-derives)
+
+| Criterion | v5 | v6 |
+|---|---|---|
+| Insight | _ | _ |
+| Accuracy | _ | _ |
+| Concreteness | _ | _ |
+| Style | _ | _ |
+| **Sum** | _ | _ |
+
+**User notes:** _(free text — what stood out; what reads better or worse; anything the AI scoring missed)_
 
 ---
 
@@ -101,7 +138,7 @@ Sum the 4 scores per position; compare per-position totals v5 vs v6.
 
 > Leela's pick is Rd1, not Re1. Re1 sits 4th in the policy network (13.1%) and 3rd by visits with just 18 of 10208 (under 0.2%), in a position where Rd1 itself is winning (Q +0.94, Stockfish +2.88). Network-time, Re1's rank wandered in the high teens and 20s through the first twelve layers, shifted to rank 4 at L=13, peaked at rank 1 at L=14, then slid back to rank 4 at L=15 — a late-emerging candid… *[truncated]*
 
-### Scoring
+### AI scoring (placeholder; user re-scoring is the authoritative signal)
 
 | Criterion | v5 | v6 | Notes |
 |---|---|---|---|
@@ -110,6 +147,18 @@ Sum the 4 scores per position; compare per-position totals v5 vs v6.
 | Concreteness | 4 | 4 | v6 adds Stockfish +2.88 — one more concrete data point |
 | Style | 4 | 4 | Both read like coach |
 | **Sum** | **15** | **16** | v6 ≥ v5 |
+
+### User scoring (fill 1-5 per cell; "—" for indistinguishable; "Sum" auto-derives)
+
+| Criterion | v5 | v6 |
+|---|---|---|
+| Insight | _ | _ |
+| Accuracy | _ | _ |
+| Concreteness | _ | _ |
+| Style | _ | _ |
+| **Sum** | _ | _ |
+
+**User notes:** _(free text — what stood out; what reads better or worse; anything the AI scoring missed)_
 
 ---
 
@@ -125,7 +174,7 @@ Sum the 4 scores per position; compare per-position totals v5 vs v6.
 
 > Leela's pick is Nxc6, not Nxf7 — Nxc6 takes 9818 of 10001 visits (98%) at Q +0.50, in the better bucket. Network-time, Nxf7 was buried for most of BT4's depth (rank 35 at L=0, drifting between 22 and 31 through L=10), shifted into the teens at L=11–13, dipped back to 11 at L=14, then jumped to rank 2 at L=15 with the final-layer policy reading 18.7% (prior 23.4%). So the network DOES surface Nxf7 as a serious cand… *[truncated]*
 
-### Scoring
+### AI scoring (placeholder; user re-scoring is the authoritative signal)
 
 | Criterion | v5 | v6 | Notes |
 |---|---|---|---|
@@ -135,33 +184,35 @@ Sum the 4 scores per position; compare per-position totals v5 vs v6.
 | Style | 4 | 4 | Similar tone; v6 reads slightly more declarative |
 | **Sum** | **16** | **16** | Tie |
 
+### User scoring (fill 1-5 per cell; "—" for indistinguishable; "Sum" auto-derives)
+
+| Criterion | v5 | v6 |
+|---|---|---|
+| Insight | _ | _ |
+| Accuracy | _ | _ |
+| Concreteness | _ | _ |
+| Style | _ | _ |
+| **Sum** | _ | _ |
+
+**User notes:** _(free text — what stood out; what reads better or worse; anything the AI scoring missed)_
+
 ---
 
 ## Cell 5: walkthrough / why_this_move / detailed / walkthrough_rxd4
 
 **Position:** Black-to-move winning; focal=Rxd4 (engine pick; NOT a puzzle); the canonical Chunk-6-trilogy fixture.
 
-### v5/v2 baseline (Chunk 6.5 Smoke 4 — partial excerpts from commit 7ba5c82's message)
+### v5/v2 baseline — Full v5/v2 walkthrough baseline (regenerated 2026-05-24, plan A1)
 
-> Full prose wasn't preserved verbatim; only quoted excerpts survive. Reader should treat Cell 5 as a more-restricted comparison than Cells 1-4 (which have full v5/v2 prose in 2026-05-21-rerun.md).
+> Regenerated by temporarily reverting `why_this_move.py` PROMPT_VERSION_DETAILED 4→2 on pod, running one ask call against the walkthrough_rxd4 fixture, then restoring handler constants to 4. The Chunk-6.5/6.8 original v2 prose was never preserved verbatim (only commit-message excerpts survived); this is a fresh sample from the v2 prompt against the same fixture, with the LLM-stochasticity caveat noted in the 6.9 plan: SAME prompt against SAME fixture but Anthropic doesn't expose seed control, so specific surface forms (exact visit counts cited, exact phrasing) differ from the original sampling. Structural patterns the v2 prompt commits to — substantive-finding framing, trough-prose contract, Stockfish PV citation — should be the same.
 
-Substantive-finding pattern (from commit message):
-
-> *"the network's pattern recognition doesn't suggest this move at any layer of computation… rank 43 at L=0, drifting through the 30s, only rank 9 at L=15."*
-
-Trough-prose contract (from commit message):
-
-> *"Q opened at +0.56, dipped to a trough of +0.42… jumped to +0.92 by visit 12… peaked at +0.96 around visit 125."*
-
-Per the commit message: *"The v2 prompt produces the project's most-pleasing output to date."*
-
-**Comparison limitation:** Cell 5 is more restricted than Cells 1-4 because only excerpts of the v5/v2 walkthrough are preserved. For full v6-vs-v5 walkthrough head-to-head in a future iteration, temporarily revert handler constants to v5/v2, re-run the walkthrough ask call, capture the full prose, then re-run v6.
+> Yes, Rxd4 is Leela's committed pick — 4199 of 4762 visits (88%, Q +0.92, the winning bucket from Black's perspective). This is the substantive finding: the network's pattern recognition doesn't suggest this move at any layer of computation — rank 43 at L=0, drifting in the high-20s to mid-30s through layers 1–13, only reaching rank 14 at L=14 and rank 9 at L=15. Rxd4 never enters BT4's top-5; its discovery is a search artifact, not a network-emergence finding (the policy head's top suggestion is Rxb1+ at 33%, with Rxd4 unlisted). Search-time tells the opposite story: Q opened at +0.56 (V-head, no visits), dipped to a trough of +0.42 at visit 0 around node 9, and then on the very first real expansion (visit 1, node 19) jumped to +0.91 and climbed to a peak of +0.96 by visit 125 as PUCT poured visits in — visits grew at roughly 183 per block, the fastest of any candidate. The runner-up by visits is Rbc8 (123 visits, Q +0.80) — same winning bucket but a Q-gap of 0.12, outside the near-equal threshold, so Rxd4 is a clear preference. Stockfish at depth 15 fully corroborates: Rxd4 first at −4.02 (winning for Black), with the next candidate Ra8 at only −1.60 — a cross-bucket downgrade to "better." Stockfish's line continues Rxd4 Qc3 Rxb1+ Kxb1 Qb8+, which is the tactical point: after Black removes the d4 knight, the back-rank attack with Rxb1+ and Qb8+ becomes decisive — exactly the kind of two-step combination where Leela's policy commits to the wrong half (Rxb1+ first) and search has to reorder.
 
 ### v6 (from Step 4a pre-flight, run earlier this session)
 
 > Yes, Rxd4 is Leela's committed pick — 4311 of 4876 visits (88%) at Q +0.92, squarely in the winning bucket. This is a striking case where the network's pattern recognition doesn't suggest this move at any layer of computation: rank 43 at L=0, drifting in the 30s through most of the network, and only climbing to rank 14 at L=14 and rank 9 at L=15 — Rxd4 never enters BT4's top-5 at any depth, and its final-layer policy share is just 6.79%. The move's discovery is a search artifact, not a network-emergence finding. Search-time, Q opened at +0.56 with no visits, briefly dipped to a +0.42 trough before any expansion, then jumped to +0.92 by visit 12 and peaked at Q +0.96 around visit 359 as PUCT progressively committed; the post-peak settling to +0.92 across 4311 visits reflects deeper refutations of secondary lines, not weakness in the move. The runner-up by visits is Rbc8 at Q +0.81 (127 visits) — still in the winning bucket but a clear step down, and the network's high-prior alternative Rxb1+ hit a Q trough of +0.37 around visit 22 with visits stagnating near 92 (under 2% of search), confirming search refuted the policy's favourite. Stockfish at depth 15 agrees emphatically: Rxd4 first at −4.02, with the runner-up Ra8 only at −1.60 — a cross-bucket downgrade. The Stockfish line runs Rxd4 Qc3 Rxb1+ Kxb1 Qb8+, where the rook sacrifice opens the queen-and-bishop battery against the exposed white king.
 
-### Scoring
+### AI scoring (placeholder; user re-scoring is the authoritative signal)
 
 | Criterion | v5 | v6 | Notes |
 |---|---|---|---|
@@ -169,7 +220,19 @@ Per the commit message: *"The v2 prompt produces the project's most-pleasing out
 | Accuracy | 5 | 5 | Both chess-accurate; v6 includes Stockfish PV (Rxd4 Qc3 Rxb1+ Kxb1 Qb8+) with the rook-sacrifice-opens-the-battery framing |
 | Concreteness | 4 | 5 | v6 cites Rxb1+ runner-up trough (Q +0.37 around visit 22), Stockfish runner-up Ra8 at −1.60 with explicit cross-bucket downgrade; v5 excerpts didn't preserve runner-up framing |
 | Style | 4 | 5 | v6 reads as strong-player coach prose end-to-end ("a striking case where", "confirming search refuted the policy's favourite"); v5 excerpts more terse |
-| **Sum** | **18** | **20** | v6 ≥ v5 (caveat: v5 score is on partial-excerpt basis only) |
+| **Sum** | **18** | **20** | v6 ≥ v5 (caveat: AI v5 score is from BEFORE A1 regenerated the full v5/v2 baseline; re-judge in user scoring below) |
+
+### User scoring (fill 1-5 per cell; "—" for indistinguishable; "Sum" auto-derives)
+
+| Criterion | v5 | v6 |
+|---|---|---|
+| Insight | _ | _ |
+| Accuracy | _ | _ |
+| Concreteness | _ | _ |
+| Style | _ | _ |
+| **Sum** | _ | _ |
+
+**User notes:** _(free text — what stood out; what reads better or worse; anything the AI scoring missed)_
 
 ---
 
