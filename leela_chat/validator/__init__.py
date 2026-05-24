@@ -134,6 +134,16 @@ def _check_legality(
     """
     board = chess.Board(fen)
     trusted_sans, trusted_ucis = _collect_trusted_moves(findings)
+    # Chunk 6.9 sub-item 2 — normalise check/mate marks when matching
+    # against trusted_sans. The validator was flagging "Bxg7" as
+    # illegal even though "Bxg7+" (with check) was in a Stockfish PV;
+    # the LLM legitimately wrote the move without the check mark and
+    # found itself rejected. Stripping `+`/`#` from both sides treats
+    # them as semantically equivalent (same move; different annotation).
+    # Do NOT strip `x` — `Bxg7` and `Bg7` are different moves (capture
+    # vs quiet) and must not be treated as equivalent.
+    _strip_san_marks = lambda s: s.rstrip("+#")  # noqa: E731
+    normalised_trusted_sans = {_strip_san_marks(t) for t in trusted_sans}
     errors: list[ValidationError] = []
     seen: set[str] = set()
 
@@ -143,6 +153,9 @@ def _check_legality(
             continue
         seen.add(san)
         if san in trusted_sans:
+            continue
+        # Try the normalised match before falling through to legality.
+        if _strip_san_marks(san) in normalised_trusted_sans:
             continue
         if not _is_legal_san(san, board):
             errors.append(ValidationError(
