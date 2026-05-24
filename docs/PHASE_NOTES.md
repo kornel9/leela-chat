@@ -1495,3 +1495,64 @@ Phase C starts next session direction:
 - **7a (mode architecture + extractor parallelisation + extension-friendliness verification + deep-mode latency projection)** is the first sub-chunk per the plan. Per the user's refinement, 7a includes a proactive latency-projection step that runs per-extractor benchmarks BEFORE 7b-7f's extractors land — at >75s projected deep-mode total, pick the trade-off now rather than discovering at 7o we're over budget.
 - 7a also includes the `tests/integration/test_chunk7_extension_friendliness.py` integration test that exercises three architectural properties (per-handler MCTS config accepts new tracks without rewriting; findings-JSON Pydantic models extensible-by-default; prompt-loading accommodates new findings-shape variants). This test is the contract that makes ADR-0013's Tier-2 deferral safe.
 - 7b-7f follow in sequence (MultiPv, focused MCTS, multi-config ensemble, network confidence, Stockfish bump) per the plan.
+
+#### 2026-05-24 (cont., 3) — Chunk 7a.1 done (mode infrastructure) + 7a.2 done (extractor parallelisation + latency baseline + deep-mode projection)
+
+**7a.1 — mode infrastructure** (commit `4fb783d`): introduced `Mode = Literal["quick", "deep"]` at `leela_chat/handlers/__init__.py`. Replaced `detailed: bool` with `mode: Mode` across handlers (1, 2) + `_answer_one`. CLI: `--quick` / `--deep` flags + `--detailed` deprecated alias (logs deprecation INFO). Handler 3 unchanged at the layer level — `mode="quick"` auto-upgrades inside `_answer_one` with INFO log (preserves old `--detailed` no-op semantics). Smoke battery matrix renamed `"default"`/`"detailed"` → `"quick"`/`"deep"`. Tests: 240 pass (was 200 + 10 new mode-related tests; net 240 including pre-existing).
+
+**7a.2 — extractor parallelisation + per-extractor latency baseline + deep-mode projection** (this commit). Three pieces:
+
+1. **Parallelisation.** All three handlers now spawn one thread per ENGINE via `concurrent.futures.ThreadPoolExecutor`:
+   - BT4 thread: `extract_network_inference` + (deep mode) `extract_layer_emergence` in sequence (both touch the `HookedTransformer`; concurrent BT4 forward passes would race on internal hook state).
+   - Stockfish thread: `extract_stockfish_eval` (CPU subprocess; no contention with BT4/Lc0).
+   - Lc0 thread: `extract_mcts` or `extract_mcts_trajectory` (separate process, small GPU contention with BT4).
+   The slowest single engine sets the handler latency floor instead of the sum. Pattern is inlined per handler (3 handlers, not abstracted — premature abstraction risk).
+
+2. **Per-extractor latency baseline.** New script `leela_chat/scripts/extractor_latency_baseline.py` runs each extractor in isolation on the walkthrough_rxd4 fixture and dumps a markdown table. Pod-run results (RTX 3090, post-warmup):
+
+| Extractor | Wall-clock (s) |
+|---|---|
+| extract_network_inference (top_n=5) | 0.251 |
+| extract_stockfish_eval (depth=15, multipv=3) [quick mode default] | 0.853 |
+| extract_stockfish_eval (depth=30, multipv=10) [7f deep mode PROJECTION] | **235.932** ⚠️ |
+| extract_mcts (nodes=10000) [quick mode, cold start] | 5.560 |
+| extract_mcts_trajectory (max_nodes=10000) [deep mode current, warm] | 0.317 |
+| extract_mcts_trajectory (max_nodes=100000) [7d verdict-pass projection] | 7.257 |
+| extract_layer_emergence (focal=d8d4) | 0.362 |
+
+Handler end-to-end (parallel, after all extractor warmups):
+
+| Handler call | Wall-clock (s) |
+|---|---|
+| handle_what_is_leela_seeing (quick) | 0.076 |
+| handle_what_is_leela_seeing (deep) | 0.348 |
+| handle_why_this_move (quick) focal=d8d4 | 0.074 |
+| handle_why_this_move (deep) focal=d8d4 | 0.345 |
+| handle_did_you_consider (always-deep) focal=d8d4 | 0.344 |
+
+3. **Deep-mode latency projection — proactive trade-off decision.** Per the plan's 75s/90s threshold:
+
+- The `extract_stockfish_eval (depth=30, multipv=10)` measurement of **235.932s** is a **single-extractor blow-through of the 90s deep-mode gate per ADR-0012**. Cannot ship Chunk 7f at depth=30 + multipv=10 as proposed in the plan.
+- Picked the trade-off **now**, not at 7o: deep-mode Stockfish config will be **depth=25, multipv=8** (or smaller — to be measured + pinned in 7f when it lands + ADR-0014). Conservative estimate: ~10-30s vs the 235s at depth=30/multipv=10.
+- Verdict-pass MCTS at 100k nodes (7d) measured at 7.257s — cheap, comfortably within budget.
+- Exploration-pass MCTS (7d) projected: 10-30k nodes × ~0.5s/10k ≈ 0.5-1.5s if parallel with verdict pass (Lc0 GPU-contention check in 7d will validate); ~12s if sequential.
+- Projected deep-mode total (warm steady-state) on the walkthrough fixture: BT4 thread ~0.6s + Stockfish thread (depth-25/multipv-8) ~15s + Lc0 thread (100k verdict + parallel exploration) ~10s. **Handler latency ≈ 15s deep-mode floor** (dominated by Stockfish thread) — comfortably under 90s with margin for cold-start variance.
+- Plus LLM translate time (~8-15s) → end-to-end deep-mode estimate ~25-35s. Well within ADR-0012's 90s deep-mode cap.
+
+**Decision committed:** ship Chunk 7f at depth=25, multipv=8 (or whatever the per-extractor measurement at 7f-land time confirms fits the projected budget). Plan's depth=30/multipv=10 is downgraded; ADR-0012 cap is preserved.
+
+**Important caveat on the per-extractor table:** the first cold-start call for each engine includes warmup overhead (network_inference at 0.251s second-call vs first-call seconds; extract_mcts at 5.560s first-call vs extract_mcts_trajectory at 0.317s second-call). Steady-state per-extractor times are what matter for the budget; cold-start hits the first call of the session only. Smoke battery's per-position handler times absorb the cold-start across positions.
+
+What surprised me:
+- **Stockfish depth-30/multipv-10 is 25x more expensive than I projected** (235s vs 10-15s estimate). This is exactly the failure mode the proactive 75s decision point was meant to catch — discovering at 7o that we're 4 minutes over budget would have wasted a Chunk 7f sub-chunk of work.
+- **MCTS at 100k nodes is cheaper than projected** (7s vs 30-50s estimate). The 7d verdict-pass budget can plausibly be 200k nodes if needed; revisit at 7d.
+- **Handler end-to-end times look unrealistically fast** (0.34s) — they're the WARM-state measurement, AFTER all engines have already been called by the per-extractor benchmarks. Real-world handler times in the smoke battery (~13s median per Chunk 6.9) are dominated by LLM translate time + cold-start variance, not by extractor work. The parallelisation gain is small in absolute terms (probably saves 1-2s vs serial), but it's the right structural foundation for when Chunk 7d's multi-config ensemble adds another ~7-10s of MCTS work.
+
+Tests: 240 pass (no regression from parallelisation; tests mock extractors so threading exercised at call-graph level).
+
+What 7a.2 does NOT do:
+- Doesn't actually validate parallel-Lc0 contention (that's 7d's pod-side experiment).
+- Doesn't change ADR-0012's cap (decision is to fit within the cap by downgrading Stockfish config, not by amending the cap).
+- Doesn't ship the chess-content extractors (7k+7l) or any MCTS additions; those are their own sub-chunks.
+
+Next: 7a.3 (extension-friendliness verification — integration test + Pydantic extensible-by-default audit).

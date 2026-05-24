@@ -25,6 +25,7 @@ Design choices for Chunk 5 (Phase 2):
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Literal
 
 import chess
@@ -309,31 +310,57 @@ def handle_why_this_move(
             "Caller must validate move legality before calling the handler."
         )
 
-    leela = extract_network_inference(board, model=model, top_n=top_n)
-    sf = extract_stockfish_eval(
-        board,
-        engine=stockfish_engine,
-        depth=stockfish_depth,
-        top_n=stockfish_top_n,
-    )
+    focal_uci = move.uci()
+    focal_san = board.san(move)
 
+    # Per Chunk 7a.2 (extractor parallelisation): spawn one thread per
+    # ENGINE so the slowest engine sets the handler floor. Three engines:
+    # - BT4 thread: extract_network_inference + (deep mode) extract_layer_emergence
+    #   in sequence (both touch HookedTransformer).
+    # - Stockfish thread: extract_stockfish_eval.
+    # - Lc0 thread: extract_mcts or extract_mcts_trajectory.
+    # The layer-emergence call needs focal_uci which is known here (set above
+    # from move.uci()), so this differs from Handler 1's _bt4_thread.
+    def _bt4_thread() -> tuple:
+        leela_inner = extract_network_inference(board, model=model, top_n=top_n)
+        layer_em_inner = None
+        if mode == "deep":
+            layer_em_inner = extract_layer_emergence(
+                board, model=model, focal_uci=focal_uci, top_n_per_layer=top_n,
+            )
+        return leela_inner, layer_em_inner
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        bt4_future = ex.submit(_bt4_thread)
+        sf_future = ex.submit(
+            extract_stockfish_eval, board,
+            engine=stockfish_engine,
+            depth=stockfish_depth,
+            top_n=stockfish_top_n,
+        )
+        if lc0_engine is not None:
+            if mode == "deep":
+                mcts_future = ex.submit(
+                    extract_mcts_trajectory, board,
+                    engine=lc0_engine, max_nodes=mcts_nodes,
+                )
+            else:
+                mcts_future = ex.submit(
+                    extract_mcts, board,
+                    engine=lc0_engine, nodes=mcts_nodes,
+                )
+
+    leela, layer_emergence = bt4_future.result()
+    sf = sf_future.result()
     full_mcts: MCTSFindings | None = None
     mcts_truncated: MCTSFindings | None = None
     if lc0_engine is not None:
-        if mode == "deep":
-            full_mcts = extract_mcts_trajectory(
-                board, engine=lc0_engine, max_nodes=mcts_nodes,
-            )
-        else:
-            full_mcts = extract_mcts(board, engine=lc0_engine, nodes=mcts_nodes)
+        full_mcts = mcts_future.result()
         # Truncate children for the prompt; full list still available for
         # focal-move lookup via the pre-extracted focal_mcts_child below.
         mcts_truncated = full_mcts.model_copy(
             update={"children": list(full_mcts.children[:MCTS_TOP_N_FOR_LLM])},
         )
-
-    focal_uci = move.uci()
-    focal_san = board.san(move)
 
     focal_policy_pct, focal_policy_rank = _find_focal_in_policy(
         leela.top_moves, focal_uci,
@@ -357,14 +384,14 @@ def handle_why_this_move(
                             and engine_pick_uci == focal_uci)
 
     # === Chunk 6.5 (Chunk 7 ADR-0012-renamed): deep-mode dual-timescale signals ===
+    # Note (Chunk 7a.2): layer_emergence is now pre-fetched in _bt4_thread
+    # above (parallel with Stockfish + Lc0), so this block just consumes it
+    # instead of running an extract_layer_emergence call inline.
     focal_layer_trajectory: CandidateLayerTrajectory | None = None
     network_dismissal: NetworkDismissalTag | None = None
     focal_mcts_summary: MCTSTrajectorySummary | None = None
     search_dismissal: SearchDismissalTag | None = None
-    if mode == "deep":
-        layer_emergence = extract_layer_emergence(
-            board, model=model, focal_uci=focal_uci, top_n_per_layer=top_n,
-        )
+    if mode == "deep" and layer_emergence is not None:
         focal_layer_trajectory = next(
             (c for c in layer_emergence.candidates if c.uci == focal_uci),
             None,

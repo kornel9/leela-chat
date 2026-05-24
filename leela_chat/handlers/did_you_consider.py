@@ -27,6 +27,7 @@ Per CLAUDE.md §3 architecture invariants:
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Literal
 
 import chess
@@ -223,30 +224,44 @@ def handle_did_you_consider(
     focal_uci = move.uci()
     focal_san = board.san(move)
 
-    leela = extract_network_inference(board, model=model, top_n=top_n)
-    sf = extract_stockfish_eval(
-        board,
-        engine=stockfish_engine,
-        depth=stockfish_depth,
-        top_n=stockfish_top_n,
-    )
+    # Per Chunk 7a.2 (extractor parallelisation): spawn one thread per
+    # ENGINE so the slowest engine sets the handler floor. Three engines:
+    # - BT4 thread: network_inference + (unless skip_layer_emergence)
+    #   extract_layer_emergence with focal_uci (sequential within thread).
+    # - Stockfish thread.
+    # - Lc0 thread: extract_mcts_trajectory (handler 3 is always-deep so
+    #   trajectory is mandatory).
+    def _bt4_thread() -> tuple:
+        leela_inner = extract_network_inference(board, model=model, top_n=top_n)
+        layer_em_inner: LayerEmergenceResult | None = None
+        if not skip_layer_emergence:
+            layer_em_inner = extract_layer_emergence(
+                board, model=model, focal_uci=focal_uci, top_n_per_layer=top_n,
+            )
+        return leela_inner, layer_em_inner
 
-    # MCTS trajectory (search-time half).
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        bt4_future = ex.submit(_bt4_thread)
+        sf_future = ex.submit(
+            extract_stockfish_eval, board,
+            engine=stockfish_engine,
+            depth=stockfish_depth,
+            top_n=stockfish_top_n,
+        )
+        if lc0_engine is not None:
+            mcts_future = ex.submit(
+                extract_mcts_trajectory, board,
+                engine=lc0_engine, max_nodes=mcts_max_nodes,
+            )
+
+    leela, layer_emergence = bt4_future.result()
+    sf = sf_future.result()
     full_mcts: MCTSFindings | None = None
     mcts_truncated: MCTSFindings | None = None
     if lc0_engine is not None:
-        full_mcts = extract_mcts_trajectory(
-            board, engine=lc0_engine, max_nodes=mcts_max_nodes,
-        )
+        full_mcts = mcts_future.result()
         mcts_truncated = full_mcts.model_copy(
             update={"children": list(full_mcts.children[:MCTS_TOP_N_FOR_LLM])},
-        )
-
-    # Network-time half: layer-emergence trajectory for the focal move.
-    layer_emergence: LayerEmergenceResult | None = None
-    if not skip_layer_emergence:
-        layer_emergence = extract_layer_emergence(
-            board, model=model, focal_uci=focal_uci, top_n_per_layer=top_n,
         )
 
     # Focal-move callouts (reuse the helpers from why_this_move).

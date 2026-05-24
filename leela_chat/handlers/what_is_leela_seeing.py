@@ -16,6 +16,7 @@ prompt explicitly contrasts them.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Literal
 
 import chess
@@ -202,39 +203,56 @@ def handle_what_is_leela_seeing(
     Returns:
         Findings model for the translation layer.
     """
-    leela = extract_network_inference(board, model=model, top_n=top_n)
-    sf = extract_stockfish_eval(
-        board,
-        engine=stockfish_engine,
-        depth=stockfish_depth,
-        top_n=stockfish_top_n,
-    )
+    # Per Chunk 7a.2 (extractor parallelisation, Chunk 6.7 entry criterion #1):
+    # spawn one thread per ENGINE so the slowest engine sets the handler floor
+    # instead of the sum. Three engines max:
+    # - BT4 thread: extract_network_inference + (deep mode) extract_layer_emergence
+    #   in sequence (both touch the HookedTransformer; concurrent BT4 forward
+    #   passes would race on internal hook state).
+    # - Stockfish thread: extract_stockfish_eval (CPU-only subprocess; no
+    #   contention with BT4 or Lc0).
+    # - Lc0 thread: extract_mcts or extract_mcts_trajectory depending on mode.
+    #   Shares GPU with BT4 but they're separate processes; small contention.
+    def _bt4_thread() -> tuple:
+        leela_inner = extract_network_inference(board, model=model, top_n=top_n)
+        layer_em_inner: LayerEmergenceResult | None = None
+        if mode == "deep":
+            layer_em_inner = extract_layer_emergence(
+                board, model=model, focal_uci=None, top_n_per_layer=top_n,
+            )
+        return leela_inner, layer_em_inner
 
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        bt4_future = ex.submit(_bt4_thread)
+        sf_future = ex.submit(
+            extract_stockfish_eval, board,
+            engine=stockfish_engine,
+            depth=stockfish_depth,
+            top_n=stockfish_top_n,
+        )
+        if lc0_engine is not None:
+            if mode == "deep":
+                mcts_future = ex.submit(
+                    extract_mcts_trajectory, board,
+                    engine=lc0_engine, max_nodes=mcts_nodes,
+                )
+            else:
+                mcts_future = ex.submit(
+                    extract_mcts, board,
+                    engine=lc0_engine, nodes=mcts_nodes,
+                )
+
+    leela, layer_emergence = bt4_future.result()
+    sf = sf_future.result()
     mcts_findings: MCTSFindings | None = None
     if lc0_engine is not None:
-        # In deep mode, use extract_mcts_trajectory: same search but populates
-        # per-child trajectory_full / trajectory_selected / trajectory_summary
-        # from the live-stats stream. Cost is essentially identical to
-        # extract_mcts per the 6b.5 latency check; the extra signal is free.
-        if mode == "deep":
-            full_mcts = extract_mcts_trajectory(
-                board, engine=lc0_engine, max_nodes=mcts_nodes,
-            )
-        else:
-            full_mcts = extract_mcts(board, engine=lc0_engine, nodes=mcts_nodes)
+        full_mcts = mcts_future.result()
         # Truncate children for the LLM-facing handler projection. The
         # extractor's full output (all root candidates incl. zero-visit
         # tail) is what `did_you_consider` (Handler 3, Chunk 6) will
         # consume; Handler 1 only needs the leading few by visit share.
         mcts_findings = full_mcts.model_copy(
             update={"children": list(full_mcts.children[:MCTS_TOP_N_FOR_LLM])},
-        )
-
-    # Network-time per-layer rank trajectories — only in deep mode.
-    layer_emergence: LayerEmergenceResult | None = None
-    if mode == "deep":
-        layer_emergence = extract_layer_emergence(
-            board, model=model, focal_uci=None, top_n_per_layer=top_n,
         )
 
     return WhatIsLeelaSeeingFindings(
