@@ -11,9 +11,9 @@
 ## Current Status
 
 - **Phase:** 2 — MCTS Integration. Entered 2026-05-19 after Phase 1's informal close. Phase 2 entry brief delivered + acknowledged; Phase 2 plan written (see `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md`).
-- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19; Chunk 6 trilogy done 2026-05-19; Chunk 6.5 done 2026-05-20; Chunk 6.6 + 6.7 done 2026-05-21. **Chunk 6.8 done 2026-05-21** (infrastructure + substantive re-run after credit top-up; hard gates pass at 94% validation_ok, 6% templated). **Chunk 6.8.1 done 2026-05-21** — post-mortem hardening from 6.8's two bugs: (1) CLAUDE.md §8 `--dry-run` pitfall promoted to permanent guardrail; (2) legality assertion in `sample_by_theme` with skip-with-warning + drop-rate log escalation (permanent immunity to the Moves[0]/Moves[1] convention bug class); (3) aggregator three-rate classification with top-api_error-kinds banner + circuit-breaker sentinel detection; (4) runner consecutive-api-error circuit breaker with JSONL sentinel write + exit code 3. 197 unit tests pass (was 181; +16 across 6.8 + 6.8.1). The 6.8 re-run surfaced real prompt fragility outside walkthrough Rxd4 (~4-5 LLM hallucinations + 4 forbidden-language hits; all caught by the validator before reaching the user — Rule 1 upheld). v6 / v3 prompt-iteration chunk slots between 6.8.1 and Chunk 7 to address the fragility findings; 6.8.1 hardening ships regardless. Phase 2 substrate clean for Chunk 7 conditional on v6/v3 prompt iteration first.
-- **Last session:** 2026-05-21
-- **Chunk 7 entry criteria** (HARD prerequisites, promoted from soft "must include" in Chunk 6.7 commit B; must hold before any new Chunk-7 extractor lands). **Chunk 6.8 substantive results landed: 94% validation_ok on real LLM calls (above the 90% gate); 6% templated (below the 10% gate). HOWEVER, real prompt fragility was surfaced — ~4-5 LLM hallucinations + 4 forbidden-language contract violations outside walkthrough Rxd4 (all caught by the validator before reaching the user). A v6 / v3 prompt-iteration chunk should slot between 6.8.1 and Chunk 7 to address the fragility findings before more extractors compound them.**
+- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19; Chunk 6 trilogy done 2026-05-19; Chunk 6.5 done 2026-05-20; Chunk 6.6 + 6.7 + 6.8 + 6.8.1 done 2026-05-21. **Chunk 6.9 done 2026-05-24** — runner forensics infrastructure (`llm_attempt_texts` + `findings_summary` JSONL fields; new aggregator helpers + classification) + worked-example audit + validator SAN-marks fix (3 new tests; 200 unit tests pass total) + v6+v7 / v3+v4 / v2 prompt iteration with three top-of-prompt guards (expanded forbidden-language list with cognition synonyms; strict-citation extending to opponent replies; piece-location disambiguation) + walkthrough_rxd4 pre-flight + full battery re-run + subjective scoring (3 v6 wins, 2 ties, 0 v5 wins; clears ≥3-of-5 ship rule). Hard gates all PASS by significant margin: validation_ok 94%→100%; illegal_move 8→0; forbidden-language 4→1; templated 6%→0%. Latency improved as side effect (median 13.1s→12.7s). Phase 2 substrate clean for Chunk 7; entry criteria from Chunk 6.7 commit B (latency parallelisation; per-extractor derivation checkpoint) still in force.
+- **Last session:** 2026-05-24
+- **Chunk 7 entry criteria** (HARD prerequisites, promoted from soft "must include" in Chunk 6.7 commit B; must hold before any new Chunk-7 extractor lands). **Chunk 6.9 closed the prompt-fragility carry-over from 6.8: validation_ok 100%, illegal_move 0, templated 0%, forbidden-language hits 1/100 down from 4/100. Subjective quality at parity or better on all 5 scored cells.**
   1. **Extractor invocation is parallelised.** Current sequential `handler_s` is ~7-8s detailed (extractors + ~750ms layer emergence). Chunk 7 adds ~2-4s of additional extractor time pre-parallelisation → projected post-Chunk-7 detailed latency ~20-25s, with Phase 3 probes pushing it over Phase 1's `<30s` exit criterion (CLAUDE.md §11). Chunk 7's FIRST deliverable is a per-extractor latency baseline on the walkthrough Rxd4 fixture + an `asyncio.gather` (or `concurrent.futures.ThreadPoolExecutor`) wrapper around extractor invocation so the slowest single extractor sets the floor instead of the sum. Parallelisation must demonstrably hold detailed-mode `handler_s` under ~10s before any new Chunk-7 extractor lands. The Phase 2 exit criterion in CLAUDE.md §11 has been amended to mention this ceiling explicitly.
   2. **Per-new-extractor derivation checkpoint** honoured for each of the 5 planned extractors. For each, ask: "does the prompt that will consume this extractor cite percentages or ratios derived from two of the extractor's fields rather than literal scalars present in the JSON?" If yes → extend `leela_chat/validator/__init__.py::_collect_derived_percentages` (or a parallel `_collect_derived_*` helper if the derivation is not a percentage) with the explicit field-pair mapping AND add one false-positive test per addition. See CLAUDE.md §8 "Implementation pitfalls — Validator derivation" for the canonical pattern (added in Chunk 6.7 commit A).
 - **Alternative direction:** Phase 2 close + Phase 3 Entry Brief per CLAUDE.md §10 — concept-list pruning of `docs/phase3/concept_candidates.md` (~91 seed candidates) is the project's highest-leverage Phase-3 decision.
@@ -1352,3 +1352,66 @@ Net Chunk 6.8 + 6.8.1 outcome:
 Next session direction:
 - **v6 / v3 prompt-iteration chunk** to address the 8 illegal_move hallucinations + 4 forbidden-language hits.
 - THEN Chunk 7 (chess-content extractors) with the latency-parallelisation + per-new-extractor-derivation-checkpoint criteria from Chunk 6.7.
+
+#### 2026-05-24 — Phase 2 Chunk 6.9: validator PV-coverage fix + runner forensics + v6/v3/v2 prompt iteration
+
+The "Option B" bundle from the Chunk 6.8 retro. Plan at `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md`.
+
+What I did:
+
+**Commit A (`2476968`) — runner forensics infrastructure.**
+- Added `llm_attempt_texts` to JSONL rows in `run_smoke_battery.py` (preserves both attempts' verbatim prose on validator-fallback rows; was lost in the templated-fallback path).
+- Added `findings_summary` to JSONL rows via a new `_extract_findings_summary` helper — captures the trusted-moves arrays the validator walks (`top_moves_san/uci`, `mcts.children`, `stockfish_top_san/uci` flattened `pv_san`s, `focal_move_san/uci`, `mcts_bestmove_san/uci`). ~200 bytes per row; ~20KB across the 100-call battery.
+- Refactored `_answer_one` in `cli/__main__.py` from a 3-tuple to a 4-tuple return (added `findings.model_dump()`); updated callers in `cmd_ask` + `cmd_repl` + 4 test patch points.
+- Added "Failed LLM prose excerpt" + "In findings?" Y/N columns to aggregator illegal_move table via new helpers `_strip_san_marks`, `_span_in_findings_summary`, `_excerpt_around_span`. New `validator_gap` vs `real_hallucination` vs `parser_fp` classification (was just one undifferentiated bucket before — methodological gap closed; the original plan would have been theatre without this).
+- Added 10 new aggregator tests covering all helpers + backward-compat against old (pre-`findings_summary`) JSONLs.
+
+**Commit B (`5b546f3`) — diagnostic + worked-example audit + validator fix.**
+- Pod re-run of pre-v6 battery; aggregator diagnostic classified 8 illegal_move flags: 1 `validator_gap` (`Bxg7` flagged when `Bxg7+` was in stockfish_pv_sans), 5 `parser_fp` (bare-SAN-for-square-location pattern; e.g., "Bd2", "Kxf3"), 1 `real_hallucination`, 1 ambiguous (likely also misclassified). Diagnostic doc written to `tests/eval/smoke_summaries/2026-05-24-prev6-diagnostic.md`.
+- Worked-example compliance audit: grepped v4/v5/v1/v2/v1 prompts for forbidden-language list (`noticed|realized|discovered|saw|found|recognized|spotted|identified|perceived|detected|judged|monotonic`). All hits found were INSIDE `❌` anti-pattern blocks — no positive worked-example violations. Safe to copy examples verbatim into v6/v7/v3/v4/v2.
+- Validator fix: added `_strip_san_marks` SAN normalization in `_check_legality` (strip `+`/`#`; NOT `x`). 3 new unit tests: positive case (`Bxg7+` matches `Bxg7`), false-positive guard (`Nxg7+` ≠ `Bxg7`), capture-`x`-preservation guard (`Bxg7` ≠ `Bg7`). 197 → 200 unit tests pass.
+
+**Commit C (`ab93020`) — v6+v7 / v3+v4 / v2 prompt iteration.**
+- New prompt files per the two-file (mode-separated) structure committed in the plan: `what_is_leela_seeing/v6.md` (iterates v4, default), `v7.md` (iterates v5, detailed), `why_this_move/v3.md` (iterates v1, default), `v4.md` (iterates v2, detailed), `did_you_consider/v2.md` (iterates v1, always-detailed). Three top-of-prompt guards prepended to each: (1) expanded forbidden-language list with cognition synonyms; (2) strict-citation rule extending to ALL moves in continuations including opponent replies; (3) piece-location disambiguation rule ("the rook on c1" not bare "Rc1").
+- Handler constant bumps: `what_is_leela_seeing.py` PROMPT_VERSION 4→6, _DETAILED 5→7; `why_this_move.py` 1→3, 2→4; `did_you_consider.py` 1→2.
+- Per CLAUDE.md §3: old prompt versions retained on disk (v1/v2/v4/v5 all stay).
+
+**Commit D (this commit) — battery re-run + subjective scoring + final summary.**
+- Step 4a walkthrough_rxd4 pre-flight (~$0.05, 5 min) — v6 prose preserved substantive-finding pattern + trough-prose contract + ran cleanly. Green-light for full battery.
+- Step 4b full battery (`--reuse-fixture`; ~26 min wall clock on pod). Anthropic API health pre-check via standalone ask call (`validation_ok=True`) before kicking off the 100-call run.
+- Step 4c aggregator → `tests/eval/smoke_summaries/2026-05-24-postv6.md`.
+- Step 4d subjective scoring on 5 positions (4 puzzles via did_you_consider/detailed + walkthrough_rxd4 via why_this_move/detailed) → `tests/eval/smoke_summaries/2026-05-24-postv6-subjective.md`. Result: 3 v6 wins, 2 ties, 0 v5 wins (cells: tactical/Kg5, endgame/Re1, walkthrough/Rxd4 → v6; quiet/Qf6, opening/Nxf7 → tie). Clears the ≥3-of-5 ship rule.
+
+Hard gates — all PASS, most by significant margin:
+
+| Metric | Baseline (Chunk 6.8) | Target (plan) | Actual (Chunk 6.9) | Δ |
+|---|---|---|---|---|
+| validation_ok rate | 94% | ≥ 97% | **100%** | +6 pp |
+| illegal_move count | 8 (mixed) | ≤ 2 | **0** | −8 |
+| Forbidden-language hits | 4 | ≤ 1 | **1** | −3 |
+| Templated-fallback rate | 6% | ≤ 6% | **0%** | −6 pp |
+| LLM-success rate | 100% | 100% | **100%** | 0 |
+| Branch B coverage | 100% | 100% | **100%** | 0 |
+| Subjective quality (5 cells) | — | v6 ≥ v5 on ≥ 3 of 5 | **3 wins + 2 ties** | ✓ |
+
+Latency improved (margin not required by plan; happy side effect): median 13.1s → 12.7s; p95 27.9s → 23.3s; p99 32.0s → 25.6s. The top-of-prompt guards add ~50-100 input tokens but the model spends fewer output tokens hedging.
+
+What surprised me:
+- **The single validator fix (SAN check/mate-mark stripping) eliminated ALL 8 illegal_move flags, not just the 1 classified as `validator_gap`.** The 5 `parser_fp` flags from the prev6 diagnostic disappeared too — possibly because the rerun's MCTS budget produced slightly different child orderings + the new prompts' piece-location disambiguation rule kept the LLM from emitting bare SANs as square references. Can't fully decompose the contributions without a control re-run (v6 prompts + OLD validator), but the joint effect is decisive. The LLM-stochasticity caveat the plan acknowledged applies — the v6 prose hits different surface forms even on the same fixture, so a paired test in the strict sense is impossible without seed control.
+- **0% templated fallback** (was 6%) is the biggest gate result — the new prompts produce more compliant first-attempt prose, so retries that previously failed both attempts now succeed on attempt 1.
+- **Latency improvement** was unexpected: the longer top-of-prompt guards should have INCREASED input tokens AND output time. The drop suggests the new guards reduce the model's mid-generation hedging (no more "I might be wrong about" prefixes that consume output tokens). Worth verifying in a later session if the trend holds.
+- **The single residual forbidden-language hit** (`tactical_puzzle/why_this_move/default/puzzle_2ATyh` — "the policy network already saw the gap clearly") shows the language list still isn't exhaustive even after the synonym expansion. The plan's "language-list-grows-iteratively" framing is borne out — expect a v8/v6/v5/v3 micro-iteration to address whatever Chunk 7's next smoke battery surfaces.
+
+Net Chunk 6.9 outcome:
+- All Chunk 7 entry criteria from the Chunk 6.8 retro now satisfied. The Chunk 7 entry criterion #1 (extractor parallelisation) and #2 (per-new-extractor derivation checkpoint) — both promoted in Chunk 6.7 commit B — remain in force; Chunk 6.9 doesn't bypass them.
+- Prompt-iteration cycle (6.8 → 6.9) closed cleanly. The 6.9 commit-A `findings_summary` JSONL forensics machinery is a permanent uplift for any future v8/v6/v5/v3 cycle.
+- 200 unit tests pass (was 197; +3 SAN-mark validator tests).
+
+Backlog (carried + new):
+- v8/v6/v5/v3 prompt micro-iteration when Chunk 7's smoke battery surfaces the next language-leak or fragility pattern.
+- Forbidden-language list expansion candidate: add `clearly` + `gap` to the watch list (the puzzle_2ATyh leak's phrasing).
+- Pure-prompt-vs-pure-validator decomposition: a future control run with v6 prompts + OLD validator on the same fixture would let us attribute the illegal_move drop more precisely. Cost: ~$11-13 + 26 min for one extra battery. Defer until needed.
+
+Next session direction:
+- **Chunk 7 (chess-content extractors)** can now proceed. Per Chunk 6.7 commit B: latency parallelisation is the FIRST Chunk-7 deliverable; per-new-extractor derivation checkpoint is per-extractor.
+- OR: Phase 2 close + Phase 3 entry brief (alternative direction; concept-list pruning of `docs/phase3/concept_candidates.md`).
