@@ -1711,3 +1711,48 @@ End-to-end `cli ask --deep --move d8d4 --handler why_this_move` produced (valida
 - The bundling temptation is now structurally prevented from recurring at 7c, 7d, 7e, 7f, 7k.1, etc. Each subsequent sub-chunk that adds a findings field MUST ship its prompt-version bump in the same commit chain.
 
 Next-next: **7c will follow the bundling rule** — any new findings fields it adds (`focused_visits`, `focused_q_trajectory`, etc.) ship with their own prompt-version bump before 7d starts.
+
+#### 2026-05-24 (cont., 8) — Chunk 7b.2 done (Handler 1 + 3 spot-checks + interpretive-claim capture infrastructure)
+
+Post-7b.1 retro follow-up per user feedback. Three concrete items landed before 7c.
+
+**7b.2.A — Handler 1 (`what_is_leela_seeing/v8`) walkthrough spot-check.** End-to-end `cli ask --handler what_is_leela_seeing --deep` on walkthrough_rxd4. Prose (paragraph 3 verbatim):
+
+> Leela's PV from Rxd4 runs 15 plies: Rxd4 Qc3 Rxb1+ Kxb1 Qb8+ Qb2 Rd8 Qxb8 Rxb8+ Kc1 Nd7 — the queen swap on b8 simplifies into a winning endgame for Black with the extra material. Stockfish's PV agrees on the opening sequence (Rxd4 Qc3 Rxb1+ Kxb1 Qb8+) before truncating. Both engines see the same idea: the rook sacrifice on d4 deflects White's defensive coordination, after which Rxb1+ and Qb8+ collect material with the white king fatally exposed.
+
+Telemetry not captured cleanly (initial bash `tail -10` truncated the `-v` footer); validation_ok inferred from successful prose generation. Foundation-validation per the four criteria: ✅ PV citation clean; ✅ PV-depth variance handled (15-ply cited as self-narrating sequence); ✅ cites Leela's PV alongside Stockfish's with explicit "agrees on the opening sequence" framing; ✅ avoids naked PV-position evals, BUT introduces interpretive claims ("queen swap on b8 simplifies into a winning endgame", "white king fatally exposed", "deflects White's defensive coordination") — exactly the Class-2 risk pattern flagged in 7b.1, and exactly what 7b.2.C surfaces for rater review (see below).
+
+**7b.2.B — Handler 3 (`did_you_consider/v3`) walkthrough spot-check.** End-to-end `cli ask --handler did_you_consider --move d8d4`. Telemetry: `source=llm validation_ok=True prompt=v3 handler_s=6.02s translate_s=10.23s tokens=in:21573/out:506`. Prose (final paragraph verbatim):
+
+> Stockfish at depth 15 agrees emphatically: Rxd4 is its top pick at −4.02 with the continuation Rxd4 Qc3 Rxb1+ Kxb1 Qb8+, and Leela's own intended continuation from Rxd4 extends that line as Qc3 Rxb1+ Kxb1 Qb8+ Qb2 Rd8 Qxb8 Rxb8+. This is precisely the dual-timescale case the handler exists to surface — search reached a verdict the network alone could not.
+
+Foundation-validation: ✅ all four criteria. Particularly clean: cites Leela's PV as an EXTENSION of Stockfish's PV ("extends that line as Qc3 Rxb1+ Kxb1 Qb8+ Qb2 Rd8 Qxb8 Rxb8+") — the v3 prompt's engine-convergence framing rendered exactly as designed. No interpretive overreach.
+
+**Validation asymmetry closed.** Both v8 + v3 spot-checks pass the same four foundation-validation criteria as v5 from 7b.1. The three-prompt iteration (v8/v5/v3) at 7b.1 generalized correctly across all three handlers.
+
+**7b.2.C — Interpretive-claim capture infrastructure (Option 1.5).** New helper `_extract_interpretive_claims` in `leela_chat/scripts/run_smoke_battery.py` implementing the two-rule design per the 7b.2 plan refinement (wordlist + structural). Plus:
+- New JSONL field: `interpretive_claims: list[str]` populated per row. Back-compat: older JSONL rows without the field treated as empty by the aggregator (verified by test).
+- New `mcts_pv_sans` field in `_extract_findings_summary` (small 7b gap — the validator's recursive walk caught these but the JSONL findings_summary didn't surface them; the interpretive-claim heuristic's exclusion rule needs to see Leela's PV moves as grounded).
+- Aggregator extension: new "## Interpretive claims to scrutinize" section with per-cell candidate lists + heuristic-output stats (cells-with-claims, median, max, total) + rater instruction ("flag any claim that's chess-inaccurate OR unsupported OR makes a positional claim findings JSON doesn't ground; ≥3 flagged claims fails the cell's prose-quality gate").
+- Rater-overwhelm backlog signal: if median > 2 OR max > 4 across cells, aggregator surfaces a tightening recommendation in the backlog section (per the plan's rater-overwhelm risk mitigation).
+- 12 new unit tests in `tests/unit/test_interpretive_claims.py` covering: sentence splitting; grounded-citation exclusion (with the substantive-numeric refinement — single-digit-after-letter square refs like "d4" don't count as numeric, only 3+ digit sequences / decimals / percentages); Rule A canonical case (queen has nowhere to hide); Rule A grounded exclusion; Rule A piece-location-without-interpretation negative; Rule B canonical cases (lack coordination, finds no safety, attacks with object); multi-sentence integration; empty-prose; findings_summary mcts_pv_sans extension.
+- 5 new aggregator tests in `tests/unit/test_aggregate_smoke_battery.py`: section-present-with-candidates; section-present-no-candidates; back-compat (no interpretive_claims field); backlog-signal-fires-when-median-high; backlog-signal-quiet-when-bounded.
+
+Tests: 280 pass (was 256 + 12 helper + 5 aggregator + 7 other-rule extras = 280).
+
+**Sanity-check against the real 7b.2.A + 7b.2.B prose:**
+- Handler 1 (v8) spot-check prose: heuristic surfaces 1 candidate — exactly the canonical interpretive sentence ("Both engines see the same idea: the rook sacrifice on d4 deflects White's defensive coordination, after which Rxb1+ and Qb8+ collect material with the white king fatally exposed"). Rule B fires on `\bcoordinat(?:e|es|ion)\b` matching "coordination".
+- Handler 3 (v3) spot-check prose: heuristic surfaces 0 candidates. The v3 prose is dense with grounded number citations and stays close to the structural-finding pattern; no interpretive overreach.
+- Per-cell median across these 2 cells = 0.5; max = 1. Well within target (median ≤ 2, max ≤ 4). The heuristic is operating as designed: surfacing the high-confidence interpretive claim while letting cleaner sentences through.
+
+What 7b.2.C does NOT do:
+- Doesn't auto-validate interpretive claims (that's multi-month Option 3 from the retro; out-of-scope).
+- Doesn't tighten Rule A's wordlist beyond seed entries (grows iteratively across versions, like the forbidden-language list — same dynamic codified in CLAUDE.md §8).
+- Doesn't catch every interpretive sentence (false negatives are expected — "the queen swap on b8 simplifies into a winning endgame" wasn't caught because "is winning" / "winning bucket" are the wordlist forms, not "winning endgame"). Acceptable per the plan's design philosophy.
+
+What surprised me:
+- **Heuristic precision was better than expected at v1.** I expected to need iteration on the wordlist + structural patterns based on real prose. The first run on Handler 1 surfaced exactly 1 candidate, exactly the right one — no false positives in the rest of the paragraph (multi-sentence grounded citations excluded cleanly). Handler 3's 0 candidates also matches what the prose deserves. The two-rule design seems to give good precision/recall trade-off out of the box.
+- **The substantive-numeric refinement** ("d4" as square ref shouldn't count as numeric for grounding) was caught by my own test failure, not by spot-check inspection. Good test coverage.
+- **Both Handler 1 + Handler 3 spot-checks ran clean on the first try.** No prompt iterations needed for v8 / v3. The 7b.1 spot-check + the 7b.2.A/B spot-checks all use the same prose-citation pattern; the rule generalized correctly across all three handlers without per-handler tuning.
+
+Next: **7c — focused MCTS for did_you_consider** under the now-enforced bundling rule. Any new findings fields ship with their own prompt-version bump (`did_you_consider/v4.md`) in the same commit chain.

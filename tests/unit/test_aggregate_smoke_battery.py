@@ -312,3 +312,78 @@ def test_render_new_jsonl_with_findings_summary_real_hallucination():
     md = _render([row], Path("test.jsonl"))
     # NOT validator_gap (in-findings is ✗).
     assert "validator_gap" not in md or "Validator gaps** (span IS in findings, validator missed it): 0" in md
+
+
+# === Chunk 7b.2.C: interpretive-claims surfacing in aggregator output ===
+
+
+def test_render_interpretive_claims_section_present_when_candidates_exist():
+    """Aggregator surfaces per-cell interpretive-claim candidates when
+    the JSONL row has a non-empty interpretive_claims list."""
+    row = _row(source="llm", validation_ok=True)
+    row["interpretive_claims"] = [
+        "White's queen has nowhere to hide after the d4-knight falls.",
+    ]
+    md = _render([row], Path("test.jsonl"))
+    # Section header present
+    assert "## Interpretive claims to scrutinize" in md
+    # Stats line surfaces the count
+    assert "1 of 1 cells have ≥1 candidate" in md or "median per cell = 1" in md
+    # The specific claim text rendered
+    assert "queen has nowhere to hide" in md
+
+
+def test_render_interpretive_claims_section_present_when_no_candidates():
+    """Aggregator renders the section header + 'no candidates' note when
+    every cell has empty interpretive_claims (clean prose OR heuristic too
+    narrow)."""
+    row = _row(source="llm", validation_ok=True)
+    row["interpretive_claims"] = []
+    md = _render([row], Path("test.jsonl"))
+    assert "## Interpretive claims to scrutinize" in md
+    assert "no candidates surfaced" in md
+
+
+def test_render_interpretive_claims_backward_compat_no_field():
+    """OLD JSONL rows without the interpretive_claims field render with
+    empty per-cell lists (back-compat for pre-7b.2.C JSONLs)."""
+    row = _row(source="llm", validation_ok=True)
+    # Intentionally don't add interpretive_claims to the row.
+    assert "interpretive_claims" not in row
+    md = _render([row], Path("test.jsonl"))
+    # Section should still render without crashing.
+    assert "## Interpretive claims to scrutinize" in md
+    assert "no candidates surfaced" in md
+
+
+def test_render_interpretive_claims_backlog_signal_fires_when_median_high():
+    """If per-cell median > 2 OR max > 4, aggregator fires the rater-
+    overwhelm backlog signal per the plan's mitigation."""
+    # Build 4 cells with varying counts to push median above 2.
+    rows = []
+    for i, count in enumerate([5, 6, 7, 8]):  # median = 6.5 (5 → 6 → 7 → 8 sorted)
+        row = _row(
+            source="llm", validation_ok=True,
+            category=f"cat_{i}", position_id=f"p_{i}",
+        )
+        row["interpretive_claims"] = [f"Sample interpretive sentence {j}." for j in range(count)]
+        rows.append(row)
+    md = _render(rows, Path("test.jsonl"))
+    # Backlog signal text should fire.
+    assert "Interpretive-claim heuristic surfacing too many candidates" in md
+    assert "Tighten Rule A" in md or "narrow Rule B" in md
+
+
+def test_render_interpretive_claims_no_backlog_signal_when_bounded():
+    """If per-cell counts are within target (median ≤ 2, max ≤ 4),
+    no backlog signal."""
+    rows = []
+    for i, count in enumerate([0, 1, 2, 3]):  # median = 1.5 (≤ 2), max = 3 (≤ 4)
+        row = _row(
+            source="llm", validation_ok=True,
+            category=f"cat_{i}", position_id=f"p_{i}",
+        )
+        row["interpretive_claims"] = [f"Sentence {j}." for j in range(count)]
+        rows.append(row)
+    md = _render(rows, Path("test.jsonl"))
+    assert "Interpretive-claim heuristic surfacing too many candidates" not in md

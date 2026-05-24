@@ -375,6 +375,11 @@ def _render(rows: list[dict], jsonl_path: Path) -> str:
         first = cell_rows[0]
         prose = first.get("prose", "") or ""
         forbidden_hits = [p for p in FORBIDDEN_PHRASES if p in prose.lower()]
+        # Chunk 7b.2.C: per-cell interpretive-claim candidates surfaced
+        # for 2500+ rater review at 7o. Populated from the JSONL row's
+        # interpretive_claims field (added in 7b.2.C). Back-compat:
+        # older JSONL rows without the field treated as empty list.
+        interp_claims = first.get("interpretive_claims", []) or []
         eyeball_rows.append({
             "category": cat,
             "handler": handler,
@@ -383,6 +388,7 @@ def _render(rows: list[dict], jsonl_path: Path) -> str:
             "validation_ok": first.get("validation_ok"),
             "forbidden_hits": forbidden_hits,
             "prose": prose,
+            "interpretive_claims": interp_claims,
         })
 
     # === Outliers — non-templated runs that failed validation (Rule 1 / Rule 2 catches) ===
@@ -539,6 +545,59 @@ def _render(rows: list[dict], jsonl_path: Path) -> str:
         lines.append(f"| {cell} | {e['position_id']} | {e['validation_ok']} | {hits} | {prose_trunc}… |")
     lines.append("")
 
+    # Chunk 7b.2.C: per-cell interpretive-claim candidates for 2500+ rater
+    # review at 7o (Option 1.5 from the 7b.1 retro). The validator catches
+    # hallucinated MOVES but not hallucinated INTERPRETATIONS; this section
+    # surfaces candidates for explicit rater scrutiny rather than relying
+    # on the rater to spot them in unstructured prose. False positives are
+    # expected and FINE; the rater judges.
+    interp_counts = [len(e["interpretive_claims"]) for e in eyeball_rows]
+    n_cells = len(eyeball_rows)
+    n_cells_with_claims = sum(1 for c in interp_counts if c > 0)
+    total_claims = sum(interp_counts)
+    median_claims = (
+        sorted(interp_counts)[n_cells // 2] if n_cells > 0 else 0
+    )
+    max_claims = max(interp_counts) if interp_counts else 0
+    lines.append("## Interpretive claims to scrutinize (per-cell — for 2500+ rater)")
+    lines.append("")
+    lines.append(
+        "Per Chunk 7b.2.C / Option 1.5 from the 7b.1 retro. The validator "
+        "catches hallucinated MOVES but not hallucinated INTERPRETATIONS "
+        "(positional/relational claims like 'queen has nowhere to hide'). "
+        "The smoke-battery runner flags candidate interpretive-claim "
+        "sentences via a two-rule heuristic (wordlist + structural). "
+        "False positives are expected; the rater judges chess-accuracy."
+    )
+    lines.append("")
+    lines.append(
+        f"**Heuristic-output stats:** {n_cells_with_claims} of {n_cells} "
+        f"cells have ≥1 candidate; median per cell = {median_claims}; "
+        f"max per cell = {max_claims}; total = {total_claims}."
+    )
+    lines.append("")
+    lines.append(
+        "**Rater instruction:** for each cell, review the candidates "
+        "FIRST. Flag any claim that's chess-inaccurate OR unsupported by "
+        "the prose's other citations OR makes a positional claim the "
+        "findings JSON doesn't ground. ≥3 flagged claims in a cell fails "
+        "the prose-quality gate for that cell regardless of other criteria."
+    )
+    lines.append("")
+    if total_claims == 0:
+        lines.append("(no candidates surfaced — either heuristic is too narrow OR prose is clean)")
+    else:
+        for e in eyeball_rows:
+            if not e["interpretive_claims"]:
+                continue
+            cell = f"{e['category']} / {e['handler']} / {e['mode']}"
+            lines.append(f"### {cell} ({e['position_id']}) — {len(e['interpretive_claims'])} candidate(s)")
+            for claim in e["interpretive_claims"]:
+                # Escape pipe chars in case rater renders in a table-context view.
+                claim_md = claim.replace("|", "\\|")
+                lines.append(f"- {claim_md}")
+            lines.append("")
+
     lines.append("## Outliers (validation_ok=False, source != templated)")
     lines.append("")
     if not outliers:
@@ -566,6 +625,16 @@ def _render(rows: list[dict], jsonl_path: Path) -> str:
         lines.append(f"- {forbidden_any} eyeball cells have forbidden-language hits — file as prompt v6/v3 iteration target.")
     if branch_b == 0:
         lines.append("- 0 Branch B cases across H2+H3 runs — difficulty stratification didn't produce divergence; consider bumping tactical ratings higher OR pulling from leela-interp figshare distribution.")
+    # Chunk 7b.2.C rater-overwhelm mitigation: tune heuristic before 7o
+    # if per-cell counts trend too high (target: median 1-2, max 4).
+    if median_claims > 2 or max_claims > 4:
+        lines.append(
+            f"- Interpretive-claim heuristic surfacing too many candidates "
+            f"(median={median_claims}, max={max_claims}). Target median≤2, max≤4 "
+            f"by 7o to avoid rater overwhelm. Tighten Rule A's match threshold "
+            f"(require 2 wordlist hits, not 1) OR narrow Rule B's relational "
+            f"patterns BEFORE more sub-chunks accumulate."
+        )
     lines.append("")
 
     return "\n".join(lines)

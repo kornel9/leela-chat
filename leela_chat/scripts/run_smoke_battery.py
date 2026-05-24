@@ -179,6 +179,12 @@ def _extract_findings_summary(findings_dict: dict | None) -> dict:
         "stockfish_top_san": [],
         "stockfish_top_uci": [],
         "stockfish_pv_sans": [],  # flattened across stockfish.top_moves[*].pv_san
+        # Chunk 7b.2.C: added mcts_pv_sans so the interpretive-claim
+        # heuristic's exclusion rule can recognise sentences that cite
+        # Leela's MCTS PV moves as grounded (small gap inherited from
+        # 7b — the validator's recursive walk caught these but
+        # _extract_findings_summary didn't surface them in JSONL).
+        "mcts_pv_sans": [],  # flattened across mcts.children[*].pv_san
         "focal_move_san": None,
         "focal_move_uci": None,
     }
@@ -204,6 +210,11 @@ def _extract_findings_summary(findings_dict: dict | None) -> dict:
             if isinstance(ch, dict):
                 if ch.get("san"): out["mcts_children_san"].append(ch["san"])
                 if ch.get("uci"): out["mcts_children_uci"].append(ch["uci"])
+                # Chunk 7b.2.C: per-child pv_san (populated by Chunk 7b's
+                # MultiPv=5 deep-mode default for top-5 candidates).
+                for pv_move in ch.get("pv_san", []) or []:
+                    if isinstance(pv_move, str):
+                        out["mcts_pv_sans"].append(pv_move)
 
     # Stockfish top moves + pv_san (flattened).
     sf = findings_dict.get("stockfish") or {}
@@ -224,6 +235,170 @@ def _extract_findings_summary(findings_dict: dict | None) -> dict:
                 out["stockfish_pv_sans"].append(pv_move)
 
     return out
+
+
+# =====================================================================
+# Chunk 7b.2.C — interpretive-claim capture (Option 1.5 from 7b.1 retro)
+# =====================================================================
+#
+# The validator catches hallucinated MOVES (move-citation walker) but
+# doesn't catch hallucinated INTERPRETATIONS — confident-sounding chess
+# interpretations of position/PV mechanics that the findings JSON
+# doesn't ground. 7b.1's canonical example: "White's queen has nowhere
+# to hide after the d4-knight falls" — validator passed (no illegal
+# moves cited) but the claim is interpretive and chess-accuracy is
+# rater-judgment territory.
+#
+# This helper surfaces such interpretive-claim CANDIDATES from prose so
+# the 2500+ rater at 7o can scrutinize them explicitly. It does NOT
+# auto-validate (that's the multi-month Option 3 from the retro, out
+# of scope). False positives are expected and FINE — the point is
+# making the empirical signal at 7o extractable rather than relying on
+# the rater to spot interpretive claims in unstructured prose.
+#
+# Two-rule design (per the user's 7b.2 plan refinement):
+# - Rule A (wordlist): piece name + interpretive-claim phrase from
+#   seed list (~20-30 entries; grows iteratively like the forbidden-
+#   language list).
+# - Rule B (structural — durable fallback): sentence asserts a
+#   chess-positional claim about a piece's RELATIONSHIP to other
+#   pieces (attacker/defender, mobility, scope, coordination) without
+#   grounding in findings. Catches what the wordlist will miss as
+#   the LLM's surface forms drift.
+# Sentence flagged if EITHER rule matches AND the exclusion (grounded-
+# citation sentence) doesn't fire.
+
+import re
+
+_PIECE_NAMES = (
+    "queen", "queens", "king", "kings", "rook", "rooks",
+    "bishop", "bishops", "knight", "knights", "pawn", "pawns",
+)
+_PIECE_NAMES_RE = re.compile(
+    r"\b(?:" + "|".join(_PIECE_NAMES) + r")\b", re.IGNORECASE,
+)
+
+# Rule A wordlist — common interpretive-claim phrases that the LLM
+# reaches for when narrating PV mechanics or position assessment.
+# Grows iteratively across versions (same dynamic as the forbidden-
+# language list — see CLAUDE.md §8 Process pitfalls).
+_INTERPRETIVE_PHRASES = (
+    # state / safety
+    "is exposed", "has no escape", "nowhere to hide", "is undefended",
+    "is hanging", "in danger", "is overworked", "is overloaded",
+    # claim verbs
+    "threatens", "controls", "attacks", "defends", "dominates",
+    "restricts", "holds", "falls", "drops", "escapes", "traps",
+    # judgment
+    "is decisive", "is winning", "is losing", "becomes weak",
+    "is the key square", "is the key piece",
+    # canonical 7b.1 leak
+    "has nowhere to hide", "finds no",
+)
+_INTERPRETIVE_RE = re.compile(
+    r"(?i)(?:" + "|".join(re.escape(p) for p in _INTERPRETIVE_PHRASES) + r")",
+)
+
+# Rule B structural patterns — relational claims about piece interactions
+# that the wordlist will miss as the LLM's surface forms drift. The
+# patterns target sentence-shapes, not specific words.
+_RELATIONAL_PATTERNS = (
+    # mobility / safety negations (catches "finds no safety", "lacks coordination")
+    r"\bfinds?\s+no\s+\w+",
+    r"\blacks?\s+(?:any\s+)?\w+",
+    r"\bno\s+longer\s+\w+s",
+    # piece-relations (coordination, attack/defend with object)
+    r"\bcoordinat(?:e|es|ion)\b",
+    r"\b(?:attacks?|defends?|pressures?|controls?|guards?)\s+(?:the\s+)?\w+",
+    # mobility framing
+    r"\bmobility\s+of\b",
+    r"\bscope\s+of\b",
+    # generic positional-claim shapes
+    r"\b(?:weak|exposed|loose|hanging|stranded|trapped|cornered)\s+(?:king|queen|rook|bishop|knight|pawn|piece|pieces)\b",
+)
+_RELATIONAL_RE = re.compile(
+    r"(?i)(?:" + "|".join(_RELATIONAL_PATTERNS) + r")",
+)
+
+# Sentence splitter — preserves punctuation so each yielded sentence
+# can be re-rendered. Splits on `. `, `! `, `? ` AND at end of text.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _split_sentences(prose: str) -> list[str]:
+    """Split prose into sentences, preserving terminal punctuation."""
+    parts = _SENTENCE_SPLIT_RE.split(prose.strip())
+    return [s.strip() for s in parts if s.strip()]
+
+
+def _sentence_is_grounded_citation(sentence: str, findings_summary: dict) -> bool:
+    """True if the sentence's substantive content is a direct findings citation.
+
+    Grounded = contains a SAN/UCI move from findings_summary AND at least
+    one substantive numeric citation (visit count / Q value / eval /
+    rank / percentage). These are number-narrating sentences, NOT
+    interpretive ones, and should not be flagged.
+
+    "Substantive numeric" = 3+ consecutive digits (visit counts, depths,
+    rank numbers in trajectories) OR a signed/unsigned decimal (Q values,
+    eval values) OR a percentage. **Single-digit-after-letter square
+    references like "d4" / "e5" are NOT substantive numerics** — they're
+    coordinate labels, not findings-values. Without this distinction
+    the heuristic would mark interpretive PV-narration sentences like
+    "After Rxd4, the d4 knight falls" as grounded (Rxd4 trusted, "d4"
+    contains a digit) and miss the flag.
+    """
+    if not findings_summary:
+        return False
+    # Gather all trusted SAN/UCI strings.
+    trusted: set[str] = set()
+    for key in ("top_moves_san", "top_moves_uci", "mcts_children_san",
+                "mcts_children_uci", "stockfish_top_san", "stockfish_top_uci",
+                "stockfish_pv_sans", "mcts_pv_sans"):
+        for s in findings_summary.get(key, []) or []:
+            if isinstance(s, str):
+                trusted.add(s)
+    for key in ("mcts_bestmove_san", "mcts_bestmove_uci",
+                "focal_move_san", "focal_move_uci"):
+        v = findings_summary.get(key)
+        if isinstance(v, str):
+            trusted.add(v)
+    # Sentence must contain at least one trusted move AND a substantive numeric.
+    has_trusted_move = any(m and m in sentence for m in trusted)
+    has_substantive_numeric = bool(re.search(
+        r"\d{3,}|[+-]?\d+\.\d+|\d+%", sentence,
+    ))
+    return has_trusted_move and has_substantive_numeric
+
+
+def _extract_interpretive_claims(
+    prose: str, findings_summary: dict,
+) -> list[str]:
+    """Surface candidate interpretive-claim sentences for 7o rater review.
+
+    Returns a list of sentences from `prose` that look like chess-content
+    interpretations not grounded in findings_summary. False positives are
+    expected; the rater judges.
+
+    The two-rule design (wordlist + structural) per the 7b.2 plan: Rule
+    A catches common surface forms via a seed wordlist; Rule B catches
+    relational/positional-claim shapes the wordlist will miss as the
+    LLM's surface forms drift.
+    """
+    if not prose or not prose.strip():
+        return []
+    candidates: list[str] = []
+    for sentence in _split_sentences(prose):
+        if _sentence_is_grounded_citation(sentence, findings_summary):
+            continue
+        rule_a_fires = bool(
+            _PIECE_NAMES_RE.search(sentence)
+            and _INTERPRETIVE_RE.search(sentence)
+        )
+        rule_b_fires = bool(_RELATIONAL_RE.search(sentence))
+        if rule_a_fires or rule_b_fires:
+            candidates.append(sentence)
+    return candidates
 
 
 def _mcts_bestmove(ctx: Any, board: chess.Board) -> str | None:
@@ -291,6 +466,7 @@ def _run_one(
             "prose": "(dry-run; no LLM call)",
             "llm_attempt_texts": [],
             "findings_summary": {},
+            "interpretive_claims": [],  # Chunk 7b.2.C — back-compat default.
         })
         return out
 
@@ -333,6 +509,13 @@ def _run_one(
             # from real_hallucination (span NOT in findings). Without
             # this the validator-fix path in sub-item 2 is theatre.
             "findings_summary": _extract_findings_summary(findings_dict),
+            # Chunk 7b.2.C — surface candidate interpretive-claim
+            # sentences from the prose so the 2500+ rater at 7o can
+            # scrutinize them explicitly (Option 1.5 from the 7b.1
+            # retro). False positives are expected; the rater judges.
+            "interpretive_claims": _extract_interpretive_claims(
+                result.text, _extract_findings_summary(findings_dict),
+            ),
         })
     except Exception as exc:
         logger.exception(f"smoke_battery: handler {handler}/{mode} on {position['id']} crashed")
@@ -348,6 +531,7 @@ def _run_one(
             "prose": f"(crash: {type(exc).__name__}: {exc})",
             "llm_attempt_texts": [],
             "findings_summary": {},
+            "interpretive_claims": [],  # Chunk 7b.2.C — back-compat default.
         })
     return out
 
