@@ -432,3 +432,45 @@ The architecture-of-efficiency reframe (chosen 2026-05-19): the next high-value 
 - PHASE_NOTES.md 2026-05-18 audit — the trigger (user observation that Phase 1 prose was thin pre-Stockfish, and that formal-eval infrastructure isn't the bottleneck on usability).
 - `leela_chat/scripts/smoke_test_handler.py` — the de-facto regression harness.
 - `tests/eval/eval_positions.yaml` — kept (Rule 3 says never remove positions), just unused for now; friends' contributions still go here if they arrive.
+
+---
+
+### ADR-0011: Quality bar shift — 2200+ player approval → super-GM-tier (2700+) as productionization target
+
+- **Date:** 2026-05-24
+- **Status:** Accepted
+- **Phase:** Phase 2 — MCTS Integration (forward-looking through Phase 3+)
+- **Decision-makers:** [initials]
+
+#### Context
+CLAUDE.md §1 originally pinned the project's quality bar: *"Target user: the project owner (a 2000+ player) for personal use, then strong-player friends, then maybe a public alpha. Quality bar: 2200+ player should approve. GM utility is aspirational, not v1."* This framing was set at project start when scope was uncertain.
+
+In the Chunk 7 planning conversation (2026-05-24), the user clarified the actual productionization target: super-GM-tier players (2700+). The shift was buried in a Chunk 7 proposal ("Productionization target: super-GM-tier players (2700+). Quality is prioritised over every other consideration — latency, compute cost, API spend, implementation effort.") but is a project-identity change that needs explicit documentation, not a casual proposal-prompt assumption.
+
+The shift affects: prompt design (must satisfy strong-player-coach voice, not just plausible-coach); subjective scoring (the 2400+ rater bar mentioned in earlier planning is no longer sufficient as a single rater — at minimum one 2500+ rater is needed in the pool, with 2600+ preferred for the productionization gate); latency tolerances (ADR-0012 relaxes the deep-mode cap to <90s on the back of the quality-over-latency stance); MCTS configuration (Chunk 7's deep-mode multi-config ensemble + Stockfish depth-30 multipv=10 are quality choices the new bar justifies).
+
+#### Decision
+Shift the project's productionization quality bar from "2200+ player should approve" to "super-GM-tier (2700+) is the productionization bar." The 2200+ approval gate remains as a minimum acceptance bar (anything that fails to satisfy a 2200+ player is unshippable), but the design target is super-GM-grade.
+
+CLAUDE.md §1 amended to match.
+
+#### Alternatives considered
+- **Keep the 2200+ bar.** Rejected: doesn't match the user's stated productionization target; would cap prompt-design ambition and MCTS-configuration choices below what the user actually wants.
+- **Aspirational super-GM, real 2200+ bar (current CLAUDE.md framing).** Rejected: the aspirational framing was project-start hedging when scope was uncertain. The user has now committed to super-GM as the actual target; treating it as "aspirational" would let prompt and MCTS work drift to the lower bar in practice.
+- **Tiered approval (2200+ minimum, super-GM target, no formal middle gate).** This is the chosen framing — minimum gate + design target are different things, both explicit.
+
+#### Consequences
+- **Prompt design discipline tightens.** Chunk 7's 7m (prose contract extension + new prompt versions) and beyond must target strong-player-coach voice, not just observational accuracy. Voice criterion in subjective scoring becomes load-bearing.
+- **Subjective scoring needs strong raters.** A single 2400+ rater is no longer the bar; at minimum one 2500+ rater for any productionization gate, with 2600+ preferred. The 2500+ recruitment item lands in PHASE_NOTES as a Phase B5 user action item (does NOT block Chunk 7 sub-chunks; tracked).
+- **The user's own scoring (a 2000+ player) is no longer sufficient as the SOLE subjective signal for productionization.** It's still valuable as a sanity check (the user catches things AI scoring misses, per the 6.9 plan's reasoning), but the productionization gate requires a stronger reader. Documenting this so the user doesn't over-weight their own scoring.
+- **AI scoring** stays as a placeholder signal where no strong rater is available; the 6.9 close used AI scoring per user delegation (see PHASE_NOTES 2026-05-24-cont).
+- **Chunk 7 hard gates** (defined in plan 7o) include "deep-mode prose materially better than 6.9 baseline on ≥ 4 of 5 user-scored positions, with at least 5 of 10 cells scored by a 2500+ rater" — the strong-rater requirement is part of the close criterion.
+- **No mechanical retroactive effect on Chunk 6.9 or earlier.** ADR-0011 is forward-looking; the 6.9 ship stands per the 2200+ bar that was in force at the time.
+- **Reversal cost.** Small — backing this out means amending CLAUDE.md §1 back and dropping the 2500+ rater requirement. Could happen if super-GM-tier turns out to be unreachable for valid product-shape reasons. No code depends on the bar.
+
+#### References
+- CLAUDE.md §1 — amended in this commit.
+- Chunk 7 plan (`~/.claude/plans/tell-me-and-explain-mutable-axolotl.md`) — Phase B1 + the cost/latency/quality stance that motivates this shift.
+- ADR-0012 (latency cap relaxation) — companion ADR; the latency relaxation makes the quality bar achievable.
+- ADR-0013 (Tier-2 MCTS deferred) — companion ADR; defers product features that aren't load-bearing for the quality bar.
+- BIBLE.md §1 (project identity) — quality framing originates here; reread when re-evaluating this ADR.

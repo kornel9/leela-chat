@@ -12,7 +12,7 @@
 
 **What this is not:** a chess engine, a UI prototype, a fine-tuned chess LLM, an opening trainer, a tournament tool, a chatbot. Read `docs/BIBLE.md` sections "In scope," "Out of scope," and "Anti-goals" if tempted to add scope.
 
-**Target user:** the project owner (a 2000+ player) for personal use, then strong-player friends, then maybe a public alpha. Quality bar: 2200+ player should approve. GM utility is aspirational, not v1.
+**Target user:** the project owner (a 2000+ player) for personal use, then strong-player friends, then maybe a public alpha. **Quality bar (per ADR-0011, 2026-05-24):** super-GM-tier (2700+) is the productionization design target; the 2200+ approval gate remains as the minimum acceptance bar (nothing ships if it fails to satisfy a 2200+ player), but prompts, MCTS configuration, and subjective scoring should target super-GM-grade. Subjective scoring requires at minimum one 2500+ rater for any productionization gate; the user's own 2000+ scoring is a valuable sanity check but no longer sufficient as the sole subjective signal.
 
 **Current phase:** `Phase 1 — Network-First Chat MVP`. Track current phase in `docs/PHASE_NOTES.md`. Update at the start of every work session.
 
