@@ -1,0 +1,215 @@
+# tests/eval/spot_check_bank.yaml — Chunk 7d entry, Step 1.
+# Curated positions for spot-checks across 7d-7m. NOT the eval set.
+# See preflight_c.md for the offline MCTS scan that filled in
+# _preflight_c_dynamics and focal_uci on each entry.
+# See git history for the rationale field descriptions.
+
+positions:
+- id: walkthrough_rxd4
+  fen: 1r1r2k1/5ppp/p3pn2/4q3/b1PN4/Q4P2/P2RB1PP/KR6 b - - 0 1
+  source: canonical
+  expected_category: refutation
+  user_label: REFUTATION (canonical anchor)
+  user_idea: Black's rook sacrifice (Rxd4) deflects White's d4-knight; engine confirms
+    at 100k+ nodes. Used throughout Chunk 7 as the smoke-check fixture.
+  focal_uci: d8d4
+  _preflight_c_dynamics:
+    engine_pick: Rxd4 (d8d4)
+    q_first: '+0.558'
+    q_trough: '+0.423'
+    q_last: '+0.931'
+    max_delta: '0.508'
+    trough_explanation_populated: true
+    observed_category: redirection
+    scan_budget_nodes: 50000
+    scanned_at: 2026-05-25T17:06Z
+- id: user_01_rook_retreat
+  fen: r1b2rk1/1ppn1ppp/3pp3/pP6/2PP2R1/P3P3/1BQNBP1q/R3K3 w - - 0 1
+  source: user
+  expected_category: recovery
+  user_label: POSITIONAL
+  user_idea: Rook retrieves quietly back.
+  focal_uci: d2f3
+  _preflight_c_dynamics:
+    engine_pick: Nf3 (d2f3)
+    q_first: '+0.994'
+    q_trough: '+0.977'
+    q_last: '+0.981'
+    max_delta: '0.017'
+    trough_explanation_populated: false
+    observed_category: quiet
+    scan_budget_nodes: 50000
+    scanned_at: 2026-05-25T17:06Z
+- id: user_02_king_recapture
+  fen: r1bqk2r/1p2bppp/4p3/pP1pP3/P2P1P2/3B1N2/3n2PP/R2QK2R w KQkq - 0 1
+  source: user
+  expected_category: recovery
+  user_label: POSITIONAL
+  user_idea: Takes back with the king.
+  focal_uci: e1d2
+  _preflight_c_dynamics:
+    engine_pick: Kxd2 (e1d2)
+    q_first: '+0.270'
+    q_trough: '+0.270'
+    q_last: '+0.332'
+    max_delta: '0.063'
+    trough_explanation_populated: false
+    observed_category: unclear
+    scan_budget_nodes: 50000
+    scanned_at: 2026-05-25T17:06Z
+- id: user_03_bishop_sac
+  fen: 4q2r/1b1kbp2/1p2p1p1/pP1pP1N1/P2P1PQP/3BK3/2R5/8 w - - 0 1
+  source: user
+  expected_category: refutation
+  user_label: POSITIONAL TACTICS
+  user_idea: Bishop positional bishop sacrifice.
+  focal_uci: d3g6
+  _preflight_c_dynamics:
+    engine_pick: Bxg6 (d3g6)
+    q_first: '+0.000'
+    q_trough: '+0.000'
+    q_last: '+0.517'
+    max_delta: '0.517'
+    trough_explanation_populated: false
+    observed_category: recovery
+    scan_budget_nodes: 50000
+    scanned_at: 2026-05-25T17:06Z
+- id: user_04_italian
+  fen: r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R b KQkq - 0 1
+  source: user
+  expected_category: quiet
+  user_label: POSITIONAL
+  user_idea: Italian games opening.
+  focal_uci: d7d6
+  _preflight_c_dynamics:
+    engine_pick: d6 (d7d6)
+    q_first: '-0.034'
+    q_trough: '-0.046'
+    q_last: '-0.043'
+    max_delta: '0.013'
+    trough_explanation_populated: false
+    observed_category: hydra
+    scan_budget_nodes: 50000
+    scanned_at: 2026-05-25T17:06Z
+- id: user_05_b7_hanging
+  fen: r2q1r1k/bpp2p1p/p1np3p/3Bp2b/P3P3/2PP1N1P/1P1N1PP1/R2Q1RK1 b - - 0 1
+  source: user
+  expected_category: recovery
+  user_label: POSITIONAL PAWN SACRIFICE
+  user_idea: Leaving the b7 pawn hanging — positional compensation expected to outweigh
+    material; classic 'looks bad at first impression, rises with search' pattern.
+  focal_uci: c6e7
+  _preflight_c_dynamics:
+    engine_pick: Ne7 (c6e7)
+    q_first: '+0.216'
+    q_trough: '+0.096'
+    q_last: '+0.176'
+    max_delta: '0.120'
+    trough_explanation_populated: true
+    observed_category: redirection
+    scan_budget_nodes: 50000
+    scanned_at: 2026-05-25T17:06Z
+- id: user_06_kh8_idea
+  fen: 2r2rk1/p5bp/2p5/4p1B1/N3Pn2/P2P4/2P2PpK/RR6 b - - 1 28
+  source: user
+  expected_category: redirection
+  user_label: POSITIONAL
+  user_idea: Kh8 idea — quiet king move.
+  focal_uci: g8h8
+  _preflight_c_dynamics:
+    engine_pick: Kh8 (g8h8)
+    q_first: '+0.343'
+    q_trough: '+0.059'
+    q_last: '+0.611'
+    max_delta: '0.551'
+    trough_explanation_populated: true
+    observed_category: redirection
+    scan_budget_nodes: 50000
+    scanned_at: 2026-05-25T17:06Z
+- id: user_07_chaotic_queen_sac
+  fen: r2r4/1p1kpPbQ/2p3N1/3P1p2/1nn3P1/pbN1BP2/1P6/K1RB2R1 w - - 1 37
+  source: user
+  expected_category: hydra
+  user_label: TACTICAL
+  user_idea: Chaotic queen sacrifice — multiple sharp continuations; possible hydra-effect
+    (multiple plausible candidates).
+  focal_uci: g6e5
+  _preflight_c_dynamics:
+    engine_pick: Ne5+ (g6e5)
+    q_first: '+0.786'
+    q_trough: '+0.786'
+    q_last: '+0.895'
+    max_delta: '0.109'
+    trough_explanation_populated: false
+    observed_category: recovery
+    scan_budget_nodes: 50000
+    scanned_at: 2026-05-25T17:06Z
+- id: user_08_short_queen_sac
+  fen: r1q2rk1/pb1n1pnp/1p1N2pB/2ppP1b1/8/6PQ/PP3PBP/R2R2K1 b - - 1 21
+  source: user
+  expected_category: refutation
+  user_label: TACTICAL
+  user_idea: Short-term queen sacrifice with material returned quickly.
+  focal_uci: d7e5
+  _preflight_c_dynamics:
+    engine_pick: Nxe5 (d7e5)
+    q_first: '-0.605'
+    q_trough: '-0.617'
+    q_last: '+0.251'
+    max_delta: '0.868'
+    trough_explanation_populated: true
+    observed_category: redirection
+    scan_budget_nodes: 50000
+    scanned_at: 2026-05-25T17:06Z
+- id: user_09_h4_attack
+  fen: r2q1rk1/pb3pbp/1p2p1p1/n7/3PP3/3BB3/P2QNPPP/2R2RK1 w - - 4 15
+  source: user
+  expected_category: redirection
+  user_label: POSITIONAL
+  user_idea: h4 attacking idea — slow positional attack.
+  focal_uci: h2h4
+  _preflight_c_dynamics:
+    engine_pick: h4 (h2h4)
+    q_first: '+0.310'
+    q_trough: '+0.310'
+    q_last: '+0.400'
+    max_delta: '0.089'
+    trough_explanation_populated: false
+    observed_category: unclear
+    scan_budget_nodes: 50000
+    scanned_at: 2026-05-25T17:06Z
+- id: user_10_hanging_knights
+  fen: r2qkb1r/ppn4p/2p1b3/2p1pp2/4N2N/7P/PPPPQPP1/R1B2RK1 w kq - 0 13
+  source: user
+  expected_category: hydra
+  user_label: POSITIONAL TACTICS
+  user_idea: Hanging knights — multiple candidate ways to handle the threats; possible
+    hydra-effect.
+  focal_uci: e4g3
+  _preflight_c_dynamics:
+    engine_pick: Ng3 (e4g3)
+    q_first: '+0.131'
+    q_trough: '-0.759'
+    q_last: '-0.047'
+    max_delta: '0.890'
+    trough_explanation_populated: true
+    observed_category: redirection
+    scan_budget_nodes: 50000
+    scanned_at: 2026-05-25T17:06Z
+- id: user_11_queen_attacks_knight
+  fen: 1r3rk1/2p3pp/p1n1p1q1/P1bpp3/4P3/2PP1N1P/3N1PP1/R2QR1K1 w - - 1 18
+  source: user
+  expected_category: redirection
+  user_label: POSITIONAL
+  user_idea: Queen attacks the knight positionally.
+  focal_uci: a1b1
+  _preflight_c_dynamics:
+    engine_pick: Rb1 (a1b1)
+    q_first: '+0.170'
+    q_trough: '+0.170'
+    q_last: '+0.301'
+    max_delta: '0.131'
+    trough_explanation_populated: false
+    observed_category: recovery
+    scan_budget_nodes: 50000
+    scanned_at: 2026-05-25T17:06Z

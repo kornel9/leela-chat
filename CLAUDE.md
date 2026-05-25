@@ -523,6 +523,25 @@ See ADR-0014's "Reference: structural-response examples" subsection for the cano
 
 **Why this exists:** the failure mode of "I'd have to rewrite the plan first to authorize this" stopping a real fix from landing in the same commit chain as the failure that exposed it. That fragmentation makes attribution harder at later sub-chunks. The "scope strictly to plan" discipline is good against silent scope creep; the "structural-response permitted with retro surfacing" rule is the safety valve against making the plan's exact phrasing into a load-bearing constraint when the failure mode demands a different shape.
 
+### Pre-flight-before-plan-finalizes rule (added 2026-05-25 from Chunk 7c.9 retro)
+
+**Whenever a sub-chunk's plan makes structural assumptions about data shape or library behavior, run a read-only pre-flight investigation BEFORE the plan finalizes.** Sibling rule to the structural-response meta-rule above: both are safety valves against plan-rigidity, applied at different moments — structural-response when a failure mode surfaces mid-implementation; pre-flight BEFORE implementation when the plan's structural assumptions are testable cheaply.
+
+**The rule:** if your plan section specifies (a) a data shape the plan assumes ("findings_summary will have trough data"), (b) a library / external-tool behavior ("the walker matches `pv_*` prefix patterns"), (c) thresholds derived from an untested distribution ("entropy < 0.5 fires on dominant policies"), or (d) any structural choice that depends on observable reality:
+
+1. Before the plan is finalized for that sub-chunk, run a read-only investigation: read the data, grep the code, inspect the function. ~10-25 min typical.
+2. Use the findings to revise the plan IN plan-mode. Cost is one round-trip; benefit is no in-flight refactor.
+3. If the assumption holds → proceed with the original plan.
+4. If the assumption breaks → revise the plan-mode schema/algorithm/threshold BEFORE writing code. Surface in retro as a pre-flight-collapsed-fire.
+
+**Why this exists:** every Chunk 7 sub-chunk through 7c.9 has surfaced ≥1 structural-response fire at implementation time. The base rate was costing hours of in-flight refactor. The 7c.9 pre-flight (~25 min) collapsed at-least-2 such fires (per-snapshot PVs don't exist; walker matches literal keys not prefixes) into a plan revision before code touched the schema. Pre-flight is cheap; the in-flight alternative is not.
+
+**Canonical example:** Chunk 7c.9's pre-flight. See PHASE_NOTES 2026-05-25 "Pre-7c.9 prep" entry for the worked example. Two read-only investigations (~10 min each) found two real shape-mismatches between plan and data; both fixed in plan-mode before code; zero in-flight refactor.
+
+**Pairing with the structural-response meta-rule:** the structural-response rule says "if implementation surfaces a failure mode demanding a structural change beyond plan scope, ship it + surface in retro." The pre-flight rule says "if the plan's structural assumptions are testable BEFORE implementation, test them first." Together they cover both ends of the plan-rigidity spectrum — one preempts the fire, the other handles it cleanly when it surfaces. Use BOTH; they're not redundant.
+
+**When NOT to pre-flight:** trivial sub-chunks (single-line docs, version bumps, mechanical refactors). The rule kicks in when the plan section makes ≥1 structural assumption that isn't obviously correct. If you're confident, document the confidence rationale in the plan + skip the pre-flight; if you're guessing, run the pre-flight.
+
 ---
 
 ## 14. File Maintenance

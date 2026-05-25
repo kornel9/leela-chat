@@ -79,6 +79,20 @@ class TrajectoryDecomposition(BaseModel):
     up without extension (verified by 7c.9 pre-flight). Prompt cites the
     candidate's identity + its Q evolution across snapshots + its final
     pv_san to explain WHY the focal's Q dipped at the trough.
+
+    **Forward-compat note (added 7d entry, 2026-05-25):** a sibling
+    ``RecoveryExplanation`` companion field on DidYouConsiderFindings
+    is a planned future addition to handle the i_at=0 case (focal Q
+    starts low at search opening, rises as search redirects). 7c.9's
+    algorithm returns None for that case (no PRIOR block to compare
+    against; the trough-decomposition framing doesn't apply). The
+    recovery case is interesting on its own terms — "Leela's first
+    impression was wrong; search corrected" — and 7d's exploration
+    pass is exactly the dynamic that will surface it. The schema
+    leaves room: ``trough_explanation`` and ``recovery_explanation``
+    can coexist as sibling fields on the findings model. No code
+    changes needed in this module; the note is here so future-me
+    knows the design accommodates it without re-thinking the schema.
     """
 
     uci: str = Field(
