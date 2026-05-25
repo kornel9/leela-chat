@@ -591,3 +591,60 @@ Each Tier-2 feature becomes its own Chunk-8+ work item once Phase 3 has surfaced
 - Chunk 7 plan (`~/.claude/plans/tell-me-and-explain-mutable-axolotl.md`) — Phase B3 + Out-of-scope section + Phase D placeholder.
 - Chunk 7 plan 7a — extension-friendliness verification (the contract this ADR depends on).
 - BIBLE.md Phase 3-7 sections — what each phase actually consumes (defines the "load-bearing for research" filter this ADR applies).
+
+---
+
+### ADR-0014: Bundling rule's first behavioral pass — precedent (Chunk 7c)
+
+- **Date:** 2026-05-25
+- **Status:** Accepted (precedent established; rule remains permanently in CLAUDE.md §8)
+- **Phase:** Phase 2 — MCTS Integration
+- **Decision-makers:** [initials]
+
+#### Context
+The CLAUDE.md §8 bundling rule was codified at Chunk 7b.1 in response to the 7b retro: any sub-chunk that adds a findings-JSON field MUST ship its prose-version bump in the SAME commit chain — bundling-into-future-iteration is forbidden. The rule was added to prevent the silent-plumbing-cycle (N sub-chunks where the CLI looks unchanged) AND the attribution-debt cost (debugging by elimination across 6+ coupled citation patterns at a bundled 7m iteration).
+
+7b.1 itself didn't really test the rule (no handler findings field added — only smoke-battery-runner infrastructure). 7c was the first sub-chunk where the rule's literal-text fired: focused-MCTS added new findings fields (`focused_*`) to `DidYouConsiderFindings` and the rule said the matching `did_you_consider/v4.md` prompt bump must ship in the same commit chain.
+
+This ADR documents the precedent of the first behavioral pass and captures a crucial framing fix from the 7c retro's user pushback.
+
+#### Decision
+7c shipped new findings fields AND the matching prompt-version bump (v3→v4) AND the strict-citation guard extension AND the v4 worked-example coverage **all in the same commit chain** (commit `5ead072`, 2026-05-25). The temptation to defer the prompt update to 7m did not arise.
+
+This is the precedent: bundling rule applies; bundling rule holds; future sub-chunks face the same expectation.
+
+#### Crucial framing fix (from the 7c retro pushback)
+
+My initial 7c retro framed the bundling-rule test as "easy" because findings and prompt were tightly coupled in 7c — no realistic scenario where I'd add `focused_pv_san` to the findings model but forget to update the prompt that explicitly cites it. The user pushed back:
+
+> "the rule's value isn't only in hard tests — it's in eliminating the decision point 'is this coupling tight enough to defer?'"
+
+The user is right and the retro's framing was wrong. The bundling rule's primary value is NOT surviving hard tests where the deferral temptation is strong. It's **eliminating the decision-point altogether** — there is no "is this tight enough to defer?" conversation to have, because the rule says ship-in-same-commit-chain regardless.
+
+Pre-discounting the easy-test outcome (as my retro's first framing did) misses the rule's main work. Easy or hard, the rule produces the same outcome: no defer. Easy tests don't validate the rule weaker than hard tests; they validate it just as well — they prove the rule's decision-elimination property still holds.
+
+The hard-test verdict (i.e., does the rule hold when the deferral temptation is actually strong?) lands at the first sub-chunk where findings change is more invisible. Until then, the rule is working as designed.
+
+#### Alternatives considered (preserved from 7b.1's rule codification)
+- **No rule (silent scope creep):** rejected. The 6.8 → 6.9 cycle of "we'll iterate at 7m" was the failure mode the rule exists to prevent.
+- **Soft guideline rather than hard rule:** rejected at 7b.1 codification because guidelines are negotiable mid-chunk; hard rules aren't. The point is to eliminate the decision-point.
+- **Allow opt-out with explicit ADR amendment:** considered for 7c.5; rejected because every deferral would require an ADR, raising the cost of deferral but not eliminating the temptation to litigate.
+
+#### Consequences
+- **Future sub-chunks (7d, 7e, 7f, 7k.1, 7k.2, 7k.3, 7l.1, 7l.2)** that add findings JSON fields ship their per-handler prompt-version bumps in the same commit chain. By Chunk 7 close, the bundling rule has been applied ~8 times in a row.
+- **7m's role narrows** — was originally "add the prompt citations for every chess-content extractor"; with the bundling rule it's "extend the prose contract with polish + structural reframing" (the chess-content prompt citations land in 7k/7l sub-chunks, not 7m).
+- **The attribution-debt cost at 7m drops dramatically.** 7m's smoke battery covers prompts that already cite the new findings cleanly; if a prose-quality regression appears, attribution is to 7m's contract-extension changes specifically (not to 6 coupled citation patterns).
+- **The rule's first hard test** lands at the first sub-chunk where findings change is invisible (no prompt-citation-explicit field name to remind me). Likely 7e (network confidence) or 7l.2 (per-handler chess-content wire-up) — the field's prompt-relevance is less obvious than `focused_pv_san`'s.
+- **Easy-test outcome ≠ rule-weak validation.** Documenting this so future-me doesn't re-litigate.
+
+#### Reversal cost
+Very low — would require amending CLAUDE.md §8 to remove the rule and accepting fragmented commit chains. No code depends on the rule's existence; only the decision-elimination property does.
+
+#### References
+- CLAUDE.md §8 Process pitfalls — the rule itself (added 7b.1).
+- ADR-0011 / 0012 / 0013 — companion ADRs documenting other project-identity / structural shifts during Chunk 7 planning.
+- PHASE_NOTES 2026-05-25 — Chunk 7c retro (user pushback on the "easy test" framing).
+- Chunk 7 plan 7c section + 7c commit `5ead072` — the precedent itself.
+
+#### ADR-numbering shift note
+ADR-0014 was pre-allocated in the Chunk 7 plan's 7n section for the MCTS-baseline ADR. Renumbered 2026-05-25 because 7c.5.C (this ADR) lands first. 7n's ADR becomes ADR-0015 when 7n lands.
