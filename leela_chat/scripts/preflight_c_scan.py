@@ -134,11 +134,32 @@ def _scan_one(ctx, position: dict, nodes: int) -> dict:
         mode="deep",
     )
 
-    # Main MCTS scan.
-    t0 = time.perf_counter()
-    mcts = extract_mcts_trajectory(
-        board, engine=ctx.lc0, max_nodes=nodes, multipv=adaptive_mpv,
+    # Main MCTS scan — FRESH Lc0 engine per position (no NN cache
+    # contamination across positions, per Step A's variance finding).
+    # The ctx.lc0 used in the original (contaminated) Pre-flight C was
+    # reused across all 12 positions, causing artificially deep troughs
+    # on later positions because NN cache + tree state accumulated.
+    # Spawning fresh per position adds ~5s engine spawn overhead per
+    # position (~60s total for 12 positions) — cheap insurance against
+    # the methodology bug Step A surfaced.
+    import os as _os
+    from leela_chat.engine.lc0_engine import Lc0Engine as _Lc0Engine
+    _lc0_path = _os.environ.get("LC0_BIN", "/workspace/bin/lc0")
+    _lc0_weights = _os.environ.get(
+        "LC0_WEIGHTS",
+        "/workspace/weights/BT4-1024x15x32h-swa-6147500/model.pb.gz",
     )
+    fresh_lc0 = _Lc0Engine(binary=_lc0_path, weights=_lc0_weights)
+    t0 = time.perf_counter()
+    try:
+        mcts = extract_mcts_trajectory(
+            board, engine=fresh_lc0, max_nodes=nodes, multipv=adaptive_mpv,
+        )
+    finally:
+        try:
+            fresh_lc0.close()
+        except Exception as _exc:
+            logger.warning(f"  fresh-lc0 close failed: {_exc}")
     scan_s = time.perf_counter() - t0
 
     # Engine pick = focal for the decomposition.

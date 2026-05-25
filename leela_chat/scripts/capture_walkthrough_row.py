@@ -71,6 +71,15 @@ def main() -> int:
         "--position-id", default="walkthrough_rxd4",
         help="Position id stamped on the row (for analyzer + retro labels)",
     )
+    parser.add_argument(
+        "--mcts-max-nodes", type=int, default=None,
+        help=(
+            "Override the handler's MCTS node budget (handler defaults to 10k). "
+            "Used at 7d Step 4 Round 2 to match Pre-flight C's 50k scan budget "
+            "so populated trough_explanation cases surface reliably for exit-"
+            "gate v6 prompt verification."
+        ),
+    )
     args = parser.parse_args()
 
     timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -162,6 +171,7 @@ def _capture_with_context_inner(ctx, args) -> int:
         handler_override=args.handler,
         move_uci=position.get("focal_uci"),
         mode=args.mode,
+        mcts_max_nodes=args.mcts_max_nodes,
     )
     _total_s = time.perf_counter() - t0
 

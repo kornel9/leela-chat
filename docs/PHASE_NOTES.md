@@ -2086,3 +2086,105 @@ Chunk-7 sub-chunks through 7c.9:
 **Discipline retrospective.** **Zero new structural-response fires at implementation time** for 7c.9. The pre-flight absorbed the schema/walker complexity into a plan revision BEFORE code landed. Pre-flight cost: ~25 min. Avoided: hours of in-flight refactor + test-rewrite + validator-extension-then-removal. This is the leverage point the user's pre-flight directive identified.
 
 **Next: 7d — multi-config MCTS ensemble (deep mode).** Per the user's pre-7d directive: brief Phase 3 readiness with pre-flight on the latency check (100k nodes × multipv=5) AND the parallel-Lc0 GPU contention check. Same playbook as 7c.9.
+
+#### 2026-05-25 — Chunk 7d entry sequence (Steps 4 R1-R4 + Step A + Step A.2 + source reading + Step B) — ADR-0016 hybrid warm/cold engine accepted
+
+**Status:** 7d's pre-design entry sequence completes here. Step 5 (design + implementation) is now unblocked with a real reproducibility substrate underneath it.
+
+**The arc.** The exit-gate that 7c.9 carried into 7d (real-data populated-path verification of `trough_explanation`) collided with a load-bearing architectural question — "does production trough_explanation EVER fire reliably under the current handler architecture?" — that took three hypothesis iterations to land on the correct mechanism. Documenting the full arc so future-me can see the path:
+
+##### Round 1 — 10k captures (handler-default budget); both failed to populate trough_explanation
+
+Both user_06_kh8_idea (focal Kh8) and user_08_short_queen_sac (focal Nxe5) ran at handler-default `mcts_max_nodes=10000` with did_you_consider/v6/deep. Neither produced the populated trough_explanation + LLM WHY-narration combination the exit gate required. Focal max_deltas: 0.060 (user_06) and 0.056 (user_08), both BELOW 0.10 threshold → trough_explanation=None. Capture 1 also surfaced a budget-independent v6-prompt-contract gap (LLM picked a NON-FOCAL child's trajectory_summary to discuss; cited q_first/q_last without q_trough; validator's `incomplete_trough_citation` fired → templated fallback engaged). Capture 2 was clean prose but had nothing to narrate.
+
+**Diagnosis at Round 1 close:** handler-default 10k budget is too low to surface focal troughs reliably under the warmed-engine regime. Decision: re-run at 50k to match Pre-flight C's scan budget.
+
+##### Round 2 — 50k captures; STILL both returned None
+
+Modified `capture_walkthrough_row.py` to expose `--mcts-max-nodes` flag; re-ran both positions at 50k. **Both still returned None** with max_deltas of 0.060 (user_06) and 0.056 (user_08) — essentially unchanged from 10k. This was the surprise. Pre-flight C's scan at 50k on the same positions had produced max_deltas of 0.551 (user_06) and 0.868 (user_08) → 9-15× higher.
+
+**At this point three hypotheses were on the table:** (1) MCTS variance/nondeterminism — Lc0 produces different trajectories on re-runs of the same FEN; (2) NN cache contamination — Pre-flight C reused one engine across 12 positions, whereas Round 2 used a fresh handler context; (3) something else not yet identified.
+
+##### Round 3 — Step A (variance experiment) + Pre-flight C clean re-run + Step A.2 (no-warmup); warmup pre-pass is the distortion
+
+**Step A (3× runs at 50k per position, fresh engine per trial, WITH 1k warmup before each measurement).** Results clustered tight: user_06 = [0.099, 0.107, 0.104]; user_08 = [0.001, 0.001, 0.009]. Combined with prior measurements: 5 measurements per position, max-min spread ~0.01 within the warm cluster. Hypothesis 1 (nondeterminism) FALSIFIED — Lc0 is bit-deterministic at fixed FEN + budget + warmup pattern.
+
+**Pre-flight C clean re-run (fresh engines per position, NO warmup).** Goal: isolate "NN cache contamination across positions" from other factors. Produced essentially identical results to the original contaminated Pre-flight C — 0.55-0.87 max_deltas on the same positions. Hypothesis 2 (NN cache contamination) FALSIFIED — cleaning up the cross-position reuse didn't change the numbers. The difference between Pre-flight C and Round 2 was NOT cache pollution.
+
+**Step A.2 (3× runs at 50k per position, fresh engine per trial, NO 1k warmup before measurement).** Modified `variance_experiment.py` to add `--no-warmup` flag. Results: user_06 = [0.565, 0.561, 0.578]; user_08 = [0.861, 0.867, 0.869]. **Tight within the cold cluster; 5×-200× larger than Step A's warm cluster on the same positions.**
+
+**Hypothesis 3 (CORRECT): the warmup pre-pass shifts what part of the Q-trajectory the measurement captures.** Mechanism (clean):
+
+> `MCTSTrajectorySummary.q_first` = "Q at the first emit cycle the candidate appeared in." Lc0's `--log-live-stats` emits at certain visit milestones. **Cold engine** (no prior state) → NN evaluations are slow (cold cache) → first emit catches each candidate at very few per-candidate visits → Q highly volatile → `q_first` very different from final `q_last` → large max_delta. The trajectory captures the FULL search journey. **Warm engine** (1k-node pre-pass already ran) → NN cache primed → per-candidate visits accumulate faster within the emit window → first emit catches candidates with Q already partially stabilized → `q_first` close to `q_last` → small max_delta. The trajectory captures the SETTLED-TAIL of the search only.
+
+Neither is "wrong" — they measure different temporal slices of the same underlying search. But: **production handler ALWAYS warms the engine** (`_mcts_bestmove` pre-pass at 1000 nodes precedes the main `extract_mcts_trajectory` call in every handler invocation). So production captures see the settled-tail (small-delta) regime. The cold-engine (large-delta) regime is invisible to production users with current handler config.
+
+##### Round 3 — Source reading (Lc0 + python-chess)
+
+Per user directive: "read Lc0 source first. Try first in the update_research folder if you could not find the necessary info there search it on the internet." Four read-only investigations:
+
+- `update_research/repos/lc0-master/src/engine.cc:226-230` — `Engine::NewGame()` calls `backend_->ClearCache()` AND `search_->NewGame()`. Both NN cache and MCTS tree cleared on `ucinewgame`.
+- `update_research/repos/lc0-master/src/neural/memcache.cc:73` — `ClearCache()` is `cache_.Clear()`. Confirmed.
+- `update_research/repos/lc0-master/src/search/classic/wrapper.cc:47,100-105` — `ClearTree` is a separate UCI button (NOT triggered by ucinewgame); clears tree only, NOT NN cache.
+- `update_research/repos/lc0-master/src/search/classic/search.cc:51,385,397` — `kUciInfoMinimumFrequencyMs = 5000`; emit triggers on best-edge change OR depth/seldepth OR 5s timeout; `SendMovesStats()` only when `LogLiveStats=true`.
+- `.venv/lib/python3.11/site-packages/chess/engine.py:1724` — `if self.engine.first_game or self.engine.game != game: self.engine.game = game; self.engine._ucinewgame()`. python-chess auto-sends ucinewgame when the `game=` parameter differs across calls (identity comparison for arbitrary objects).
+
+**Source-reading conclusion.** A single long-lived Lc0 subprocess can be made cold-per-call via the python-chess `game=` parameter: pass a fresh `object()` per measurement → game value differs from prior → python-chess sends ucinewgame → Lc0 clears NN cache + tree → measurement starts cold. Cost: ~100ms ucinewgame UCI roundtrip vs ~5s for subprocess respawn. The CLAUDE.md §8 precedents (LogLiveStats silent-no-op; python-chess automatically-managed-options rejection) say source-reading is necessary but not sufficient for UCI / python-chess behavior — empirical verification required.
+
+##### Round 4 — Architectural decision (hybrid warm/cold)
+
+Recommended hybrid (verdict pass: warm; trajectory pass: cold) per the three-options trade-off. User confirmed. The Phase 3+ implication is load-bearing: trained probes consume findings under whichever regime production commits to; switching regimes later invalidates the probes.
+
+##### Step B — Empirical verification (`leela_chat/scripts/verify_game_sentinel.py`)
+
+Per user directive: "Verify first. Five minutes is cheaper than an amendment three sub-chunks later, and the project has been burned by exactly this shape of bug before." Two CLAUDE.md §8 precedents (LogLiveStats silent-no-op; python-chess automatically-managed-options rejection) are the same shape of bug as what could happen here if source-reading turned out to be incomplete.
+
+**Script design** (5 tests on ONE shared Lc0 subprocess; bypasses `Lc0Engine` wrapper via `_EngineProxy` so we can pass `game=` through to `engine.analysis()` without committing the wrapper change before verification):
+
+- T1.a — `game=None` first call → expected cold (~0.56) because `first_game=True` triggers ucinewgame on the very first call.
+- T1.b — `game=None` second call → expected warm (~0.10) because game unchanged, no ucinewgame sent.
+- T2.a — `game=object()` fresh sentinel A → expected cold (different from prior game value → ucinewgame).
+- T2.b — `game=object()` fresh sentinel B → expected cold (different from sentinel A → ucinewgame).
+- T3 (production shape) — pre-pass with `game=sentinel_A`, then trajectory with `game=sentinel_B` → expected cold trajectory (this is what 7d's per-call sentinel mapping requires).
+
+**Script bug-fix iteration (3 runs before clean results):**
+
+- Run 1 errored on all 5 rows with "focal not in children" — `_measure` redundantly called `eng.analysis()` directly + then `extract_mcts_trajectory` via `_EngineProxy`. The first direct call's `parse_verbose_move_stats` didn't surface non-bestmove children at multipv=1, AND the redundant search warmed the engine between the two calls (defeating the warm/cold test). Fix: drop the direct-call path; use only the `_EngineProxy` + `extract_mcts_trajectory` path.
+- Run 2 errored with `TypeError: _EngineProxy.analyse_verbose() got an unexpected keyword argument 'log_live_stats'`. Fix: add `log_live_stats=False` kwarg to proxy (accepted as no-op since the proxy always streams all info-string lines anyway).
+- Run 3 errored with "no live-stats blocks parsed; falling back to single end-of-search snapshot." Fix: script spawned `chess.engine.SimpleEngine.popen_uci(lc0_path)` plain — no `--verbose-move-stats` or `--log-live-stats` CLI flags. Lc0Engine launches with `[lc0_path, "--verbose-move-stats", "--log-live-stats", "--weights={weights}"]`; matched.
+
+Also fixed: the "Interpretation" template text was hardcoded ("All five rows match expected → semantics confirmed"). Made it data-driven so a script that crashes can't accidentally claim victory in the report.
+
+**Run 4 — clean (all 5 tests pass within ±0.10 tolerance):**
+
+| Test | Expected | Observed max_delta | wall (s) | q_first | q_trough | q_last | Verdict |
+|---|---|---|---|---|---|---|---|
+| T1.a (game=None, FIRST) | 0.56 cold | 0.551 | 9.3 | +0.343 | +0.059 | +0.610 | ✓ MATCHES (Δ 0.009) |
+| T1.b (game=None, SECOND) | 0.10 warm | 0.001 | 0.3 | +0.610 | +0.610 | +0.611 | ✓ MATCHES (Δ 0.099) |
+| T2.a (game=fresh-A) | 0.56 cold | 0.541 | 4.9 | +0.343 | +0.059 | +0.600 | ✓ MATCHES (Δ 0.019) |
+| T2.b (game=fresh-B) | 0.56 cold | 0.464 | 5.0 | +0.343 | +0.059 | +0.523 | ✓ MATCHES (Δ 0.096) |
+| T3 (pre-pass=A, traj=B) | 0.56 cold | 0.557 | 4.8 | +0.343 | +0.059 | +0.616 | ✓ MATCHES (Δ 0.003) |
+
+**Data observations:**
+
+- All four cold calls have identical `q_first = +0.343` and `q_trough = +0.059` — early-emit dynamics are bit-deterministic in the cold regime; the engine state at the first emit cycle is fully reproducible.
+- `q_last` spreads slightly across the four cold calls (+0.523 to +0.616) from late-search timing jitter (visit-order subtleties as the search proceeds).
+- T1.b's `q_first = +0.610` is exactly T1.a's `q_last = +0.610` — direct evidence that the warm-continuation path inherits engine state across calls (no ucinewgame between T1.a and T1.b because both passed `game=None` and python-chess saw no change after T1.a set engine.game=None).
+- T3's `q_first/q_trough = +0.343/+0.059` matches T1.a/T2.a/T2.b's cold values exactly, confirming the production-shape test works: the pre-pass with sentinel_A warmed the engine, the trajectory with sentinel_B triggered ucinewgame, and the trajectory measurement started cold from the ucinewgame.
+
+**Walls:** T1.a 9.3s (cold, first call after popen), T1.b 0.3s (warm continuation; minimal work since engine has cached state), T2.a/T2.b/T3 all 4.8-5.0s (cold, mid-session — slower than warm but faster than T1.a's cold-on-newly-spawned-engine). Per-call cold overhead vs warm continuation: ~4.5s at 50k nodes (most of this is NN re-warming during the search). The ~100ms ucinewgame roundtrip itself is negligible; the cold-engine cost is the slower NN evaluations during the cold portion of the search.
+
+##### Outcomes
+
+1. **ADR-0016 (Hybrid warm/cold engine architecture via per-call `game=` sentinel mapping) accepted.** Documents the per-handler call mapping (which call gets which sentinel), the identity-comparison constraint (must use `object()`; never strings/ints/hashables), and the supersession of the Step 5 draft's two-subprocess architecture.
+2. **ADR-numbering shift (3rd time in Chunk 7).** 7n's MCTS-baseline ADR shifts from ADR-0016 to **ADR-0017**. Plan file Phase C 7n line + commit-structure 7n entry updated to match.
+3. **Step 5 unblocked with a real reproducibility substrate.** The design + implementation work has empirical ground under it now: trough_explanation will fire reliably in production (~40-50% of positions per Pre-flight C cold data) once handlers wire the trajectory pass to `game=object()`.
+4. **CLAUDE.md §8 pitfall codification deferred to 7d Step 5.5 commit chain.** "Engine state distorts trajectory measurements" framing supersedes the narrower "NN cache contamination" originally drafted at Round 3.
+
+**Cost.** Step A: ~3 min pod wall-clock (6 trials × 30s + spawn overhead); Step A.2: ~3 min; Pre-flight C clean re-run: ~5 min; Step B (run 4 only): ~25s. Source reading: ~30 min. Plus 3 iterations on the verify_game_sentinel.py script (~15 min debugging). Total cost: ~$0 Anthropic (no LLM calls in any of the Round 3 / 4 / B work); ~50 min pod wall-clock spread across the iterations.
+
+**Discipline retrospective.** The arc went through three hypothesis iterations (variance → cache contamination → warmup distortion) before landing on the correct mechanism. The first two were FALSIFIED by data, not abandoned by intuition — Step A falsified hypothesis 1, the clean Pre-flight C re-run falsified hypothesis 2. **"The first hypothesis is usually wrong" stays evidence-backed.** Per CLAUDE.md §13 pre-flight rule: source reading + verification before architectural commit collapsed an in-flight failure mode that would otherwise have surfaced at 7d Step 5 implementation or later. The ~25s verification cost is the cheapest possible safety valve.
+
+**Per CLAUDE.md §13 structural-response meta-rule:** the architectural reframing from "two subprocesses" (Step 5.1 draft) to "single subprocess + per-call sentinels" (ADR-0016) is a structural response surfaced by the Step A/A.2 data + the source-reading findings. The plan's Step 5.1 needs amendment when 7d's main commit chain lands; surfacing here per the meta-rule.
+
+**Next: 7d Step 5 (design + implementation).** Handler trajectory call sites get `game=object()`; pre-pass / verdict / quick-mode-snapshot call sites get `game=None`. Lc0Engine.analyse_verbose docstring extended with the identity-comparison warning. Per-handler PROMPT_VERSION bumps per the bundling rule if findings shape changes (it shouldn't — only call-time semantics change, not findings JSON structure; bundling rule may not fire for this commit).

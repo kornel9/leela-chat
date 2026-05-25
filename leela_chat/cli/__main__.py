@@ -207,6 +207,7 @@ def _answer_one(
     handler_override: str | None = None,
     move_uci: str | None = None,
     mode: Mode = "quick",
+    mcts_max_nodes: int | None = None,
 ) -> tuple[ValidatedTranslation, float, float, dict]:
     """Run handler + translate for one (fen, question[, move]) tuple.
 
@@ -276,6 +277,7 @@ def _answer_one(
                 model=ctx.model,
                 stockfish_engine=ctx.stockfish,
                 lc0_engine=ctx.lc0,
+                **({"mcts_max_nodes": mcts_max_nodes} if mcts_max_nodes else {}),
             )
             fallback_fn = dyc_templated_fallback
             prompt_version = DYC_PROMPT_VERSION
@@ -286,6 +288,7 @@ def _answer_one(
                 stockfish_engine=ctx.stockfish,
                 lc0_engine=ctx.lc0,
                 mode=mode,
+                **({"mcts_nodes": mcts_max_nodes} if mcts_max_nodes else {}),
             )
             fallback_fn = why_templated_fallback
             prompt_version = (
@@ -298,6 +301,7 @@ def _answer_one(
             stockfish_engine=ctx.stockfish,
             lc0_engine=ctx.lc0,
             mode=mode,
+            **({"mcts_nodes": mcts_max_nodes} if mcts_max_nodes else {}),
         )
         fallback_fn = what_templated_fallback
         prompt_version = (

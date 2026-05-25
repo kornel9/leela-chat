@@ -740,3 +740,104 @@ Adopt `compute_adaptive_multipv(top_prob, policy_entropy, mode) -> int` as the c
 #### ADR-numbering shift note (2026-05-25, second time)
 
 ADR-0015 was pre-allocated in the Chunk 7 plan for the 7n MCTS-baseline ADR. Renumbered TWICE during Chunk 7's retro chain: first at 7c.5.C when ADR-0014 was taken for the bundling-rule precedent (7n shifted from 0014 to 0015), then again here at 7c.8 when this dynamic-multipv ADR took 0015 (7n shifts to 0016). 7n's MCTS-baseline ADR will land as **ADR-0016** when 7n executes.
+
+**Update (2026-05-25, third time, post-ADR-0016 acceptance):** 7n's MCTS-baseline ADR shifts AGAIN — from 0016 to **0017** — because ADR-0016 was taken by the hybrid warm/cold engine architecture (Chunk 7d entry sequence; see ADR-0016 directly below). Plan file commit-structure references updated accordingly.
+
+---
+
+### ADR-0016: Hybrid warm/cold Lc0 engine architecture via per-call `game=` sentinel mapping
+
+- **Date:** 2026-05-25
+- **Status:** Accepted
+- **Phase:** Phase 2 — MCTS Integration (load-bearing through Phase 3+ probe training)
+- **Decision-makers:** [initials]
+
+#### Context
+
+Chunk 7d's entry sequence (Steps 4 R1/R2/R3 + Step B verification, 2026-05-25) surfaced that Lc0's `MCTSTrajectorySummary.q_first` value depends fundamentally on **engine state at the moment of the first `--log-live-stats` emit cycle**, NOT just on the FEN + node budget. The investigation arc:
+
+1. Round 1 captures (10k nodes; production-default handler budget): both candidates' focal `trough_explanation` returned None because focal max_delta < 0.10 threshold. v6 WHY-narration template untested.
+2. Round 2 captures (50k nodes; matching Pre-flight C's scan budget): again both returned None with focal max_delta = 0.056-0.060. Discrepancy with Pre-flight C's 0.55-0.87 max_delta values on the same positions at the same budget.
+3. Round 3 — Step A (variance experiment, 3× runs at 50k with handler-style warmup pre-pass): values cluster tight around 0.001-0.107 (warm regime, deterministic).
+4. Round 3 — Step A.2 (no-warmup, fresh engines): values cluster tight around 0.561-0.869 (cold regime, deterministic). **5×-200× max_delta difference between the two regimes on the same positions, both bit-deterministic individually.**
+5. Round 3 — Lc0 + python-chess source reading (`update_research/repos/lc0-master/src/engine.cc:226` + `src/search/classic/wrapper.cc:100` + `chess/engine.py:1724`): confirmed `ucinewgame` clears NN cache + MCTS tree (cold); python-chess auto-sends ucinewgame between `analyse()` calls when `game=` parameter differs (identity-comparison fallback for arbitrary objects).
+6. Step B (empirical verification of source reading, `leela_chat/scripts/verify_game_sentinel.py`): 5 tests on a single long-lived Lc0 subprocess, all pass within ±0.10 tolerance — warm pattern (game=None twice) yields cold-then-warm; cold pattern (fresh sentinels) yields cold-cold; production shape (pre-pass sentinel_A → trajectory sentinel_B) yields cold trajectory.
+
+**Mechanism (clean).** `--log-live-stats` emits per-child {nodes_searched, visits, q} at certain visit milestones. **Cold engine** → slow NN evaluations (cold cache) → first emit catches each candidate at very few per-candidate visits → Q highly volatile (q_first far from q_last) → large `trajectory_summary.max_delta` → trough_explanation fires reliably (~40-50% of positions per Pre-flight C). **Warm engine** → fast NN evaluations (cache primed by prior pre-pass) → first emit catches candidates with Q already partially stabilized → q_first close to q_last → small max_delta → trough_explanation rarely fires (~ < 5% of positions per Step A cluster). Neither is "wrong" — they measure different temporal slices of the same underlying search.
+
+**Why the choice is load-bearing.** Phase 3+ probes will train against findings captured under whichever regime production commits to. Switching regimes later invalidates trained probes; this is the kind of choice ADR-0001 (network pin) and ADR-0015 (adaptive MultiPv) make explicit so future phases have a stable contract.
+
+**Why the choice is non-trivially cheap.** The naive alternatives are expensive:
+- **Subprocess respawn per query.** Spawn fresh Lc0 → guaranteed cold trajectory, but ~5s spawn cost per query (out of the 300s deep-mode cap from ADR-0012; bearable but real).
+- **Two long-lived subprocesses (warm + cold).** Two GPU processes contending for the same RTX 3090 (Pre-flight A measured 1.11× slowdown on parallel calls); more code complexity in `_build_context`/`_close_context`; doubled VRAM footprint.
+- **`NNCacheSize=0` always.** Disables Lc0's NN cache entirely → every position evaluated cold AND every query much slower (cache speedup is substantial on repeat-position queries).
+- **`ClearTree` UCI button.** Clears MCTS tree only (NOT NN cache, per Lc0 source `src/search/classic/wrapper.cc:47`); insufficient for cold-trajectory measurement.
+
+The python-chess `game=` parameter (chess/engine.py:1724) gives us a fifth option: pass a fresh sentinel per call, python-chess auto-sends ucinewgame when the value differs from the prior call, Lc0's `Engine::NewGame()` clears NN cache + tree. Cost: ~100ms per ucinewgame UCI roundtrip (vs ~5s subprocess spawn). The mechanism is the one already used by python-chess to manage game boundaries — this ADR repurposes it as the cold/warm trigger.
+
+#### Decision
+
+Adopt **single long-lived Lc0 subprocess + per-call `game=` sentinel manipulation** as the production architecture for trajectory-measurement calls. Each handler call explicitly selects whether the call should run against a cold or warm engine by passing the appropriate sentinel value to `Lc0Engine.analyse_verbose`'s `game=` parameter.
+
+##### Per-call sentinel mapping
+
+| Caller / call site | Purpose | Sentinel | Engine state | Why |
+|---|---|---|---|---|
+| `did_you_consider._mcts_bestmove(1000)` pre-pass | Compute `focal_matches_mcts_pick`: compare focal_uci to MCTS bestmove. Only the final bestmove matters; trajectory data not consumed. | `game=None` (pass nothing; uses python-chess default warm-continuation behavior) | Inherits whatever state the engine has from prior calls; typically cold after a recent trajectory call, but the call's purpose doesn't depend on warmth. | Pre-pass is a verdict comparison; trajectory data is discarded. Acceptable to pay ~1s coldness occasionally (when preceded by a trajectory call); not worth the complexity to keep it persistently warm. |
+| `did_you_consider` main trajectory pass | Captures Q-trajectory across emit cycles for `extract_trajectory_decomposition` (the trough_explanation extractor from 7c.9). | `game=object()` — **freshly constructed at call site, per query** | Cold. ucinewgame fires (object() != prior call's game value, whatever it was) → NN cache + MCTS tree cleared → first emit catches early-volatile Q → `trajectory_summary` captures full search arc. | Trough_explanation requires the full Q-trajectory; warm engine flattens it past usefulness (Step A vs Step A.2 cluster spread is 5×-200×). |
+| `what_is_leela_seeing` main trajectory pass | Captures Q-trajectory across emit cycles for any trough_explanation attached to WhyThisMoveFindings / WhatIsLeelaSeeingFindings (forward-compat per 7c.9 plan). | `game=object()` — fresh per query | Cold. | Same as did_you_consider: trough_explanation needs the full arc. |
+| `why_this_move` main trajectory pass | Same as above. | `game=object()` — fresh per query | Cold. | Same. |
+| 7d (future) verdict pass | Fast, definitive bestmove + top-N visits + Q for prompt's verdict-tier framing. Trajectory data NOT consumed (the verdict pass intentionally captures only end-of-search snapshot). | `game=None` | Inherits engine state; warm in steady state, cold immediately after a trajectory call. | Verdict is robust under either engine state (final Q stabilizes regardless of cache state at start). Cheap to keep "shared session warm" by default. |
+| 7d (future) exploration pass | Captures Q-trajectory for `extract_trajectory_decomposition` (the populated-path purpose). | `game=object()` — fresh per query | Cold. | Same as the current main trajectory pass. |
+| Quick-mode `extract_mcts` snapshot | Single end-of-search snapshot; no trajectory data consumed; quick mode doesn't run `extract_trajectory_decomposition`. | `game=None` | Inherits state. | Quick-mode latency budget is tight (<30s per ADR-0012); pre-warmed engine is the right default for the snapshot path. |
+
+**Rule of thumb:** if the call's output is consumed by anything that reads `trajectory_summary` (the live-stats parser) or `trajectory_full` (per-block per-child Q timeseries) or `extract_trajectory_decomposition`, pass `game=object()`. Otherwise pass `game=None`.
+
+##### Identity-comparison constraint (docstring-required)
+
+The mechanism relies on python-chess's `self.engine.game != game` check at `chess/engine.py:1724`. For arbitrary Python objects with no `__eq__` defined, `!=` falls back to identity comparison — so two separate `object()` instances always compare unequal, triggering ucinewgame. **This is fragile under non-`object()` inputs:** if someone passes a string, int, tuple, or any hashable value that may equal a prior call's value, the equality semantics flip and the cold reset silently stops happening. The bug becomes "trough_explanation is mysteriously not firing" weeks later.
+
+**Required docstring on `Lc0Engine.analyse_verbose`'s `game=` parameter** (to be added when Step 5 wires the parameter through):
+
+> `game`: Sentinel object passed to python-chess's `engine.analysis(game=...)` API. python-chess auto-sends `ucinewgame` when this value differs from the prior call's value (identity comparison for arbitrary objects). **Pass a fresh sentinel (e.g. `object()`) to force cold engine reset on this call — guaranteed unequal to any prior call's sentinel under identity comparison. Do NOT pass hashable values (strings, ints, tuples) that may compare equal to a prior call's value — equality semantics flip and the cold reset silently stops happening, which means trajectory_summary captures degrade to warm-engine measurements without any error surface.** Pass `None` (or omit) for warm-continuation calls where trajectory data is not consumed. See ADR-0016.
+
+The same docstring goes on any wrapper helper that threads the parameter through (e.g., a possible `Lc0Engine.analyse_verbose_cold()` thin alias).
+
+#### Alternatives considered
+
+- **Single warm engine for everything (status quo before 7d entry).** Rejected: `trough_explanation` rarely fires (Step A cluster max_delta 0.001-0.107); v6 WHY-narration template largely decorative; Phase 3+ probes see "settled-tail" Q-dynamics only. Loses the entire 7c.9 deliverable in production.
+- **Subprocess respawn per query (fresh `Lc0Engine` instance every call).** Rejected: ~5s spawn cost per query (out of ADR-0012's 300s deep-mode cap; eats 1.7% of the budget per query for a behavior available essentially free via the `game=` mechanism). Also: increases pod resource churn (process table, GPU init) for no benefit.
+- **Two long-lived subprocesses (warm verdict + cold exploration), as originally drafted in the Step 5 plan.** Rejected after Pre-flight A: parallel calls on the RTX 3090 measured 1.11× slower than sequential (CUDA serialization beats contention savings); doubles VRAM footprint; doubles `_build_context`/`_close_context` complexity. The same warm/cold split is achievable on a single subprocess via the sentinel mechanism.
+- **`NNCacheSize=0` always.** Rejected: disables NN cache entirely → every query slower (cache speedup is substantial on warm re-queries within a session); over-paying for cold guarantee.
+- **`ClearTree` UCI button between calls.** Rejected: clears MCTS tree only (Lc0 `src/search/classic/wrapper.cc:47` is explicit); does NOT clear NN cache (Lc0 `src/engine.cc:226-230` shows `ClearCache()` is separate from `search_->NewGame()`); insufficient for cold-trajectory measurement.
+- **Always pass `game=object()` for every call (no warm path).** Considered as a "simplest mental model" simplification. Rejected for now: pre-pass and verdict calls pay ~1s coldness penalty per query without measurable benefit; the per-handler mapping table above documents the chosen split. **Reversal path:** if the mapping turns out to be a debugging-readability burden in production, dropping it for the always-cold simplification is a 1-line change per call site.
+
+#### Consequences
+
+- **Phase 3+ probes train against cold-engine trajectory data** for any handler whose findings include `trough_explanation` (currently `did_you_consider`; forward-compat to `what_is_leela_seeing` / `why_this_move` per 7c.9 plan). The `trajectory_summary` field on `MCTSChild` carries cold-regime semantics in production going forward.
+- **Per-query latency cost.** Each cold call (trajectory pass) adds ~100ms ucinewgame overhead + restarts NN cache (so the call itself is slower; for `did_you_consider` deep-mode the trajectory pass at 10k nodes goes from ~4-5s warm to ~7-9s cold — see Step A vs Step A.2 wall times). Pre-pass coldness (when preceded by a trajectory call) adds ~1s. Per-query total overhead: ~3-5s on the trajectory call's cold start vs the warm baseline. Fits comfortably under ADR-0012's 300s deep-mode cap.
+- **Position bank `_preflight_c_dynamics` data is COLD-ENGINE data** (Pre-flight C ran with fresh engines). With this ADR accepted, the cold-engine measurements are now production-realistic — the bank's predicted populated/None-path categorization aligns with what production should see at 7d.
+- **CLAUDE.md §8 pitfall codification (to land in 7d's commit chain per Step 5.5).** The "engine state distorts trajectory measurements" pitfall covers this entire class of bug: cold vs warm trajectory data look subtly different on the same FEN + budget; both are deterministic individually; the difference is invisible without a controlled measurement. Same shape as the LogLiveStats silent-no-op (Chunk 6a) and python-chess "automatically managed" rejection (Chunk 7b) — UCI / python-chess behavior surfaces that source-reading alone doesn't catch.
+- **Reversal cost.** Low — revert handler call sites' `game=object()` to `game=None`; the trajectory data shape doesn't change (still `trajectory_summary` + `trajectory_full`), just the regime. Phase 3 probes trained on cold data would need retraining if reversed (but that's the cost of any regime switch; the ADR exists specifically to lock the choice before training starts).
+- **The mechanism is python-chess-specific.** Any future migration off python-chess (e.g., direct UCI socket implementation) needs to preserve the ucinewgame-on-game-change semantics, OR replace with explicit `ucinewgame` UCI sends. Document in any migration ADR.
+- **Plan file Step 5.1 supersession.** The current Step 5.1 draft prescribed a two-subprocess architecture (warm verdict engine + fresh cold exploration engine per query). With this ADR's single-subprocess + sentinel approach accepted, Step 5.1 is amended at 7d design time: one Lc0 subprocess; verdict pass passes `game=None`; exploration pass passes `game=object()`. Plan file edit is part of the 7d structural-response if surfaced; otherwise rolled into 7d's main commit chain.
+
+#### References
+
+- `leela_chat/scripts/verify_game_sentinel.py` — the Step B verification script (5 tests, runs in ~25s on the pod).
+- `tests/eval/verify_game_sentinel.md` — the 2026-05-25 verification report (all 5 tests match expected within ±0.10).
+- `tests/eval/variance_experiment.md` — Step A cluster (warm regime; 6 measurements all in 0.001-0.107).
+- `tests/eval/variance_experiment_no_warmup.md` — Step A.2 cluster (cold regime; 6 measurements all in 0.561-0.869).
+- `update_research/repos/lc0-master/src/engine.cc:226-230` — `Engine::NewGame()` clears NN cache + search tree.
+- `update_research/repos/lc0-master/src/neural/memcache.cc:73` — `ClearCache()` implementation.
+- `update_research/repos/lc0-master/src/search/classic/wrapper.cc:47,100-105` — `ClearTree` is a separate UCI button (NN cache not cleared).
+- `.venv/lib/python3.11/site-packages/chess/engine.py:1724` — python-chess's auto-ucinewgame on game-change check.
+- ADR-0001 (network pin) — co-load-bearing for Phase 3+ probe training (network + engine-state regime are paired).
+- ADR-0012 (latency caps; amended 7c.6: 90s → 300s) — the deep-mode budget against which the ~3-5s cold overhead is sized.
+- ADR-0015 (adaptive MultiPv) — sibling MCTS-config ADR; together they pin enough of the MCTS configuration that 7n's pending MCTS-baseline ADR (now ADR-0017) is largely a consolidation of these two plus a handful of remaining knobs.
+- CLAUDE.md §8 pitfall to land at 7d Step 5.5: "engine state distorts trajectory measurements" (supersedes the narrower "NN cache contamination" framing originally drafted).
+- PHASE_NOTES 2026-05-25 "Chunk 7d entry sequence — Steps 4 R1-R4 + Step A + Step A.2 + source reading + Step B" — full investigation arc.
+
+#### ADR-numbering shift note (2026-05-25, third time)
+
+ADR-0016 was pre-allocated in the Chunk 7 plan (post-7c.8 update to ADR-0015 shift note above) for the 7n MCTS-baseline ADR. With this ADR's acceptance, 7n's MCTS-baseline ADR shifts AGAIN — from 0016 to **ADR-0017** — and will land at 7n execution time. Plan file Phase C 7n line + commit-structure 7n entry updated.
