@@ -426,10 +426,10 @@ Current phase, exit criteria, and active work live in `docs/PHASE_NOTES.md`. Upd
 - Exit when: lczerolens smoke test passes, Lc0 with `--verbose-move-stats` runs, Stockfish callable, BT4 downloaded and hashed, repo skeleton committed, 50 eval positions written.
 
 **Phase 1 — Network-First Chat MVP**
-- Exit when: 30 eval positions pass on all 3 handlers (`what_is_leela_seeing`, `why_this_move`, `did_you_consider`); zero hallucinated moves in last 100 interactions; **<30s latency (now QUICK-mode only per ADR-0012, 2026-05-24; deep mode is bounded at <90s)**; you find it useful for your own games.
+- Exit when: 30 eval positions pass on all 3 handlers (`what_is_leela_seeing`, `why_this_move`, `did_you_consider`); zero hallucinated moves in last 100 interactions; **<30s latency (now QUICK-mode only per ADR-0012, 2026-05-24; deep mode is bounded at <300s per ADR-0012's 2026-05-25 amendment, was 90s at original codification)**; you find it useful for your own games.
 
 **Phase 2 — MCTS Integration**
-- Exit when: MCTSNode parsing works on 100 random positions; eval trajectories populated; 6 handlers total pass eval; Stockfish comparison surfaces real disagreements; **per-mode latency caps held (per ADR-0012, 2026-05-24): quick mode <30s sustained; deep mode <90s sustained; deepest mode explicitly out-of-scope until a future ADR amendment.** (The Phase 1 latency criterion no longer applies uniformly across modes — see Chunk 7 entry criteria in PHASE_NOTES + ADR-0012 for the relaxation rationale.)
+- Exit when: MCTSNode parsing works on 100 random positions; eval trajectories populated; 6 handlers total pass eval; Stockfish comparison surfaces real disagreements; **per-mode latency caps held (per ADR-0012, 2026-05-24, amended 2026-05-25 at Chunk 7c.6): quick mode <30s sustained; deep mode <300s sustained (was <90s pre-7c.6); deepest mode explicitly out-of-scope until a future ADR amendment.** (The Phase 1 latency criterion no longer applies uniformly across modes — see Chunk 7 entry criteria in PHASE_NOTES + ADR-0012 for the relaxation + amendment rationale.)
 
 **Phase 3 — Concept Probes**
 - Exit when: 70+ probes pass AUC>0.9 quality gate; `describe_position` agreed-with by 2000+ player on 80% of eval; failed probes documented.
@@ -511,7 +511,7 @@ When pushing back, point to this file or the bible. Offer the right alternative.
 
 **When a plan-defined failure mode surfaces during a sub-chunk, structural responses (not just the pattern-level updates the plan explicitly authorized) ARE permitted — but MUST be surfaced in the sub-chunk's retro as an explicit checkpoint item, with a retrospective accept-or-rollback decision from the user.**
 
-Canonical example: Chunk 7c's interpretive-claim heuristic. The 7b.2.E plan refinement said *"Update Rule A's wordlist or Rule B's patterns at 7c if either failure mode surfaces."* When the heuristic under-fired on 7c's spot-check prose, I (Claude Code) extended both Rule B's patterns AND changed the EXCLUSION LOGIC (a structural design change, not just a pattern addition). The plan didn't explicitly authorize the exclusion-logic change. User accepted retrospectively 2026-05-25 with reasoning that pattern-only updates couldn't have addressed the under-fire mode — the plan's framing was the thing that was wrong, not the structural change.
+See ADR-0014's "Reference: structural-response examples" subsection for the canonical example (Chunk 7c's interpretive-claim heuristic) and subsequent illustrative cases.
 
 **The rule:** if your plan says "update X" and you find yourself needing to also update Y (different shape of change) to actually address the failure mode the plan flagged:
 

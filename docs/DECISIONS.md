@@ -479,10 +479,14 @@ CLAUDE.md §1 amended to match.
 
 ### ADR-0012: Latency cap relaxation — per-mode caps replace the uniform <30s gate
 
-- **Date:** 2026-05-24
+- **Date:** 2026-05-24 (original); amended 2026-05-25 at Chunk 7c.6 (deep-mode cap relaxed from <90s to <300s)
 - **Status:** Accepted
 - **Phase:** Phase 2 — MCTS Integration (forward-looking through Phase 3+)
 - **Decision-makers:** [initials]
+
+#### Amendment note (2026-05-25, Chunk 7c.6)
+
+Deep-mode cap raised from `<90s` to `<300s`. Rationale: the 7a.2 Stockfish projection (PHASE_NOTES 2026-05-24) revealed that the super-GM (ADR-0011) quality target's preferred Stockfish config — depth=30, multipv=10 — measures at **235s alone** on the walkthrough fixture. Under the original 90s cap that config was vetoed and 7f committed to depth=25/multipv=8 (~55s) — a less-aggressive Stockfish config than the quality target warrants. The original 90s was a project-start under-estimate of "click-and-coffee" tolerance for serious analysis under the super-GM bar; users prepared to wait for super-GM-grade analysis will tolerate substantially more than 90s. The 300s ceiling accommodates the full depth-30/multipv-10 config (235s) plus the rest of the deep-mode stack (BT4 ~0.6s + Lc0 verdict-pass ~7s + Lc0 exploration-pass ~5-15s parallel + LLM translate ~8-15s) comfortably. Quick mode (`<30s`) is unchanged. Deepest mode stays out-of-scope per ADR-0013. The Chunk 7f Stockfish config can revisit depth-30/multipv-10 at land time now that the cap allows it.
 
 #### Context
 CLAUDE.md §11 Phase 1 exit criterion #3 pinned the uniform latency cap: `<30s` end-to-end. This was set when there was one mode (default conversational chat) and the extractor surface was small. The Chunk 6.7 commit B promotion explicitly extended this: *"detailed-mode end-to-end latency remains <30s per Phase 1's already-achieved ceiling; the Phase 1 criterion silently re-applies to every later phase that adds extractor cost."*
@@ -496,7 +500,7 @@ Chunk 7's planned deep-mode additions (per the plan at `~/.claude/plans/tell-me-
 
 Companion to ADR-0011 (super-GM quality bar): the quality choices that make 2700+-grade prose possible (deeper Stockfish, multi-config ensemble, network confidence + chess-content extractors) drive latency up. Relaxing the cap is the trade ADR-0011 implies.
 
-The relaxation needs to be bounded — unbounded latency turns the conversational product into batch analysis (different product shape; see ADR-0013's deepest-mode deferral). 90s is the chosen ceiling for deep mode: a click-and-coffee upper bound a user is plausibly willing to wait for a deep query.
+The relaxation needs to be bounded — unbounded latency turns the conversational product into batch analysis (different product shape; see ADR-0013's deepest-mode deferral). The chosen ceiling for deep mode at original codification was 90s (a click-and-coffee upper bound a user is plausibly willing to wait for a deep query); raised to 300s at Chunk 7c.6 per the amendment note above — see the amendment rationale for the trade-off arithmetic.
 
 #### Decision
 Replace the uniform `<30s` latency gate with per-mode caps:
@@ -504,22 +508,22 @@ Replace the uniform `<30s` latency gate with per-mode caps:
 | Mode | Latency cap | Rationale |
 |---|---|---|
 | **quick** | < 30s sustained | Preserves the Phase 1 exit criterion's intent for conversational chat; single MCTS pass + light extractors fit easily under this. |
-| **deep** | < 90s sustained | Bounded relaxation; accommodates multi-config ensemble + Stockfish depth 30 + chess-content extractors + LLM translation; click-and-coffee tolerance. |
+| **deep** | < 300s sustained (was 90s pre-2026-05-25; raised at Chunk 7c.6) | Bounded relaxation; accommodates multi-config ensemble + Stockfish depth-30/multipv-10 (235s alone) + chess-content extractors + LLM translation; "click-and-coffee-and-something-else" tolerance for super-GM-grade analysis under ADR-0011. |
 | **deepest** | EXPLICITLY OUT-OF-SCOPE | Functionally a different product (batch analysis, 10-30 min/query). Requires a future ADR amendment + likely a separate CLI entry point if it ever lands. Deferred per ADR-0013. |
 
 CLAUDE.md §11 amended:
 - Phase 1 exit criterion #3: latency cap is quick-mode-only.
-- Phase 2 exit criterion (re Chunk 6.7 commit B's silent re-application): per-mode caps replace the uniform criterion; deep mode at <90s; deepest mode out-of-scope.
+- Phase 2 exit criterion (re Chunk 6.7 commit B's silent re-application): per-mode caps replace the uniform criterion; deep mode at <300s (was <90s pre-Chunk-7c.6); deepest mode out-of-scope.
 
 #### Alternatives considered
 - **Keep the uniform <30s gate.** Rejected: forces Chunk 7 to cut either Stockfish depth, multi-config ensemble, or chess-content extractors — all of which are foundational for Phase 3+ per ADR-0011's quality bar. The uniform cap was set when scope was small; it doesn't survive contact with the deep-mode design.
-- **Unbounded deep mode.** Rejected: turns the conversational chat product into batch analysis; identity drift. The user explicitly waived cost-as-constraint in the Chunk 7 planning conversation but did NOT waive product-shape constraints. 90s is the conversational ceiling; beyond that, it's a different product.
+- **Unbounded deep mode.** Rejected: turns the conversational chat product into batch analysis; identity drift. The user explicitly waived cost-as-constraint in the Chunk 7 planning conversation but did NOT waive product-shape constraints. 300s (post-7c.6 amendment; was 90s at original codification) is the conversational ceiling; beyond that, it's a different product.
 - **Multiple intermediate tiers (quick / medium / deep / deepest).** Rejected: too many modes for one chunk to commit to; complicates per-handler mode selection. Two modes (quick, deep) is the minimum that splits conversational latency from quality-prioritised analysis. Deepest is explicitly out-of-scope per ADR-0013.
 - **Adaptive cap (latency = function of position complexity).** Rejected for Chunk 7 scope: this is closely related to the "adaptive search budget" feature deferred per ADR-0013. Possibly Chunk 8+ once Phase 3 reveals which positions benefit.
 
 #### Consequences
-- **Chunk 7's deep-mode features (7d ensemble, 7f Stockfish depth-30, 7k+7l chess-content extractors) become buildable within the latency contract.** The deep-mode latency projection in 7a (proactive trade-off-now decision per the 75s/90s thresholds) enforces this before extractors land.
-- **Conversational product shape preserved.** A 90s ceiling is still recognisably conversational; a 10-30 min query would not be. The product identity stays "chat with Leela about positions" + "deep dive on demand."
+- **Chunk 7's deep-mode features (7d ensemble, 7f Stockfish depth-30/multipv-10, 7k+7l chess-content extractors) become buildable within the latency contract.** The deep-mode latency projection in 7a (proactive trade-off-now decision per the original 75s/90s thresholds; thresholds re-keyed to the 300s ceiling post-7c.6 amendment) enforces this before extractors land. Specifically: 7f's Stockfish config can revisit depth-30/multipv-10 now that the cap allows the 235s measurement; was forced to depth-25/multipv-8 (~55s) under the original 90s cap.
+- **Conversational product shape preserved.** A 300s ceiling (5 min; post-7c.6 amendment) is recognisably "click-and-coffee-and-something-else" deep analysis; a 10-30 min query would not be. The product identity stays "chat with Leela about positions" + "deep dive on demand."
 - **--detailed flag becomes alias for --deep (per Chunk 7 plan 7a).** Existing users of --detailed will see materially richer prose AND longer latency. Documented in the 7a commit message + CLI --help text.
 - **Quick-mode discipline tightens.** Quick mode is now the load-bearing conversational floor at <30s. Any extractor added to quick mode must fit; the quick gate is unmoved.
 - **Deepest mode is foreclosed (without ADR amendment).** If a 5M-node super-GM study mode is ever wanted, it needs its own ADR + a separate product framing + likely a separate CLI entry. ADR-0013 codifies the deferral.
@@ -601,6 +605,10 @@ Each Tier-2 feature becomes its own Chunk-8+ work item once Phase 3 has surfaced
 - **Phase:** Phase 2 — MCTS Integration
 - **Decision-makers:** [initials]
 
+#### Preamble — what this ADR is, framing-wise
+
+This ADR documents the first behavioral validation of the rule codified in CLAUDE.md §8 (bundling) rather than a new architectural decision; its purpose is to preserve the validation evidence so future amendments to the rule have a reference point. It also hosts a reference subsection of structural-response examples that CLAUDE.md §13 points to (relocated here at Chunk 7c.6 to keep CLAUDE.md focused on rules, not worked examples).
+
 #### Context
 The CLAUDE.md §8 bundling rule was codified at Chunk 7b.1 in response to the 7b retro: any sub-chunk that adds a findings-JSON field MUST ship its prose-version bump in the SAME commit chain — bundling-into-future-iteration is forbidden. The rule was added to prevent the silent-plumbing-cycle (N sub-chunks where the CLI looks unchanged) AND the attribution-debt cost (debugging by elimination across 6+ coupled citation patterns at a bundled 7m iteration).
 
@@ -648,3 +656,13 @@ Very low — would require amending CLAUDE.md §8 to remove the rule and accepti
 
 #### ADR-numbering shift note
 ADR-0014 was pre-allocated in the Chunk 7 plan's 7n section for the MCTS-baseline ADR. Renumbered 2026-05-25 because 7c.5.C (this ADR) lands first. 7n's ADR becomes ADR-0015 when 7n lands.
+
+#### Reference: structural-response examples (relocated from CLAUDE.md §13 at Chunk 7c.6)
+
+CLAUDE.md §13's structural-response-to-surfaced-failure-mode meta-rule (added 7c.5.D) points here for worked examples. Reference cases are listed chronologically; each entry shows: the plan's authorized scope, the structural change shipped beyond it, the reasoning, and the retrospective sign-off.
+
+**Example 1 — Chunk 7c's interpretive-claim heuristic (2026-05-25; the canonical case the meta-rule was codified from).**
+
+The 7b.2.E plan refinement said *"Update Rule A's wordlist or Rule B's patterns at 7c if either failure mode surfaces."* When the heuristic under-fired on 7c's spot-check prose, I (Claude Code) extended both Rule B's patterns AND changed the EXCLUSION LOGIC (a structural design change, not just a pattern addition). The plan didn't explicitly authorize the exclusion-logic change. User accepted retrospectively 2026-05-25 with reasoning that pattern-only updates couldn't have addressed the under-fire mode — the plan's framing was the thing that was wrong, not the structural change. The meta-rule was codified at 7c.5.D directly from this experience: structural responses ARE permitted; the discipline is to surface them in the retro for retrospective sign-off, not to silently expand scope OR to halt at the plan's literal text.
+
+(Future structural-response cases get appended here as they accumulate, preserving the worked-example record for the meta-rule.)

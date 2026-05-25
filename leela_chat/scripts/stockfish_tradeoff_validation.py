@@ -2,7 +2,7 @@
 
 Per Chunk 7 plan + Chunk 7a.2's proactive Stockfish projection finding:
 depth=30/multipv=10 measured at 235s on the walkthrough fixture,
-single-handedly blowing ADR-0012's 90s deep-mode gate. 7a.2 committed
+single-handedly blowing ADR-0012's then-90s deep-mode gate. 7a.2 committed
 to depth=25/multipv=8 as the fallback config, but that decision is a
 hypothesis — not a measurement.
 
@@ -12,6 +12,20 @@ the signal in front of it, not behind it. If depth=25/multipv=8 is
 still ~120s, the adversarial-Stockfish premise of deep mode is in
 trouble, and 7d (multi-config MCTS ensemble) might need to plan on
 Stockfish being unavailable as a deep-mode cross-check.
+
+**Historical-context note (added at Chunk 7c.6, 2026-05-25):** the
+"<90s sustained" gate referenced in the print output below was the
+deep-mode contract at the time of the original 7a.2 measurement.
+ADR-0012 was amended at Chunk 7c.6 to raise the deep-mode cap to
+<300s sustained (rationale: the super-GM quality target ADR-0011
+implies warrants Stockfish at depth-30/multipv-10, which doesn't fit
+the old 90s cap). Under the new 300s cap, the "Fits gate alone?"
+column would re-key — depth-30/multipv-10's 235.9s NOW fits the
+gate with substantial headroom. The print output below is intentionally
+preserved verbatim so the historical-decision record stays intact;
+re-running this script under the post-7c.6 contract would surface the
+re-keyed verdict but the COMMITTED 7f config remains depth-25/multipv-8
+until 7f land time re-evaluates per the new cap.
 
 Configs measured (smallest set with the most signal):
 - depth=25, multipv=8 — the committed 7a.2 trade-off; primary validation
