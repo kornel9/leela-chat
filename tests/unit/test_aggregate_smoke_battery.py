@@ -357,11 +357,12 @@ def test_render_interpretive_claims_backward_compat_no_field():
 
 
 def test_render_interpretive_claims_backlog_signal_fires_when_median_high():
-    """If per-cell median > 2 OR max > 4, aggregator fires the rater-
-    overwhelm backlog signal per the plan's mitigation."""
-    # Build 4 cells with varying counts to push median above 2.
+    """If per-cell median > 1 OR max > 3 (tightened from >2/>4 per 7b.2
+    retro — n=2 baseline warranted faster over-firing detection), the
+    aggregator fires the rater-overwhelm backlog signal."""
+    # Build 4 cells with elevated counts; passes under either threshold.
     rows = []
-    for i, count in enumerate([5, 6, 7, 8]):  # median = 6.5 (5 → 6 → 7 → 8 sorted)
+    for i, count in enumerate([5, 6, 7, 8]):
         row = _row(
             source="llm", validation_ok=True,
             category=f"cat_{i}", position_id=f"p_{i}",
@@ -369,16 +370,15 @@ def test_render_interpretive_claims_backlog_signal_fires_when_median_high():
         row["interpretive_claims"] = [f"Sample interpretive sentence {j}." for j in range(count)]
         rows.append(row)
     md = _render(rows, Path("test.jsonl"))
-    # Backlog signal text should fire.
     assert "Interpretive-claim heuristic surfacing too many candidates" in md
     assert "Tighten Rule A" in md or "narrow Rule B" in md
 
 
 def test_render_interpretive_claims_no_backlog_signal_when_bounded():
-    """If per-cell counts are within target (median ≤ 2, max ≤ 4),
-    no backlog signal."""
+    """If per-cell counts are within target (median ≤ 1 AND max ≤ 3 per
+    the tighter 7c-7f early-warning thresholds), no backlog signal."""
     rows = []
-    for i, count in enumerate([0, 1, 2, 3]):  # median = 1.5 (≤ 2), max = 3 (≤ 4)
+    for i, count in enumerate([0, 0, 1, 1]):  # sorted = [0,0,1,1]; median=1, max=1
         row = _row(
             source="llm", validation_ok=True,
             category=f"cat_{i}", position_id=f"p_{i}",
@@ -387,3 +387,22 @@ def test_render_interpretive_claims_no_backlog_signal_when_bounded():
         rows.append(row)
     md = _render(rows, Path("test.jsonl"))
     assert "Interpretive-claim heuristic surfacing too many candidates" not in md
+
+
+def test_render_interpretive_claims_tightened_threshold_catches_what_old_missed():
+    """Per 7b.2 retro: the tightened thresholds (median>1 OR max>3) catch
+    cases the original (median>2 OR max>4) would have let through. Concrete
+    case: counts [0, 1, 2, 3] — median=2, max=3. Under OLD thresholds:
+    median=2 is NOT > 2 AND max=3 is NOT > 4, so signal would have stayed
+    quiet. Under NEW thresholds: median=2 IS > 1, so signal FIRES."""
+    rows = []
+    for i, count in enumerate([0, 1, 2, 3]):
+        row = _row(
+            source="llm", validation_ok=True,
+            category=f"cat_{i}", position_id=f"p_{i}",
+        )
+        row["interpretive_claims"] = [f"Sentence {j}." for j in range(count)]
+        rows.append(row)
+    md = _render(rows, Path("test.jsonl"))
+    # New threshold (median > 1) fires.
+    assert "Interpretive-claim heuristic surfacing too many candidates" in md

@@ -1756,3 +1756,26 @@ What surprised me:
 - **Both Handler 1 + Handler 3 spot-checks ran clean on the first try.** No prompt iterations needed for v8 / v3. The 7b.1 spot-check + the 7b.2.A/B spot-checks all use the same prose-citation pattern; the rule generalized correctly across all three handlers without per-handler tuning.
 
 Next: **7c — focused MCTS for did_you_consider** under the now-enforced bundling rule. Any new findings fields ship with their own prompt-version bump (`did_you_consider/v4.md`) in the same commit chain.
+
+#### 2026-05-24 (cont., 9) — Chunk 7b.2 retro: three review refinements captured (7b.2.E)
+
+Post-7b.2 review surfaced three structural concerns; all three captured before 7c starts.
+
+**Refinement 1 — 7c spot-check note added to plan.** The 7b.2.C heuristic was tuned on PV-citation prose from v8/v5/v3. Focused-pass prose at 7c will introduce a NEW vocabulary class (deep-dive narration about the focal move's specific line, search-budget-allocation framings, intermediate-position assessments). Plan now requires: at 7c spot-check, run the interpretive-claim helper against the new prose and record per-cell counts in PHASE_NOTES. Flag if heuristic over-fires (>3 candidates per cell — Rule A too loose) OR under-fires (0 candidates despite obvious interpretive claims — Rule B coverage gap on focused-pass language).
+
+**Refinement 2 — 7k and 7l Rule B vocabulary-expansion notes added to plan.** The v1 Rule B has known coverage gaps that chess-content prose will expose: tactical-pattern claims ("rook sacrifice", "back-rank attack"), threat-evaluation claims ("under attack", "in trouble"), material-evaluation claims ("extra material", "down a pawn"), king-safety claims ("king on the rim", "open king position"). Each 7k sub-chunk (threats / king_safety / material_delta) and 7l (motifs / wire-up) gets a note in the plan: extend Rule B AFTER seeing the actual chess-content prose at that sub-chunk's land time. The expansion is REACTIVE to prose, not speculative. Per the bundling rule's spirit: heuristic tracks prose evolution in the same commit chain as the prompt that introduces the new vocabulary.
+
+**Refinement 3 — rater-overwhelm early-warning thresholds tightened from >2/>4 to >1/>3 during 7c-7f smoke checks.** The original thresholds (median>2 OR max>4) were derived against the 7b.2 baseline of **n=2 samples** (median=0.5, max=1 — Handlers 1 and 3 on walkthrough_rxd4). Two samples is weak baseline confidence; tighter early-warning thresholds catch over-firing faster. Plan's rater-overwhelm risk row updated; aggregator's backlog-signal code updated (`leela_chat/scripts/aggregate_smoke_battery.py` — threshold changed in same commit). Test updated + new edge-case test added demonstrating the tighter threshold catches the [0, 1, 2, 3] case that the old threshold would have let through.
+
+**Important n=2 acknowledgment:** the 7b.2 PHASE_NOTES "well within target (median ≤ 2, max ≤ 4)" framing was over-confident — that was the per-cell stats from 2 spot-check cells, not the 100 cells a real smoke battery produces. Per-cell counts could trivially jump to 3-5 across 100 cells given prose-variance across position types. The tighter early-warning thresholds during 7c-7f are precisely to catch this trend earlier rather than wait for 7o where the heuristic has already accumulated drift across 5+ sub-chunks of prose evolution.
+
+**At 7o** (with ~100 cells of real data), re-evaluate whether to revert to the post-real-data thresholds (median>2 OR max>4) for stable rater-instruction language. The current >1/>3 is a 7c-7f transient — not the permanent gate.
+
+Tests: 281 pass (was 280 + 1 new edge-case test demonstrating tightened threshold's catch).
+
+What this refinement does NOT do:
+- Doesn't pre-tune the heuristic itself (no Rule A wordlist additions, no Rule B pattern additions — those land reactively at 7k/7l per the bundling rule's spirit).
+- Doesn't change the heuristic's two-rule design (still wordlist + structural; just the OUTPUT-stat thresholds tightened, not the rule logic).
+- Doesn't run a new smoke battery to validate at scale (the validation is built-into-the-aggregator and runs every time; no separate test needed).
+
+Next: 7c (focused MCTS for did_you_consider) under the bundling rule + with the new 7c spot-check note in force.

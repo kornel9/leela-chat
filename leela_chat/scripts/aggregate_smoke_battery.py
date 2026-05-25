@@ -626,13 +626,24 @@ def _render(rows: list[dict], jsonl_path: Path) -> str:
     if branch_b == 0:
         lines.append("- 0 Branch B cases across H2+H3 runs — difficulty stratification didn't produce divergence; consider bumping tactical ratings higher OR pulling from leela-interp figshare distribution.")
     # Chunk 7b.2.C rater-overwhelm mitigation: tune heuristic before 7o
-    # if per-cell counts trend too high (target: median 1-2, max 4).
-    if median_claims > 2 or max_claims > 4:
+    # if per-cell counts trend too high (target at 7o: median 1-2, max 4).
+    # Thresholds TIGHTENED 2026-05-24 from 7b.2 retro: during 7c-7f the
+    # early-warning threshold is median > 1 OR max > 3 (vs the
+    # post-real-data threshold of >2 / >4). Rationale: the 7b.2 baseline
+    # was n=2 samples (median=0.5, max=1); tighter thresholds catch
+    # over-firing faster given the weak baseline confidence. At 7o, with
+    # ~100 cells of real data, re-evaluate whether to revert to >2 / >4
+    # for stable rater-instruction language (see Chunk 7 plan's
+    # rater-overwhelm risk row).
+    if median_claims > 1 or max_claims > 3:
         lines.append(
             f"- Interpretive-claim heuristic surfacing too many candidates "
-            f"(median={median_claims}, max={max_claims}). Target median≤2, max≤4 "
-            f"by 7o to avoid rater overwhelm. Tighten Rule A's match threshold "
-            f"(require 2 wordlist hits, not 1) OR narrow Rule B's relational "
+            f"(median={median_claims}, max={max_claims}). Early-warning "
+            f"thresholds during 7c-7f: median > 1 OR max > 3 (tightened "
+            f"from the post-real-data >2/>4 to catch over-firing faster "
+            f"given the n=2 7b.2 baseline). Target at 7o: median ≤ 2, "
+            f"max ≤ 4. Tighten Rule A's match threshold (require 2 "
+            f"wordlist hits, not 1) OR narrow Rule B's relational "
             f"patterns BEFORE more sub-chunks accumulate."
         )
     lines.append("")
