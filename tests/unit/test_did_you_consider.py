@@ -190,6 +190,17 @@ def _patch_extractors(
             handler_mod, "extract_mcts_trajectory",
             lambda board, *, engine, max_nodes=10000, multipv=1: mcts,
         )
+        # Chunk 7c: handler now also calls extract_mcts_trajectory_focused
+        # (sequential after the normal pass) when lc0_engine is set. Tests
+        # mock it to return the same fixture — the focused-pass post-
+        # extraction logic will pull focal_uci's child from this fixture
+        # (which contains the focal move's data) and populate the
+        # focused_* fields. For most tests this is fine; tests that
+        # specifically assert focused-pass behavior should override.
+        monkeypatch.setattr(
+            handler_mod, "extract_mcts_trajectory_focused",
+            lambda board, *, engine, focal_move, max_nodes=10000, target_selected_n=6: mcts,
+        )
     monkeypatch.setattr(
         handler_mod, "extract_layer_emergence",
         lambda board, *, model, focal_uci, top_n_per_layer: (

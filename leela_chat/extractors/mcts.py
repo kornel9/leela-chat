@@ -42,6 +42,7 @@ def extract_mcts(
     engine: "Lc0Engine",
     nodes: int = 10000,
     multipv: int = 1,
+    root_moves: "list[chess.Move] | None" = None,
 ) -> MCTSFindings:
     """Run Lc0 MCTS on ``board`` and return the parsed findings.
 
@@ -61,25 +62,40 @@ def extract_mcts(
             reported; the extractor populates :attr:`MCTSChild.pv_san`
             on the matching root candidates with the SAN-form PV move
             sequence. Per-handler-per-mode default: quick=1, deep=5.
+        root_moves: Optional list of moves to constrain the root-level
+            search (Chunk 7c). Threaded through to
+            :meth:`Lc0Engine.analyse_verbose`. When set with
+            ``multipv=1``, the single allowed move's ``pv_san`` is
+            still populated (the multipv>1 gate was relaxed in 7c).
 
     Returns:
         :class:`MCTSFindings` with per-child raw counts, root aggregate,
         bestmove (UCI + SAN), the ``search_complete`` flag, AND (when
-        multipv > 1) populated ``pv_san`` on the top-N children matching
-        the principal variations. Children sorted by visits descending.
+        ``principal_variations`` were captured by Lc0/python-chess —
+        which happens for multipv > 1 AND for multipv=1 + root_moves
+        focused passes) populated ``pv_san`` on the matching children.
+        Children sorted by visits descending.
     """
-    search_result = engine.analyse_verbose(board, nodes=nodes, multipv=multipv)
+    search_result = engine.analyse_verbose(
+        board, nodes=nodes, multipv=multipv, root_moves=root_moves,
+    )
     findings = parse_verbose_move_stats(
         search_result.info_string_lines,
         board=board,
         bestmove_uci=search_result.bestmove_uci,
         search_complete=search_result.search_complete,
     )
-    if multipv > 1 and search_result.principal_variations:
+    # 7c relaxation: populate pv_san whenever Lc0 reported principal
+    # variations (was gated on multipv > 1 in 7b; the relaxation makes
+    # focused-pass single-PV cases work without changing the multipv > 1
+    # behavior). python-chess captures info["pv"] regardless of multipv,
+    # so this fires for any analysis() call where the engine emitted PVs.
+    if search_result.principal_variations:
         findings = _populate_pv_san(findings, search_result.principal_variations, board)
     top = findings.children[0] if findings.children else None
     logger.debug(
         f"mcts: requested={nodes} multipv={multipv} "
+        f"root_moves={len(root_moves) if root_moves else 0} "
         f"searched={findings.total_nodes_searched} "
         f"bestmove={findings.bestmove_san} "
         f"top1_visits={top.visits if top else 0} "

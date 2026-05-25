@@ -510,6 +510,7 @@ def extract_mcts_trajectory(
     max_nodes: int | None = None,
     target_selected_n: int = 6,
     multipv: int = 1,
+    root_moves: "list[chess.Move] | None" = None,
 ) -> MCTSFindings:
     """Run one Lc0 search with live-stats; build a per-candidate dense
     trajectory of the *same tree* plus summary statistics plus a
@@ -535,6 +536,15 @@ def extract_mcts_trajectory(
             captured; ``pv_san`` populated on matching root candidates
             via the same :func:`extract_mcts._populate_pv_san` helper.
             Per-handler-per-mode default: quick=1, deep=5.
+        root_moves: Optional list of moves to constrain the root-level
+            search (Chunk 7c). When set, Lc0's MCTS spends its entire
+            budget on the named moves; forbidden root candidates stay
+            at 0 visits. Use case: focused MCTS on a single candidate
+            for ``did_you_consider``'s deep-dive prose. The single
+            allowed move's ``pv_san`` will be populated (with a deeper
+            line than a normal pass would produce since all budget
+            concentrated there). Threaded through to
+            :meth:`Lc0Engine.analyse_verbose`.
 
     Returns:
         :class:`MCTSFindings` from the *final* search state (deepest
@@ -566,7 +576,8 @@ def extract_mcts_trajectory(
 
     # --- one Lc0 search; live-stats stream -------------------------------
     search_result = engine.analyse_verbose(
-        board, nodes=search_budget, log_live_stats=True, multipv=multipv,
+        board, nodes=search_budget, log_live_stats=True,
+        multipv=multipv, root_moves=root_moves,
     )
 
     blocks = _group_live_stats_blocks(search_result.info_string_lines)
@@ -656,10 +667,13 @@ def extract_mcts_trajectory(
 
     enriched_findings = base.model_copy(update={"children": enriched_children})
 
-    # Chunk 7b: populate pv_san on matching root candidates when multipv > 1.
-    # Reuse the helper from extract_mcts to keep the SAN-conversion logic
-    # in one place.
-    if multipv > 1 and search_result.principal_variations:
+    # Chunk 7b: populate pv_san on matching root candidates when Lc0
+    # reported principal variations. Gate RELAXED in 7c — was previously
+    # multipv > 1; now fires whenever principal_variations is non-empty,
+    # so focused passes (multipv=1 + root_moves) also get pv_san populated
+    # on the constrained move. Reuse the helper from extract_mcts to keep
+    # the SAN-conversion logic in one place.
+    if search_result.principal_variations:
         from leela_chat.extractors.mcts import _populate_pv_san  # local import; avoid cycles
         enriched_findings = _populate_pv_san(
             enriched_findings, search_result.principal_variations, board,
@@ -677,3 +691,58 @@ def extract_mcts_trajectory(
     )
 
     return enriched_findings
+
+
+def extract_mcts_trajectory_focused(
+    board: "chess.Board",
+    *,
+    engine: "Lc0Engine",
+    focal_move: "chess.Move",
+    max_nodes: int = 10000,
+    target_selected_n: int = 6,
+) -> MCTSFindings:
+    """Run focused MCTS constrained to a single root move (Chunk 7c).
+
+    Thin wrapper around :func:`extract_mcts_trajectory` that pins
+    ``multipv=1`` (only one root move is searchable so MultiPv > 1 is
+    meaningless) and ``root_moves=[focal_move]`` (the focused-search
+    constraint). All search budget concentrates below the focal move,
+    yielding a deeper PV than a normal pass would produce + a cleaner
+    Q-trajectory specifically for the focal move's subtree.
+
+    Use case: ``did_you_consider`` handler's deep-dive prose section —
+    "Leela's focused dive into X reached N visits with Q +Y; the
+    intended continuation runs X A B C D E F".
+
+    Per the 7c pod probe (``lc0_searchmoves_probe.py``): Lc0's verbose-
+    move-stats output is IDENTICAL between focused and normal passes
+    (parser doesn't need changes); forbidden root candidates emit their
+    stats but stay at 0 visits; the deep PV lives in ``info["pv"]`` and
+    gets attached to the focal child via the relaxed
+    :func:`extract_mcts._populate_pv_san` gate (was multipv > 1; now
+    any-PV-present).
+
+    Args:
+        board: Position to analyse. Caller-owned; not mutated.
+        engine: Live :class:`Lc0Engine` instance. Caller owns lifecycle.
+        focal_move: The single root move the search is constrained to.
+        max_nodes: Search-budget node cap (default 10000, same as the
+            normal pass). Lc0's SmartPruning may stop earlier if the
+            evaluation stabilises.
+        target_selected_n: Target down-sampled trajectory points for
+            the focal child's ``trajectory_selected``.
+
+    Returns:
+        :class:`MCTSFindings` from the focused search. Caller typically
+        looks up the focal child via UCI match
+        (``next(c for c in findings.children if c.uci == focal_move.uci())``)
+        and uses its ``visits``, ``q``, ``pv_san``, ``trajectory_summary``
+        for the prompt's deep-dive section.
+    """
+    return extract_mcts_trajectory(
+        board, engine=engine,
+        max_nodes=max_nodes,
+        target_selected_n=target_selected_n,
+        multipv=1,
+        root_moves=[focal_move],
+    )

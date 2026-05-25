@@ -302,6 +302,15 @@ _INTERPRETIVE_RE = re.compile(
 # Rule B structural patterns — relational claims about piece interactions
 # that the wordlist will miss as the LLM's surface forms drift. The
 # patterns target sentence-shapes, not specific words.
+#
+# Pattern list grows iteratively across sub-chunks (same dynamic as the
+# forbidden-language list per CLAUDE.md §8). The 7b.2.E plan refinement
+# #2 documents the expansion expectation at 7k/7l for chess-content
+# vocabulary; the 7c spot-check (Chunk 7c handler did_you_consider/v4
+# prose) surfaced three early gaps that under-fired the heuristic, so
+# they're added here in the same commit chain as 7c per the plan's 7c
+# spot-check note ("Update Rule A's wordlist or Rule B's patterns at 7c
+# if either failure mode surfaces").
 _RELATIONAL_PATTERNS = (
     # mobility / safety negations (catches "finds no safety", "lacks coordination")
     r"\bfinds?\s+no\s+\w+",
@@ -315,6 +324,20 @@ _RELATIONAL_PATTERNS = (
     r"\bscope\s+of\b",
     # generic positional-claim shapes
     r"\b(?:weak|exposed|loose|hanging|stranded|trapped|cornered)\s+(?:king|queen|rook|bishop|knight|pawn|piece|pieces)\b",
+    # Chunk 7c — added from did_you_consider v4 spot-check under-fire signal:
+    # (a) intensity adjectives applied to tactical patterns ("crushing attack",
+    #     "decisive blow") — these are subjective intensity claims not grounded
+    #     in findings.
+    r"\b(?:crushing|decisive|devastating|crippling|overwhelming|fatal)\s+(?:attack|blow|move|pressure|advantage)\b",
+    # (b) game-phase evaluations ("won middlegame", "winning endgame",
+    #     "drawn position") — past-tense or gerund evaluation of phases the
+    #     findings JSON doesn't directly evaluate.
+    r"\b(?:won|lost|drawn|winning|losing)\s+(?:middlegame|endgame|position|game)\b",
+    # (c) material-result gerunds ("winning the piece back", "losing the
+    #     exchange") — these claim outcomes about material the findings JSON
+    #     doesn't directly compute (Chunk 7k.3 material_delta extractor will
+    #     ground these; until then, flag).
+    r"\b(?:winning|losing|drawing|recovering|sacrificing)\s+(?:the\s+)?(?:piece|pawn|exchange|material|advantage|line|tempo|initiative)\b",
 )
 _RELATIONAL_RE = re.compile(
     r"(?i)(?:" + "|".join(_RELATIONAL_PATTERNS) + r")",
@@ -384,20 +407,37 @@ def _extract_interpretive_claims(
     A catches common surface forms via a seed wordlist; Rule B catches
     relational/positional-claim shapes the wordlist will miss as the
     LLM's surface forms drift.
+
+    **Exclusion scope refined at 7c (Chunk 7c spot-check finding):** the
+    grounded-citation exclusion applies only when Rule A (wordlist) fires
+    alone — Rule A's wordlist can have incidental matches in number-
+    narrating contexts ("queen takes 4221 visits" — "queen" is
+    incidental), so excluding grounded sentences guards against false
+    positives there. Rule B (structural relational patterns) is specific
+    enough that any match indicates a real relational claim, even if the
+    sentence ALSO contains a grounded move+numeric citation prefix
+    (e.g., "Rxd4 with 4221 visits ATTACKS the d4 knight" — "attacks the
+    d4 knight" is interpretive even though the sentence is partly
+    grounded). Rule B fires regardless of grounding.
     """
     if not prose or not prose.strip():
         return []
     candidates: list[str] = []
     for sentence in _split_sentences(prose):
-        if _sentence_is_grounded_citation(sentence, findings_summary):
-            continue
         rule_a_fires = bool(
             _PIECE_NAMES_RE.search(sentence)
             and _INTERPRETIVE_RE.search(sentence)
         )
         rule_b_fires = bool(_RELATIONAL_RE.search(sentence))
-        if rule_a_fires or rule_b_fires:
-            candidates.append(sentence)
+        if not (rule_a_fires or rule_b_fires):
+            continue
+        # Apply grounded-citation exclusion ONLY when Rule A fires alone
+        # (wordlist-incidental risk). When Rule B fires, flag regardless
+        # of grounding — structural patterns are specific enough.
+        if rule_a_fires and not rule_b_fires:
+            if _sentence_is_grounded_citation(sentence, findings_summary):
+                continue
+        candidates.append(sentence)
     return candidates
 
 

@@ -225,6 +225,7 @@ class Lc0Engine:
         nodes: int = 10000,
         log_live_stats: bool = False,
         multipv: int = 1,
+        root_moves: "list[chess.Move] | None" = None,
     ) -> Lc0SearchResult:
         """Run an MCTS search; return the raw info-string lines.
 
@@ -263,6 +264,21 @@ class Lc0Engine:
                 data lives in ``info["pv"]`` / ``info["multipv"]``.
                 Verified against the v0.32.1 build via the
                 ``lc0_multipv_probe.py`` script during 7b design.
+            root_moves: Optional list of moves to constrain the search to
+                at the ROOT level (Chunk 7c). Threaded through to
+                python-chess's ``engine.analysis(..., root_moves=...)``
+                which sends the UCI ``go searchmoves m1 m2 ...`` command.
+                Lc0 honours this — visits accumulate only below the named
+                moves; forbidden root candidates stay at 0 visits. Use case
+                for Chunk 7c: focused MCTS on a single candidate move for
+                ``did_you_consider``'s deep-dive prose section. Note:
+                verbose-move-stats output is IDENTICAL in shape (all root
+                candidates still emit one line each); forbidden moves
+                just have visits ≤ 1. The deep PV from the allowed move
+                lives in ``info["pv"]`` and gets captured into
+                ``principal_variations`` per the existing multipv path.
+                Verified against the v0.32.1 build via the
+                ``lc0_searchmoves_probe.py`` script during 7c design.
 
         Returns:
             :class:`Lc0SearchResult` with the captured lines, the engine's
@@ -282,23 +298,36 @@ class Lc0Engine:
         search_complete: bool = False
         start = time.perf_counter()
 
-        # Pass multipv directly to analysis() — python-chess refuses
-        # configure({"MultiPv": ...}) with "automatically managed" and
-        # the analysis()/analyse() multipv= kwarg is the supported path.
+        # Pass multipv + root_moves directly to analysis() — python-chess
+        # refuses configure({"MultiPv": ...}) with "automatically managed"
+        # and the analysis()/analyse() multipv= + root_moves= kwargs are
+        # the supported path. root_moves is python-chess's name for the
+        # UCI ``searchmoves`` go-command parameter (Chunk 7c addition).
+        analysis_kwargs: dict = {"multipv": multipv}
+        if root_moves is not None:
+            analysis_kwargs["root_moves"] = root_moves
         with self._engine.analysis(
-            board, chess.engine.Limit(nodes=nodes), multipv=multipv,
+            board, chess.engine.Limit(nodes=nodes), **analysis_kwargs,
         ) as analysis:
             for info in analysis:
                 s = info.get("string")
                 if isinstance(s, str) and s:
                     info_string_lines.append(s)
-                # Capture per-PV move sequence when multipv reporting.
-                # info["multipv"] is 1-based; info["pv"] is a list of
-                # chess.Move objects. Last value per multipv index wins.
-                pv_idx = info.get("multipv")
+                # Capture per-PV move sequence. info["multipv"] is 1-based
+                # when present, but python-chess sometimes OMITS the
+                # multipv field on single-PV calls (multipv=1 implied as
+                # default). info["pv"] is a list of chess.Move objects.
+                # 7c gate relaxation: capture PVs whenever info["pv"] is
+                # present, defaulting to multipv index 1 when the field
+                # is absent. This is what makes focused-pass single-PV
+                # cases (multipv=1 + root_moves) populate pv_san on the
+                # focal child. Last value per index wins (Lc0 refines PVs
+                # across the search).
                 pv_moves = info.get("pv")
-                if pv_idx is not None and pv_moves:
-                    principal_variations[int(pv_idx)] = [m.uci() for m in pv_moves]
+                if pv_moves:
+                    pv_idx = info.get("multipv")
+                    idx = int(pv_idx) if pv_idx is not None else 1
+                    principal_variations[idx] = [m.uci() for m in pv_moves]
             try:
                 best = analysis.wait()
                 if best.move is not None:
@@ -314,7 +343,8 @@ class Lc0Engine:
         wall = time.perf_counter() - start
         logger.debug(
             f"lc0 analyse_verbose: nodes={nodes} live_stats={log_live_stats} "
-            f"multipv={multipv} raw_lines={raw_line_count} "
+            f"multipv={multipv} root_moves={len(root_moves) if root_moves else 0} "
+            f"raw_lines={raw_line_count} "
             f"returned_lines={len(info_string_lines)} pvs={len(principal_variations)} "
             f"bestmove={bestmove_uci} wall={wall:.2f}s complete={search_complete}"
         )

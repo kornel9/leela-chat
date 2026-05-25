@@ -118,10 +118,11 @@ class _StubEngine:
 
     def analyse_verbose(
         self, board, *, nodes: int = 10000, log_live_stats: bool = False,
-        multipv: int = 1,
+        multipv: int = 1, root_moves=None,
     ) -> Lc0SearchResult:
         self.calls.append({
-            "nodes": nodes, "log_live_stats": log_live_stats, "multipv": multipv,
+            "nodes": nodes, "log_live_stats": log_live_stats,
+            "multipv": multipv, "root_moves": root_moves,
         })
         assert self._queue, "analyse_verbose called more times than results provided"
         return self._queue.pop(0)
@@ -818,3 +819,62 @@ def test_real_lc0_livestats_fixture_trajectory_summary_passes_round_trip(board):
         f"Rxb1+ q_trough should be < +0.45; got {rxb1.trajectory_summary.q_trough}"
     )
     assert rxb1.trajectory_summary.q_trough - rxb1.trajectory_summary.q_first < -0.20
+
+
+# === Chunk 7c: focused MCTS via root_moves ===================================
+
+
+def test_extract_mcts_trajectory_focused_threads_root_moves_and_multipv_1(board):
+    """The focused wrapper pins multipv=1 + passes root_moves=[focal_move]
+    through to the underlying engine.analyse_verbose call."""
+    cycles = [_emit_cycle([("d8d4", 4400, 0.92, 6.8)], root_visits=4600)]
+    stub = _StubEngine([_make_search_result(cycles, bestmove_uci="d8d4")])
+
+    from leela_chat.extractors.mcts_trajectory import extract_mcts_trajectory_focused
+    focal = chess.Move.from_uci("d8d4")
+    extract_mcts_trajectory_focused(
+        board, engine=stub, focal_move=focal, max_nodes=10000,
+    )
+
+    assert len(stub.calls) == 1
+    call = stub.calls[0]
+    assert call["multipv"] == 1, "focused pass must pin multipv=1"
+    assert call["root_moves"] == [focal], "focused pass must constrain root_moves to focal_move only"
+    assert call["nodes"] == 10000
+    assert call["log_live_stats"] is True  # trajectory pass always streams
+
+
+def test_extract_mcts_trajectory_focused_populates_pv_san_on_focal_child(board):
+    """When the underlying search reports a single PV (focused multipv=1 +
+    root_moves case), the focal child's pv_san is populated via the 7c
+    gate-relaxation in extract_mcts_trajectory."""
+    # Build a SearchResult with a populated principal_variations dict
+    # at key 1 — simulating what python-chess emits when info["pv"] is
+    # present and info["multipv"] is implicit (None → defaults to 1 per
+    # the 7c PV-capture relaxation in Lc0Engine.analyse_verbose).
+    cycles = [_emit_cycle([("d8d4", 4400, 0.92, 6.8)], root_visits=4600)]
+    search_result = _make_search_result(cycles, bestmove_uci="d8d4")
+    # Mutate to add a focused-pass PV (15 plies, matches the pod probe).
+    search_result_with_pv = search_result.model_copy(update={
+        "principal_variations": {
+            1: ["d8d4", "a3c3", "b8b1", "a1b1", "e5b8"],
+        },
+        "multipv_requested": 1,
+    })
+    stub = _StubEngine([search_result_with_pv])
+
+    from leela_chat.extractors.mcts_trajectory import extract_mcts_trajectory_focused
+    focal = chess.Move.from_uci("d8d4")
+    findings = extract_mcts_trajectory_focused(
+        board, engine=stub, focal_move=focal, max_nodes=10000,
+    )
+
+    focal_child = next((c for c in findings.children if c.uci == "d8d4"), None)
+    assert focal_child is not None
+    # pv_san should be populated with the SAN-form of the PV (walked
+    # against the input board). First move is Rxd4 (Black captures the
+    # d4 knight).
+    assert focal_child.pv_san, "focused pass should populate pv_san on focal child"
+    assert focal_child.pv_san[0] == "Rxd4"
+    # The 7c gate relaxation: pv_san fires even though multipv == 1.
+    # Pre-7c gate (multipv > 1) would have left pv_san empty here.

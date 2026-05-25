@@ -1779,3 +1779,56 @@ What this refinement does NOT do:
 - Doesn't run a new smoke battery to validate at scale (the validation is built-into-the-aggregator and runs every time; no separate test needed).
 
 Next: 7c (focused MCTS for did_you_consider) under the bundling rule + with the new 7c spot-check note in force.
+
+#### 2026-05-25 — Chunk 7c done (focused MCTS for did_you_consider; first behavioral test of the bundling rule + 7c spot-check note in force)
+
+**Pod-side probe first (per the measurement-first discipline).** `lc0_searchmoves_probe.py` confirmed:
+- Lc0 emits verbose-move-stats for ALL root candidates regardless of searchmoves (52 lines, 51 candidates per block — same as normal pass). **Parser doesn't need changes** (same finding as 7b's MultiPv probe).
+- Focused PV is deep (15 plies via `info["pv"]`) — all budget concentrates below the focal move.
+- Bestmove correctly returns the constrained move.
+- Latency is similar to normal pass (~0.3s warm at 10k nodes).
+
+**Implementation (commit `<this>`):**
+
+- `Lc0Engine.analyse_verbose`: new `root_moves: list[chess.Move] | None = None` kwarg threaded through to `engine.analysis(..., root_moves=...)` per python-chess's supported path (analogous to `multipv` from 7b).
+- **PV-capture relaxation in `Lc0Engine.analyse_verbose`:** the streaming loop's PV capture was gated on `info.get("multipv") is not None` (assumed multipv field always present). Pod integration check revealed python-chess OMITS the multipv field for single-PV calls (multipv=1 default). Fix: capture `info["pv"]` whenever present, defaulting multipv index to 1 when the field is absent. Without this fix, focused-pass (multipv=1 + root_moves) would have empty `principal_variations` and pv_san wouldn't populate.
+- **`_populate_pv_san` gate relaxation in `extract_mcts` + `extract_mcts_trajectory`:** was `multipv > 1 and search_result.principal_variations`; now just `search_result.principal_variations`. Necessary so focused-pass single-PV cases populate pv_san on the constrained move.
+- New `extract_mcts_trajectory_focused` wrapper — thin shim around `extract_mcts_trajectory` with `multipv=1` + `root_moves=[focal_move]` pinned.
+- `DidYouConsiderFindings` gains 5 new fields per the 7c plan: `focused_total_nodes`, `focused_visits`, `focused_q`, `focused_pv_san`, `focused_trajectory_summary`.
+- `did_you_consider` handler runs normal pass + focused pass **sequentially** in the Lc0 thread (parallel Lc0 contention is 7d's experiment, not 7c's). After the focused pass, pre-extract the focal-move-specific data via UCI match.
+- **`did_you_consider/v4.md`** ships in the SAME commit chain (per the CLAUDE.md §8 bundling rule's first behavioral test): adds new "v4 input-format additions" section + Guard 1 extension for `focused_pv_san` + output structure step 6 "Focused-pass deep dive" + step 7 "Optional Stockfish-vs-Leela PV comparison". Handler `PROMPT_VERSION` 3 → 4. Per CLAUDE.md §3: v3.md retained.
+
+**Pod integration check:** `extract_mcts_trajectory_focused(board, engine, focal_move=Rxd4, max_nodes=10000)` populates `focused_visits=4443`, `focused_q=+0.9231`, `focused_pv_san` of **15 plies** (`Rxd4 Qc3 Rxb1+ Kxb1 Qb8+ Qb2 Rd8 Qxb8 Rxb8+ Kc1 Nd7 Rb2 f5 f4 Kf7`), `focused_trajectory_summary` with `q_first=+0.914, q_trough=+0.647, q_peak=+0.963, q_last=+0.923, blocks=23`. Other children correctly at 0 visits (searchmoves constraint respected).
+
+**Spot-check on walkthrough_rxd4** (`cli ask --handler did_you_consider --move d8d4`):
+- Telemetry: `source=llm validation_ok=True prompt=v4 handler_s=5.87s translate_s=13.04s tokens=in:23876/out:635`
+- Prose includes the v4-load-bearing focused-pass deep dive: *"Under a focused search with all budget concentrated below Rxd4, Leela's intended continuation extends 15 plies — Rxd4 Qc3 Rxb1+ Kxb1 Qb8+ Qb2 Rd8 Qxb8 Rxb8+ Kc1 Nd7 Bd1 Bc6 Rd6 Rc8 — and the focused trajectory shows Q stable in a tight +0.917 to +0.923 band over 5739 concentrated visits, confirming the verdict at higher resolution than the normal pass provides."*
+- Prose also surfaces engine convergence per v4 step 7: *"Both engines agree on the first three plies of the line (Rxd4 Qc3 Rxb1+ Kxb1 Qb8+) before Leela's deeper budget extends further into the won middlegame."*
+
+**Interpretive-claim re-measurement per the 7b.2.E refinement #1.** First run on the new v4 prose surfaced **0 candidates** — UNDER-FIRE failure mode per the plan's flag condition. The prose contains obvious interpretive content ("winning the piece back with a crushing attack", "the won middlegame") that the v1 heuristic missed. Per the 7c spot-check plan: "Update Rule A's wordlist or Rule B's patterns at 7c if either failure mode surfaces."
+
+**Rule B expansion at 7c (in same commit per the bundling rule spirit):** added three pattern categories targeting the missed claims:
+- Intensity-adjective + tactical-pattern: `crushing|decisive|devastating|crippling|overwhelming|fatal + attack|blow|move|pressure|advantage`
+- Game-phase evaluation: `won|lost|drawn|winning|losing + middlegame|endgame|position|game`
+- Material-result gerunds: `winning|losing|drawing|recovering|sacrificing + the? + piece|pawn|exchange|material|advantage|line|tempo|initiative`
+
+**Exclusion refinement:** the grounded-citation exclusion was over-broad — it suppressed Rule B's structural-pattern matches when the sentence ALSO had a grounded move+numeric citation prefix (e.g., "Rxd4 with 4221 visits attacks the d4 knight" — "attacks the d4 knight" is real interpretive content). Refined: exclusion applies ONLY when Rule A fires alone; Rule B's structural patterns are specific enough to fire regardless of grounding. Updated `test_rule_b_grounded_citation_still_excluded` to reflect the new design (renamed `test_rule_b_grounded_citation_NOT_excluded_when_rule_b_fires`) + added `test_rule_a_grounded_exclusion_still_applies` to verify the Rule A path is preserved.
+
+After the rule changes + re-run on the same 7c spot-check prose: **2 candidates surfaced** (both legitimate interpretive content): "winning the piece back with a crushing attack" (Rule B intensity + material-gerund), "the won middlegame" (Rule B game-phase). Per 7b.2.E thresholds (median > 1 OR max > 3 during 7c-7f): single-cell count of 2 is below the cross-cell signal threshold for a real battery; for spot-checks the per-cell count is just data, not a flag.
+
+**Regression check on Handler 1 7b.1 prose:** previously 1 candidate; now 2 (gained "winning endgame for Black with the extra material" via the new game-phase pattern). No false positives — both are legitimate interpretive content. Rule B expansion improved recall on prior prose without over-firing.
+
+Tests: 284 pass (was 281 + 2 new focused-extractor tests + 1 new Rule A exclusion test = 284). 11 existing tests updated for the new `root_moves` kwarg in test stubs + 1 test renamed + behavior updated for the Rule B exclusion refinement.
+
+**Bundling-rule first behavioral test PASSED.** 7c added new findings fields (`focused_*`) AND the matching prompt-version bump (v3→v4) AND the strict-citation guard extension AND the v4 worked example update — all in the SAME commit chain. The temptation to defer the prompt update to 7m did not arise; the rule is now structurally enforced.
+
+What surprised me:
+- **PV-capture bug from 7b** (`info["multipv"]` not always present in python-chess for multipv=1 calls) didn't surface until 7c's integration check because the gate `multipv > 1` was masking it. Refining the gate at 7c forced the bug into the open. Good defense-in-depth pattern.
+- **Heuristic under-fire at 7c was the expected failure mode per the plan's refinement #1.** Plan correctly anticipated it would happen on focused-pass prose. The expansion + exclusion refinement landed in the same commit chain per the plan's framing.
+- **The 15-ply focused PV is the same length as the 15-ply v3-era MultiPv=5 top-1 PV** on the walkthrough_rxd4 fixture. The "focused PV is deeper" framing in v4 prompt may need empirical tightening at 7o — the depth claim holds in some prose contexts but not on this fixture specifically. Worth tracking.
+
+What 7c does NOT do:
+- No latency measurement of the sequential normal+focused passes vs the prior single-pass design. Handler_s went from ~5s (pre-7c) to 5.87s (7c spot-check). Negligible. Real latency impact comes at 7d when multi-config ensemble lands.
+- No update to other handlers (Handlers 1 + 2) — focused-pass data is did_you_consider-specific by design.
+
+Next: **7d — multi-config MCTS ensemble (deep mode)** with the 100k-node multipv=5 latency check first per the 7b.2.E refinement (pre-commit decision: verdict pass stays at multipv=1 regardless of measurement, per the plan's 7d trade-off pre-commit).

@@ -43,7 +43,10 @@ from leela_chat.extractors.mcts_parser import (
     MCTSFindings,
     MCTSTrajectorySummary,
 )
-from leela_chat.extractors.mcts_trajectory import extract_mcts_trajectory
+from leela_chat.extractors.mcts_trajectory import (
+    extract_mcts_trajectory,
+    extract_mcts_trajectory_focused,
+)
 from leela_chat.extractors.network_inference import (
     MoveCandidate,
     WDL,
@@ -80,7 +83,16 @@ if TYPE_CHECKING:
 # Guard 1 extended to mcts.children[*].pv_san; output structure item 6
 # updated to prefer Leela's intended continuation for the engine pick.
 # Per CLAUDE.md §3: v2.md retained.
-PROMPT_VERSION = 3
+# v3 → v4 (2026-05-24, Chunk 7c): focused-pass MCTS data added — five
+# new fields (focused_total_nodes, focused_visits, focused_q,
+# focused_pv_san, focused_trajectory_summary) surfacing a second MCTS
+# pass with searchmoves constrained to the focal move. v4 prompt adds
+# step 6 "Focused-pass deep dive" + extends strict-citation Guard 1 to
+# focused_pv_san. Per CLAUDE.md §3: v3.md retained.
+# Per the CLAUDE.md §8 bundling rule (Chunk 7b.1): this prompt-version
+# bump ships in the SAME commit chain as the new findings fields it
+# cites — NOT deferred to 7m. First behavioral test of the rule.
+PROMPT_VERSION = 4
 HANDLER_NAME = "did_you_consider"
 
 # MCTS top-N to surface to the LLM (mirrors why_this_move).
@@ -182,6 +194,71 @@ class DidYouConsiderFindings(BaseModel):
             "Pre-computed from ``focal_mcts_trajectory_summary`` + "
             "``focal_mcts_child.visits`` + root visits. None when "
             "MCTS skipped."
+        ),
+    )
+
+    # === Chunk 7c: focused-pass MCTS data ===
+    # A second MCTS pass with searchmoves constrained to the focal move
+    # only — the entire search budget concentrates below the focal move,
+    # producing a deeper PV and a cleaner Q-trajectory within that subtree
+    # than the normal pass (where the focal move shares budget with other
+    # candidates). Used by the v4 prompt for the "deep dive on focal move"
+    # prose section. All None when lc0_engine is None OR the focused pass
+    # didn't return a matching child.
+    focused_total_nodes: int | None = Field(
+        default=None,
+        description=(
+            "Chunk 7c — total nodes searched in the focused pass. "
+            "Useful for the prompt to frame 'with N focused nodes...'. "
+            "Typically close to the normal-pass total (Lc0's SmartPruning "
+            "may stop earlier when the constrained search stabilises). "
+            "None when focused pass skipped."
+        ),
+    )
+    focused_visits: int | None = Field(
+        default=None,
+        description=(
+            "Chunk 7c — visits on the focal move in the focused tree. "
+            "Typically 90%+ of focused_total_nodes since the focal move "
+            "is the only allowed root candidate. Differs from "
+            "``focal_mcts_child.visits`` in that THIS reflects the "
+            "concentrated-budget search, not the shared normal pass. "
+            "None when focused pass skipped or focal child not found "
+            "in the focused-pass children."
+        ),
+    )
+    focused_q: float | None = Field(
+        default=None,
+        description=(
+            "Chunk 7c — final Q on the focal move from the focused tree. "
+            "May refine the normal-pass Q with extra visits ('the focused "
+            "dive confirms Q at +X with more budget'). None when focused "
+            "pass skipped."
+        ),
+    )
+    focused_pv_san: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Chunk 7c — Leela's intended continuation from the focal move "
+            "under the focused (concentrated-budget) search. Typically "
+            "DEEPER than the normal pass's per-PV pv_san for the same "
+            "candidate (~15 plies vs ~10) because all budget went below "
+            "the focal move. Empty when focused pass skipped, focal child "
+            "missing, or PV walk truncated. All moves validator-trusted "
+            "via the recursive _collect_trusted_moves walk."
+        ),
+    )
+    focused_trajectory_summary: MCTSTrajectorySummary | None = Field(
+        default=None,
+        description=(
+            "Chunk 7c — Q + visit trajectory summary of the focal move "
+            "WITHIN the focused tree. Shows how Q evolved when search "
+            "had to commit to this move only (no distractions from other "
+            "candidates). Same MCTSTrajectorySummary shape as "
+            "``focal_mcts_trajectory_summary`` (the normal-pass version); "
+            "the two together let prose compare 'Q under normal search "
+            "vs Q under focused concentration'. None when focused pass "
+            "skipped or no trajectory data."
         ),
     )
 
@@ -288,6 +365,38 @@ def handle_did_you_consider(
             update={"children": list(full_mcts.children[:MCTS_TOP_N_FOR_LLM])},
         )
 
+    # === Chunk 7c: focused MCTS pass (sequential after normal pass) ===
+    # Run a second MCTS pass with searchmoves constrained to the focal
+    # move only. SEQUENTIAL within the Lc0 thread (not parallel) — two
+    # parallel calls on the same Lc0 engine would race; multiple engine
+    # instances is overhead we don't need here. Per the 7c plan: parallel
+    # Lc0 contention is 7d's experiment, not 7c's.
+    focused_findings: MCTSFindings | None = None
+    if lc0_engine is not None:
+        focused_findings = extract_mcts_trajectory_focused(
+            board, engine=lc0_engine, focal_move=move, max_nodes=mcts_max_nodes,
+        )
+
+    # Pre-extract focal-move-specific data from the focused pass for
+    # convenient prompt citation (v4 cites focused_visits, focused_q,
+    # focused_pv_san, focused_trajectory_summary directly).
+    focused_total_nodes: int | None = None
+    focused_visits: int | None = None
+    focused_q: float | None = None
+    focused_pv_san: list[str] = []
+    focused_trajectory_summary: MCTSTrajectorySummary | None = None
+    if focused_findings is not None:
+        focused_total_nodes = focused_findings.total_nodes_searched
+        focused_focal_child = next(
+            (c for c in focused_findings.children if c.uci == focal_uci),
+            None,
+        )
+        if focused_focal_child is not None:
+            focused_visits = focused_focal_child.visits
+            focused_q = focused_focal_child.q
+            focused_pv_san = list(focused_focal_child.pv_san)
+            focused_trajectory_summary = focused_focal_child.trajectory_summary
+
     # Focal-move callouts (reuse the helpers from why_this_move).
     focal_policy_pct, focal_policy_rank = _find_focal_in_policy(
         leela.top_moves, focal_uci,
@@ -360,6 +469,12 @@ def handle_did_you_consider(
         focal_mcts_trajectory_summary=focal_mcts_summary,
         network_dismissal=network_dismissal,  # type: ignore[arg-type]
         search_dismissal=search_dismissal,
+        # Chunk 7c focused-pass data.
+        focused_total_nodes=focused_total_nodes,
+        focused_visits=focused_visits,
+        focused_q=focused_q,
+        focused_pv_san=focused_pv_san,
+        focused_trajectory_summary=focused_trajectory_summary,
     )
 
 
