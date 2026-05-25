@@ -666,3 +666,77 @@ CLAUDE.md §13's structural-response-to-surfaced-failure-mode meta-rule (added 7
 The 7b.2.E plan refinement said *"Update Rule A's wordlist or Rule B's patterns at 7c if either failure mode surfaces."* When the heuristic under-fired on 7c's spot-check prose, I (Claude Code) extended both Rule B's patterns AND changed the EXCLUSION LOGIC (a structural design change, not just a pattern addition). The plan didn't explicitly authorize the exclusion-logic change. User accepted retrospectively 2026-05-25 with reasoning that pattern-only updates couldn't have addressed the under-fire mode — the plan's framing was the thing that was wrong, not the structural change. The meta-rule was codified at 7c.5.D directly from this experience: structural responses ARE permitted; the discipline is to surface them in the retro for retrospective sign-off, not to silently expand scope OR to halt at the plan's literal text.
 
 (Future structural-response cases get appended here as they accumulate, preserving the worked-example record for the meta-rule.)
+
+---
+
+### ADR-0015: Adaptive MultiPV mapping based on policy distribution character
+
+- **Date:** 2026-05-25
+- **Status:** Accepted
+- **Phase:** Phase 2 — MCTS Integration (forward-looking through Phase 3+)
+- **Decision-makers:** [initials]
+
+#### Context
+
+Chunk 7b committed `multipv=5` as the per-mode default for all deep-mode MCTS calls (all three handlers; whatever the position). The choice was a project-start default chosen before the policy-distribution character was systematically considered. Different positions warrant different multipv values:
+- A position with a dominant top move (e.g., the policy assigns 80%+ to one move; the rest is noise) gains nothing from multipv=5 — the bottom three lines have ~no visits and add noise/cost to findings JSON.
+- A position with naturally flat policy (e.g., quiet opening / equal middlegame where 8-10 moves share probability mass) benefits from multipv=10+ to surface the real candidate set.
+- The walkthrough_rxd4 sacrifice case (top move at ~33%, second at 16%) is in the middle — multipv=5 is genuinely the right pick.
+
+Phase 3+ probes will consume `MCTSFindings.multipv_used` (a new field per 7c.8) as training-data metadata. The mapping function from policy character → multipv is a stable contract Phase 3 reads; ADR documents the contract.
+
+#### Decision
+
+Adopt `compute_adaptive_multipv(top_prob, policy_entropy, mode) -> int` as the canonical mapping. Replaces every hardcoded `multipv=5` in handler call sites.
+
+**Mapping (calibrated against synthetic distributions; see 7c.8 PHASE_NOTES):**
+
+| Policy character    | top_prob   | normalized entropy | Base multipv     |
+|---------------------|------------|--------------------|------------------|
+| Dominant top move   | > 0.70     | < 0.60             | 2                |
+| Moderate top move   | 0.30-0.70  | 0.60-0.90          | 5 (7b default)   |
+| Contested           | < 0.30     | 0.85-0.95          | 10               |
+| Naturally flat      | < 0.20     | > 0.95             | 15               |
+
+**Normalized entropy.** Raw Shannon entropy is normalized by `ln(N)` where N is the number of policy candidates in the input — making the metric comparable across different `top_n` truncation values. The plan's original thresholds (entropy < 0.5, > 2.5) assumed unbounded distributions; with the typical top-5 truncation, max raw entropy is `ln(5) ≈ 1.6`, so the original thresholds were unreachable. Normalized entropy ∈ [0, 1] resolves this.
+
+**Per-mode caps (post-mapping):**
+
+| Mode      | Cap     | Rationale |
+|-----------|---------|-----------|
+| `quick`   | 3       | Conservative to fit the <30s quick-mode gate (ADR-0012). |
+| `deep`    | **8**   | Calibration (anthropic.messages.count_tokens on synthetic findings dicts at multipv=1/2/3/5/8/10/15): multipv=15 is **2.67x** the token cost of multipv=5 — above the plan's 2x trigger for tightening. multipv=10 is 1.85x (acceptable on its own) but the policy was to cap at 8 once the 2x trigger fired on the higher value. Generous enough for contested positions under ADR-0011's super-GM target; tight enough to bound the prompt-input growth toward the 40k-token threshold (per the PHASE_NOTES token-cost trajectory watch-list). |
+| `deepest` | 15      | OUT-OF-SCOPE per ADR-0013. Documented only as design intent for if/when deepest mode lands. |
+
+**Both inputs are checked** because they're partially redundant but NOT identical signals: `top_prob` is a single-move read, `policy_entropy` is distribution-shape. A position with top_prob=0.40 and a sharp second-best (0.35) has lower entropy than one with top_prob=0.40 and flat 0.05 across many — both warrant different multipv values.
+
+#### Alternatives considered
+
+- **Keep hardcoded `multipv=5`.** Rejected: ignores the actual policy character; wastes search budget on dominant positions and undersearches contested ones. Each handler call had the same cost regardless of whether it was warranted.
+- **Use `top_prob` alone (drop entropy).** Rejected: top_prob and entropy capture distinct shape information. A position can have top_prob=0.20 with second-best at 0.18 (sharp) vs second-best at 0.05 across many (flat) — different positions, same top_prob, different right answers.
+- **Use raw entropy without normalization.** Rejected: thresholds depend on `top_n` truncation; can't compare positions analyzed with different `top_n`.
+- **Don't cap deep at 8 (keep 10).** Rejected at calibration time: multipv=15 above the 2x cost trigger triggered the plan's tightening rule; capping at 8 is the chosen response.
+- **Drop entropy threshold for "dominant" to <1.0 (looser).** Considered as part of normalization decision; rejected — normalized < 0.60 is the cleaner threshold that matches the actual "dominant top move" intuition with top-5 candidates.
+
+#### Consequences
+
+- **Phase 3 training data carries `MCTSFindings.multipv_used`** as a per-position metadata field — probes can stratify by policy character if needed.
+- **Per-handler-per-mode prompt versions bump per CLAUDE.md §8 bundling rule.** what_is_leela_seeing/deep v8→v9; why_this_move/deep v5→v6; did_you_consider v4→v5. Each new version cites `mcts.multipv_used` so prose accurately describes the search scope.
+- **Handler refactor: `extract_network_inference` now runs sequentially BEFORE the parallel ThreadPoolExecutor block** so its policy distribution can inform the multipv choice. The slow `extract_layer_emergence` (~3-4s) runs in parallel with Stockfish + Lc0 — net latency vs the pre-7c.8 arrangement is approximately neutral. Documented inline at each handler's wiring site.
+- **Quick mode still uses `extract_mcts` (snapshot path) with implicit multipv=1.** Adaptive multipv only applies to `extract_mcts_trajectory` (deep mode). Quick path unchanged.
+- **Inline entropy computation in handlers.** 7e (network confidence) may centralize entropy into a shared helper later; for now each handler computes inline from `top_moves[*].policy_pct`. The helper `policy_entropy_normalized` is colocated with `compute_adaptive_multipv` in `leela_chat/extractors/adaptive_multipv.py`.
+- **Reversal cost.** Low — revert the helper imports + restore hardcoded `multipv=5` at the three handler call sites; revert prompt-version bumps; revert the parser/extractor `multipv_used` field surfacing. ~30 lines of code rollback.
+
+#### References
+
+- Chunk 7c.8 PHASE_NOTES — calibration measurement + handler-wiring notes.
+- ADR-0011 (super-GM quality bar) — motivates the per-mode caps (the 300s deep cap from ADR-0012 amendment makes higher multipv tractable).
+- ADR-0012 (latency caps; amended 7c.6: 90s → 300s) — the time budget against which the per-mode caps are sized.
+- ADR-0013 (Tier-2 features deferred) — "deepest" mode out-of-scope; deepest's design-intent cap (15) documented but not enabled.
+- CLAUDE.md §8 bundling rule — the v9/v6/v5 prompt bumps ship in the same commit chain as the findings field per the rule.
+- `leela_chat/extractors/adaptive_multipv.py` — the mapping function + per-mode cap table; module docstring is the source-of-truth for the implementation.
+- `tests/unit/test_adaptive_multipv.py` — 18 unit tests pinning each mapping branch + cap behavior.
+
+#### ADR-numbering shift note (2026-05-25, second time)
+
+ADR-0015 was pre-allocated in the Chunk 7 plan for the 7n MCTS-baseline ADR. Renumbered TWICE during Chunk 7's retro chain: first at 7c.5.C when ADR-0014 was taken for the bundling-rule precedent (7n shifted from 0014 to 0015), then again here at 7c.8 when this dynamic-multipv ADR took 0015 (7n shifts to 0016). 7n's MCTS-baseline ADR will land as **ADR-0016** when 7n executes.

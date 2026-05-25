@@ -22,6 +22,10 @@ from typing import TYPE_CHECKING, Literal
 import chess
 from pydantic import BaseModel, ConfigDict, Field
 
+from leela_chat.extractors.adaptive_multipv import (
+    compute_adaptive_multipv,
+    policy_entropy_normalized,
+)
 from leela_chat.extractors.layer_emergence import (
     LayerEmergenceResult,
     extract_layer_emergence,
@@ -76,7 +80,14 @@ PROMPT_VERSION = 6
 # examples updated with pv_san data; four new anti-patterns. Validator
 # unchanged (recursive walk already trusts pv_san). Per CLAUDE.md §3:
 # v7.md retained.
-PROMPT_VERSION_DETAILED = 8
+# v8 → v9 (2026-05-25, Chunk 7c.8): adaptive MultiPv per ADR-0015.
+# Replaces v8's fixed MultiPv=5 with policy-character-driven choice
+# (dominant: 2, moderate: 5, contested/flat: 8). New top-of-prompt
+# section "v9 addition: adaptive MultiPv citation" + the "PLUS the v8
+# addition" line reframed for v9. Per the bundling rule (CLAUDE.md §8):
+# this prompt bump ships in the same commit chain as the new
+# `mcts.multipv_used` findings field. Per CLAUDE.md §3: v8.md retained.
+PROMPT_VERSION_DETAILED = 9
 
 # How many top-by-visits MCTS children to surface to the LLM in this
 # handler's findings. The extractor returns all root candidates (up to ~50);
@@ -219,25 +230,42 @@ def handle_what_is_leela_seeing(
     """
     # Per Chunk 7a.2 (extractor parallelisation, Chunk 6.7 entry criterion #1):
     # spawn one thread per ENGINE so the slowest engine sets the handler floor
-    # instead of the sum. Three engines max:
-    # - BT4 thread: extract_network_inference + (deep mode) extract_layer_emergence
-    #   in sequence (both touch the HookedTransformer; concurrent BT4 forward
-    #   passes would race on internal hook state).
-    # - Stockfish thread: extract_stockfish_eval (CPU-only subprocess; no
-    #   contention with BT4 or Lc0).
-    # - Lc0 thread: extract_mcts or extract_mcts_trajectory depending on mode.
-    #   Shares GPU with BT4 but they're separate processes; small contention.
-    def _bt4_thread() -> tuple:
-        leela_inner = extract_network_inference(board, model=model, top_n=top_n)
-        layer_em_inner: LayerEmergenceResult | None = None
+    # instead of the sum.
+    #
+    # Chunk 7c.8 wire-up: extract_network_inference now runs FIRST (sequential
+    # ~0.3s on the BT4 GPU) so its policy-distribution character can inform
+    # the MCTS multipv choice (compute_adaptive_multipv per ADR-0015). After
+    # that, the slow layer_emergence (~3-4s) runs in a thread alongside SF +
+    # Lc0. Net latency vs the pre-7c.8 arrangement is ~neutral (old: bt4_thread
+    # did nw + layer_em sequentially while SF/Lc0 ran in parallel; new:
+    # 0.3s of nw before parallel block, then max(layer_em, SF, Lc0) running
+    # in parallel = roughly the same total).
+    leela = extract_network_inference(board, model=model, top_n=top_n)
+    if mode == "deep" and lc0_engine is not None:
+        # Compute adaptive multipv from the policy distribution character.
+        # Per ADR-0015 + 7c.8 calibration: dominant top → 2, moderate → 5
+        # (the 7b default), contested → 10 (caps to 8 in deep), flat → 15
+        # (caps to 8 in deep). Quick mode caps to 3 — but quick uses
+        # extract_mcts not extract_mcts_trajectory so adaptive doesn't
+        # apply to quick (quick stays multipv=1 implicitly via extract_mcts).
+        policy_pcts = [m.policy_pct for m in leela.top_moves]
+        adaptive_mpv = compute_adaptive_multipv(
+            top_prob=(leela.top_moves[0].policy_pct / 100.0) if leela.top_moves else 0.0,
+            policy_entropy=policy_entropy_normalized(policy_pcts),
+            mode=mode,
+        )
+    else:
+        adaptive_mpv = 1  # quick mode / no lc0_engine
+
+    def _bt4_layer_em_thread() -> LayerEmergenceResult | None:
         if mode == "deep":
-            layer_em_inner = extract_layer_emergence(
+            return extract_layer_emergence(
                 board, model=model, focal_uci=None, top_n_per_layer=top_n,
             )
-        return leela_inner, layer_em_inner
+        return None
 
     with ThreadPoolExecutor(max_workers=3) as ex:
-        bt4_future = ex.submit(_bt4_thread)
+        bt4_layer_future = ex.submit(_bt4_layer_em_thread)
         sf_future = ex.submit(
             extract_stockfish_eval, board,
             engine=stockfish_engine,
@@ -246,13 +274,12 @@ def handle_what_is_leela_seeing(
         )
         if lc0_engine is not None:
             if mode == "deep":
-                # Chunk 7b: deep mode requests MultiPv=5 so the top-5
-                # children get their PV move sequences populated for the
-                # prompt to cite. Quick mode keeps multipv=1 to fit the
-                # <30s gate.
+                # Chunk 7c.8 adaptive multipv — was hardcoded multipv=5 in
+                # 7b. See compute_adaptive_multipv above for the policy
+                # character → multipv mapping (ADR-0015).
                 mcts_future = ex.submit(
                     extract_mcts_trajectory, board,
-                    engine=lc0_engine, max_nodes=mcts_nodes, multipv=5,
+                    engine=lc0_engine, max_nodes=mcts_nodes, multipv=adaptive_mpv,
                 )
             else:
                 mcts_future = ex.submit(
@@ -260,7 +287,7 @@ def handle_what_is_leela_seeing(
                     engine=lc0_engine, nodes=mcts_nodes,
                 )
 
-    leela, layer_emergence = bt4_future.result()
+    layer_emergence = bt4_layer_future.result()
     sf = sf_future.result()
     mcts_findings: MCTSFindings | None = None
     if lc0_engine is not None:

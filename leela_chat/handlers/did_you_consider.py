@@ -33,6 +33,10 @@ from typing import TYPE_CHECKING, Literal
 import chess
 from pydantic import BaseModel, ConfigDict, Field
 
+from leela_chat.extractors.adaptive_multipv import (
+    compute_adaptive_multipv,
+    policy_entropy_normalized,
+)
 from leela_chat.extractors.layer_emergence import (
     CandidateLayerTrajectory,
     LayerEmergenceResult,
@@ -92,7 +96,13 @@ if TYPE_CHECKING:
 # Per the CLAUDE.md §8 bundling rule (Chunk 7b.1): this prompt-version
 # bump ships in the SAME commit chain as the new findings fields it
 # cites — NOT deferred to 7m. First behavioral test of the rule.
-PROMPT_VERSION = 4
+# v4 → v5 (2026-05-25, Chunk 7c.8): adaptive MultiPv per ADR-0015.
+# Replaces v4's fixed MultiPv=5 with policy-character-driven choice
+# (handler 3 is always-deep so quick-mode cap doesn't apply; deep cap 8).
+# Adds top-of-prompt "v5 addition: adaptive MultiPv citation" pointing
+# at `mcts.multipv_used`. Per the bundling rule; per CLAUDE.md §3:
+# v4.md retained.
+PROMPT_VERSION = 5
 HANDLER_NAME = "did_you_consider"
 
 # MCTS top-N to surface to the LLM (mirrors why_this_move).
@@ -330,17 +340,30 @@ def handle_did_you_consider(
     # - Stockfish thread.
     # - Lc0 thread: extract_mcts_trajectory (handler 3 is always-deep so
     #   trajectory is mandatory).
-    def _bt4_thread() -> tuple:
-        leela_inner = extract_network_inference(board, model=model, top_n=top_n)
-        layer_em_inner: LayerEmergenceResult | None = None
+    # Chunk 7c.8 wire-up: run network_inference FIRST (sequential ~0.3s) so
+    # its policy distribution can inform the MCTS multipv choice. Then
+    # layer_emergence runs in a thread alongside SF + Lc0 — net latency
+    # is ~neutral vs the pre-7c.8 arrangement (see what_is_leela_seeing.py
+    # for the parallelism-impact comment).
+    leela = extract_network_inference(board, model=model, top_n=top_n)
+    # Handler 3 is always-deep by construction.
+    adaptive_mpv = compute_adaptive_multipv(
+        top_prob=(leela.top_moves[0].policy_pct / 100.0) if leela.top_moves else 0.0,
+        policy_entropy=policy_entropy_normalized(
+            [m.policy_pct for m in leela.top_moves],
+        ),
+        mode="deep",
+    )
+
+    def _bt4_layer_em_thread() -> LayerEmergenceResult | None:
         if not skip_layer_emergence:
-            layer_em_inner = extract_layer_emergence(
+            return extract_layer_emergence(
                 board, model=model, focal_uci=focal_uci, top_n_per_layer=top_n,
             )
-        return leela_inner, layer_em_inner
+        return None
 
     with ThreadPoolExecutor(max_workers=3) as ex:
-        bt4_future = ex.submit(_bt4_thread)
+        bt4_layer_future = ex.submit(_bt4_layer_em_thread)
         sf_future = ex.submit(
             extract_stockfish_eval, board,
             engine=stockfish_engine,
@@ -348,14 +371,16 @@ def handle_did_you_consider(
             top_n=stockfish_top_n,
         )
         if lc0_engine is not None:
-            # Chunk 7b: handler 3 is always-deep; request MultiPv=5 so
-            # the top-5 candidates carry their PV move sequences.
+            # Chunk 7c.8 adaptive multipv (was hardcoded multipv=5 in 7b).
+            # See compute_adaptive_multipv above for the policy character →
+            # multipv mapping (ADR-0015).
             mcts_future = ex.submit(
                 extract_mcts_trajectory, board,
-                engine=lc0_engine, max_nodes=mcts_max_nodes, multipv=5,
+                engine=lc0_engine, max_nodes=mcts_max_nodes,
+                multipv=adaptive_mpv,
             )
 
-    leela, layer_emergence = bt4_future.result()
+    layer_emergence = bt4_layer_future.result()
     sf = sf_future.result()
     full_mcts: MCTSFindings | None = None
     mcts_truncated: MCTSFindings | None = None

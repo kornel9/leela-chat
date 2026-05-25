@@ -678,6 +678,8 @@ def extract_mcts_trajectory(
         enriched_findings = _populate_pv_san(
             enriched_findings, search_result.principal_variations, board,
         )
+    # Chunk 7c.8: surface the actual multipv used so prompts can cite it.
+    enriched_findings = enriched_findings.model_copy(update={"multipv_used": multipv})
 
     logger.debug(
         f"mcts_trajectory: search_budget={search_budget} multipv={multipv} "

@@ -264,9 +264,18 @@ def test_detailed_mode_uses_trajectory_not_snapshot(monkeypatch, board):
     assert findings.mcts.children[0].trajectory_summary.q_peak == 0.95
 
 
-def test_deep_mode_passes_multipv_5_to_trajectory_extractor(monkeypatch, board):
-    """Chunk 7b: deep mode requests MultiPv=5 (per the per-mode default
-    committed in the plan). Quick mode keeps multipv=1 to fit the <30s gate."""
+def test_deep_mode_passes_adaptive_multipv_to_trajectory_extractor(monkeypatch, board):
+    """Chunk 7c.8 (was 7b's hardcoded multipv=5): deep mode now passes
+    a policy-adaptive multipv per compute_adaptive_multipv (ADR-0015).
+    For the _fake_policy_result distribution ([26.6%, 11.0%, 6.8%]):
+    top_prob=0.266 (< 0.30); normalized entropy ≈ 0.86 (> 0.85) →
+    contested branch → base 10 → deep cap 8.
+
+    Asserting the EXACT adaptive value rather than just "any int" gives
+    a regression guard against accidental wiring breakage (e.g., a
+    refactor that disconnects policy_entropy from the helper would
+    return the default 5).
+    """
     tracker = _patch_extractors(
         monkeypatch, mcts=None, mcts_traj=_fake_mcts_with_trajectories(),
         layer_emergence=_fake_layer_emergence(),
@@ -276,7 +285,8 @@ def test_deep_mode_passes_multipv_5_to_trajectory_extractor(monkeypatch, board):
         model=object(), stockfish_engine=object(), lc0_engine=object(),
         mode="deep",
     )
-    assert tracker.last_multipv == 5
+    # 8 (contested branch capped to deep mode's max-8 per 7c.8 calibration).
+    assert tracker.last_multipv == 8
 
 
 def test_quick_mode_passes_default_multipv_1_to_extractor(monkeypatch, board):

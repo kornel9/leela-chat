@@ -371,6 +371,18 @@ class MCTSFindings(BaseModel):
         ...,
         description="True iff Lc0 returned a bestmove (search wasn't interrupted).",
     )
+    multipv_used: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "The MultiPv value the caller (handler) actually used for this "
+            "search. Surfaces the policy-character-adaptive choice from "
+            "``compute_adaptive_multipv`` (Chunk 7c.8 / ADR-0015) so prompts "
+            "can cite e.g. \"Leela's search examined N candidate lines based "
+            "on the position's policy character.\" Default 1 (back-compat "
+            "with pre-7c.8 callers that don't set it explicitly)."
+        ),
+    )
 
     model_config = ConfigDict(frozen=True)
 

@@ -11,7 +11,7 @@
 ## Current Status
 
 - **Phase:** 2 — MCTS Integration. Entered 2026-05-19 after Phase 1's informal close. Phase 2 entry brief delivered + acknowledged; Phase 2 plan written (see `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md`).
-- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19; Chunk 6 trilogy done 2026-05-19; Chunk 6.5 done 2026-05-20; Chunk 6.6 + 6.7 + 6.8 + 6.8.1 done 2026-05-21; Chunk 6.9 done 2026-05-24 (subjective gate cleared by AI scoring per user delegation; user manual re-scoring deferred to Chunk 7's 7o once chess-content extractors land per CLAUDE.md §2 Rule 1 constraint). **Chunk 7 plan Phase B done 2026-05-24** — ADR-0011 (quality bar shift to super-GM 2700+), ADR-0012 (deep-mode latency cap relaxation; quick mode preserves <30s; deepest mode out-of-scope; cap now <300s after Chunk 7c.6 amendment), ADR-0013 (Tier-2 MCTS deferred to post-Phase-3 evidence) all landed; walkthrough_rxd4 v5/v2 baseline prose preserved as test fixture; 2500+ rater recruitment in Pending user action items (does NOT block). **Chunk 7 Phase C in flight:** 7a/7b/7b.1/7b.2/7b.2.E/7c/7c.5/7c.6/7c.7 done; pre-7d work bundle continues (7c.8 → 7c.9 → 7d). ADR-0014 codified the bundling-rule precedent at 7c.5.C; ADR-0014 framing-refinement preamble + Reference: structural-response examples subsection added at 7c.6. ADR-0015 reserved for 7c.8's dynamic-multipv mapping; 7n's MCTS-baseline ADR shifts to ADR-0016. Smoke battery JSONL schema gained `trajectory_summaries` + `cache_creation_input_tokens` + `cache_read_input_tokens` fields at 7c.7 (forward fields — pre-7c.7 rows have N/A in analyzer output).
+- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19; Chunk 6 trilogy done 2026-05-19; Chunk 6.5 done 2026-05-20; Chunk 6.6 + 6.7 + 6.8 + 6.8.1 done 2026-05-21; Chunk 6.9 done 2026-05-24 (subjective gate cleared by AI scoring per user delegation; user manual re-scoring deferred to Chunk 7's 7o once chess-content extractors land per CLAUDE.md §2 Rule 1 constraint). **Chunk 7 plan Phase B done 2026-05-24** — ADR-0011 (quality bar shift to super-GM 2700+), ADR-0012 (deep-mode latency cap relaxation; quick mode preserves <30s; deepest mode out-of-scope; cap now <300s after Chunk 7c.6 amendment), ADR-0013 (Tier-2 MCTS deferred to post-Phase-3 evidence) all landed; walkthrough_rxd4 v5/v2 baseline prose preserved as test fixture; 2500+ rater recruitment in Pending user action items (does NOT block). **Chunk 7 Phase C in flight:** 7a/7b/7b.1/7b.2/7b.2.E/7c/7c.5/7c.6/7c.7/7c.8 done; pre-7d work bundle final step (7c.9 → 7d). ADR-0014 codified the bundling-rule precedent at 7c.5.C; ADR-0014 framing-refinement preamble + Reference: structural-response examples subsection added at 7c.6. ADR-0015 (adaptive MultiPv mapping) accepted at 7c.8; 7n's MCTS-baseline ADR shifts to ADR-0016. Smoke battery JSONL schema gained `trajectory_summaries` + `cache_creation_input_tokens` + `cache_read_input_tokens` fields at 7c.7; MCTSFindings gained `multipv_used` field at 7c.8. Per-handler prompt versions at 7c.8 close: what_is_leela_seeing v9 / why_this_move v6 / did_you_consider v5 (all deep-mode versions; quick stays at v6/v3 / N-A respectively).
 - **Last session:** 2026-05-25
 - **Chunk 7 entry criteria** (HARD prerequisites, promoted from soft "must include" in Chunk 6.7 commit B; must hold before any new Chunk-7 extractor lands). **Chunk 6.9 closed the prompt-fragility carry-over from 6.8: validation_ok 100%, illegal_move 0, templated 0%, forbidden-language hits 1/100 down from 4/100. AI subjective quality at parity or better on all 5 scored cells; user re-scoring deferred to post-7k+7l per the user-delegation close.**
   1. **Extractor invocation is parallelised.** Current sequential `handler_s` is ~7-8s detailed (extractors + ~750ms layer emergence). Chunk 7 adds ~2-4s of additional extractor time pre-parallelisation → projected post-Chunk-7 detailed latency ~20-25s, with Phase 3 probes pushing it over Phase 1's `<30s` exit criterion (CLAUDE.md §11). Chunk 7's FIRST deliverable is a per-extractor latency baseline on the walkthrough Rxd4 fixture + an `asyncio.gather` (or `concurrent.futures.ThreadPoolExecutor`) wrapper around extractor invocation so the slowest single extractor sets the floor instead of the sum. Parallelisation must demonstrably hold detailed-mode `handler_s` under ~10s before any new Chunk-7 extractor lands. The Phase 2 exit criterion in CLAUDE.md §11 has been amended to mention this ceiling explicitly.
@@ -1945,3 +1945,76 @@ Single doc-only commit bundling three items from the user's pre-7d review:
 **Discipline retrospective — three structural-response meta-rule fires in one sub-chunk.** All three surfaced because the plan was authored before contact with the actual data: (1) plan assumed findings_summary had trough data — it doesn't; (2) plan assumed walkthrough was in 7c.5.E JSONL — it isn't; (3) plan assumed input_tokens included system prompt — with prompt caching it doesn't. Each fire was the right structural response (extending smoke battery to persist the missing field, refactoring the capture script, etc.). Per CLAUDE.md §13: surfacing here for retrospective sign-off; each structural change shipped in the same commit chain it surfaced in. The meta-rule's "scope-creep checkpoint" purpose is exactly served — three changes that exceeded plan-literal scope, surfaced explicitly, awaiting accept-or-rollback decision.
 
 **Next: Chunk 7c.8 — dynamic multipv (compute_adaptive_multipv helper + per-mode caps + ADR-0015 + v9/v6/v5 prompt bumps per bundling rule).**
+
+#### 2026-05-25 — Chunk 7c.8 done (adaptive MultiPv + ADR-0015 + v9/v6/v5 prompt bumps)
+
+**Six plan sub-fixes (3a-3f) + threshold-reframing structural-response fire + spot-checks pass.**
+
+**Sub-fix 3a — compute_adaptive_multipv helper.** New module `leela_chat/extractors/adaptive_multipv.py` with two functions:
+- `policy_entropy_normalized(policy_pcts) -> float`: Shannon entropy normalized by ln(N) where N is the number of candidates → [0, 1] scale, comparable across different top_n truncation values.
+- `compute_adaptive_multipv(*, top_prob, policy_entropy, mode) -> int`: policy-character → multipv mapping with per-mode caps applied after.
+
+**Structural-response fire — threshold reframing.** The plan specified entropy thresholds (< 0.5 for dominant, > 2.5 for flat). With top-5 candidates (the typical `extract_network_inference` truncation), maximum raw entropy is `ln(5) ≈ 1.609`; the > 2.5 threshold is unreachable, the < 0.5 threshold is too strict (fires only at top_prob > 90%). Per CLAUDE.md §13 (structural-response meta-rule): switched to **normalized entropy** in [0, 1] dividing by `ln(N)`. Thresholds become: dominant (n_ent < 0.60), moderate (default), contested (n_ent > 0.85 with top < 0.30), flat (n_ent > 0.95 with top < 0.20). Calibrated against 7 synthetic distributions (uniform / dominant / moderate / contested / flat top-5 / flat top-10) — all branches fire as expected. Surfacing here for retrospective sign-off.
+
+**Sub-fix 3b — Pre-commit calibration (anthropic.messages.count_tokens on synthetic MCTS findings):**
+
+| multipv | tokens | Δ vs n=5 | × vs n=5 |
+|---|---|---|---|
+| 1  | 1030 |   n/a    |   n/a    |
+| 2  | 1519 |   n/a    |   n/a    |
+| 3  | 2018 |   n/a    |   n/a    |
+| 5  | 3006 |   +0     |   1.00x  |
+| 8  | 4538 |   +1532  |   **1.51x**  |
+| 10 | 5556 |   +2550  |   1.85x  |
+| 15 | 8036 |   +5030  |   **2.67x**  |
+
+Per the plan's "drop if multipv=15 doubles cost" trigger: multipv=15 is **2.67x** (well above 2x). Dropped the deep-mode cap from 10 (initial proposal) to 8. multipv=10 alone is 1.85x (acceptable) but the policy was to cap at 8 once the 2x trigger fired on the higher value. Documented inline at `PER_MODE_CAP` + the ADR.
+
+**Sub-fix 3c — Wire compute_adaptive_multipv into handlers.** Refactored each handler's orchestration:
+- Old (pre-7c.8): single BT4 thread did `extract_network_inference` + (deep) `extract_layer_emergence` sequentially while Stockfish + Lc0 threads ran in parallel.
+- New (7c.8): `extract_network_inference` runs SEQUENTIALLY FIRST (~0.3s), then `compute_adaptive_multipv` picks multipv from top_moves' policy distribution, then the parallel block (BT4 layer_emergence in its own thread + Stockfish + Lc0) starts.
+- Net latency: ~neutral. Old took `max(nw + layer_em, SF, Lc0)`; new takes `nw + max(layer_em, SF, Lc0)`. Same total for typical positions.
+- Applied to all three handlers: what_is_leela_seeing, why_this_move, did_you_consider.
+
+**Sub-fix 3d — Surface mcts.multipv_used in MCTSFindings.** Added `multipv_used: int = Field(default=1)` to `MCTSFindings`. Threaded through `extract_mcts` + `extract_mcts_trajectory` via `findings.model_copy(update={"multipv_used": multipv})` at the extractor return path. Validator unchanged (metadata; not a citable chess claim that needs grounding).
+
+**Sub-fix 3e — ADR-0015 documents the mapping.** Mapping table + per-mode caps + reversal cost. Also surfaces ADR-numbering shift note (ADR-0015 was pre-allocated for 7n's MCTS-baseline ADR; second renumbering this chunk — 7n shifts to ADR-0016).
+
+**Sub-fix 3f — Prompt bumps per CLAUDE.md §8 bundling rule.** Three new prompt versions, all citing `mcts.multipv_used`:
+- `what_is_leela_seeing/v9.md` (was v8): adds "v9 addition: adaptive MultiPv citation" section; reframes the v8 "PLUS the v8 addition" section to reference adaptive top-N.
+- `why_this_move/v6.md` (was v5): same shape.
+- `did_you_consider/v5.md` (was v4): same shape; handler 3 is always-deep so the multipv cap is the deep cap (8).
+- Handler `PROMPT_VERSION_DETAILED` constants bumped: 8→9 / 5→6 / 4→5.
+
+**Sub-fix 3h — Spot-checks on pod (one per handler tested):**
+
+*Spot-check 1: did_you_consider/v5 deep on walkthrough_rxd4 (focal=Rxd4):*
+- `mcts.multipv_used = 5` ✓ (top_prob=0.33, n_ent=0.92 → moderate branch → base 5 → deep cap 8 → 5).
+- validation_ok=True; 0 errors.
+- prompt_version=5 (v5 loaded correctly).
+- Prose cites adaptive multipv naturally: *"PUCT progressively committed with overwhelming confidence across the 5 candidates Leela explored deeply."*
+- handler_s, translate_s well within deep-mode budgets.
+
+*Spot-check 2: what_is_leela_seeing/v9 deep on walkthrough_rxd4:*
+- `mcts.multipv_used = 5` ✓ (same value as spot-check 1; consistent per-position choice).
+- validation_ok=True; 0 errors.
+- prompt_version=9 (v9 loaded correctly).
+- Prose does NOT explicitly cite "5 candidates" framing — the LLM chose not to mention the multipv count in the prose flow. This is acceptable per the v9 prompt's guidance: *"Keep the citation natural; don't force the citation if the prose flow doesn't need it."* The wiring is still verified by `mcts.multipv_used = 5` being present in findings.
+- The prose was substantive on the network-vs-search story (Rxd4 absent from layer_emergence; Rxb1+ network-favourite traversed and refuted) without needing the multipv-count call-out. Confirms that the "optional citation" framing in the prompts works correctly.
+- handler_s, translate_s within deep-mode budgets.
+
+**Latency impact (sub-fix 3c refactor).** Sequential `extract_network_inference` adds ~0.3s up front. The previously-sequential `extract_layer_emergence` (inside the BT4 thread) now runs in parallel with SF + Lc0 instead of after `extract_network_inference` in the same thread. Net effect is approximately neutral or marginally faster.
+
+**Tests:**
+- New `tests/unit/test_adaptive_multipv.py` with 18 unit tests covering: entropy edge cases (empty / single / uniform / dominant / zeros / renormalization), each mapping branch (dominant / moderate / contested / flat), per-mode cap behavior, defensive fallback for unknown mode, returned value floor.
+- New test in `test_extract_mcts.py`: `test_extract_mcts_surfaces_multipv_used_on_findings` — extractor populates findings.multipv_used with the caller-supplied value.
+- Updated `test_what_is_leela_seeing.py::test_deep_mode_passes_adaptive_multipv_to_trajectory_extractor` — was hardcoded `multipv == 5`; now asserts the adaptive value (`8` for the test fixture's policy distribution, which falls in contested branch with top_prob=0.266).
+- Test count: 253 baseline + 18 adaptive + 1 multipv_used = **272 pass**.
+
+**Cost:** ~$0.15 Anthropic (calibration count_tokens calls + 2 spot-check pod runs) + ~6 min pod wall-clock for spot-checks.
+
+**Commit structure (per bundling rule):** all changes ship in one commit chain — code (helper + extractors + handlers) + tests + ADR + prompt files + handler PROMPT_VERSION constants + PHASE_NOTES. Two commits:
+1. **7c.8.A:** helper + tests + extractor changes (mcts_parser.py multipv_used field + mcts.py + mcts_trajectory.py findings.model_copy threading) + 18 new unit tests + test_extract_mcts update.
+2. **7c.8.B:** handler wiring (3 handlers refactored) + prompt files (v9/v6/v5) + PROMPT_VERSION bumps + ADR-0015 + PHASE_NOTES retro + plan-file update (none needed; just ADR-0015 → ADR-0016 shift documented in ADR text).
+
+**Next: Chunk 7c.9 — extract_trajectory_decomposition (WHY narration for troughs) + did_you_consider/v6 prompt + validator extension for pv_snapshots dict.**

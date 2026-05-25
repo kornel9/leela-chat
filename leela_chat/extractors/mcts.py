@@ -92,6 +92,11 @@ def extract_mcts(
     # so this fires for any analysis() call where the engine emitted PVs.
     if search_result.principal_variations:
         findings = _populate_pv_san(findings, search_result.principal_variations, board)
+    # Chunk 7c.8: surface the actual multipv used (caller-supplied) on
+    # the findings so prompts can cite it (per the adaptive-multipv
+    # contract from ADR-0015). parse_verbose_move_stats defaulted it
+    # to 1; the live caller's value overrides.
+    findings = findings.model_copy(update={"multipv_used": multipv})
     top = findings.children[0] if findings.children else None
     logger.debug(
         f"mcts: requested={nodes} multipv={multipv} "

@@ -134,6 +134,20 @@ def test_extract_mcts_multipv_kwarg_threads_to_engine() -> None:
     assert kwargs["multipv"] == 5
 
 
+def test_extract_mcts_surfaces_multipv_used_on_findings() -> None:
+    """Chunk 7c.8: extractor populates findings.multipv_used with the
+    actual caller-supplied multipv (so prompts can cite the adaptive
+    choice from compute_adaptive_multipv per ADR-0015)."""
+    eng = _fake_engine_returning("starting_position", bestmove_uci="d2d4")
+    findings = extract_mcts(chess.Board(), engine=eng, multipv=3)
+    assert findings.multipv_used == 3
+
+    # Default (multipv=1) also surfaces correctly.
+    eng2 = _fake_engine_returning("starting_position", bestmove_uci="d2d4")
+    findings2 = extract_mcts(chess.Board(), engine=eng2)
+    assert findings2.multipv_used == 1
+
+
 def test_extract_mcts_populates_pv_san_on_matching_children() -> None:
     """When multipv > 1, principal_variations are mapped to MCTSChild.pv_san
     by matching the first move's UCI."""
