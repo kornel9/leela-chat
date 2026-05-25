@@ -48,6 +48,14 @@ import yaml
 from loguru import logger
 
 from leela_chat.eval.lichess_puzzle_db import sample_stratified
+# Chunk 7c.7 sub-fix 1a-struct: importing the validator's private
+# `_collect_trajectory_summaries` helper to persist trajectory_summary
+# projections in JSONL rows. 7c.9 may formally promote this to a public
+# `collect_trajectory_summaries` name (paired with the parallel
+# _TROUGH_DELTA_THRESHOLD → TROUGH_DELTA_THRESHOLD promotion the user
+# specified for 7c.9 sub-fix 4-pre.1); using the private name with
+# this comment is the bridge until then.
+from leela_chat.validator import _collect_trajectory_summaries
 
 # 20-position strata — see Chunk 6.8 plan for the rationale.
 STRATA: dict[str, dict] = {
@@ -502,11 +510,14 @@ def _run_one(
             "translate_s": 0.0,
             "llm_calls": 0,
             "input_tokens": 0,
+            "cache_creation_input_tokens": 0,  # Chunk 7c.7 — back-compat default.
+            "cache_read_input_tokens": 0,  # Chunk 7c.7 — back-compat default.
             "output_tokens": 0,
             "prose": "(dry-run; no LLM call)",
             "llm_attempt_texts": [],
             "findings_summary": {},
             "interpretive_claims": [],  # Chunk 7b.2.C — back-compat default.
+            "trajectory_summaries": [],  # Chunk 7c.7 — back-compat default.
         })
         return out
 
@@ -524,6 +535,21 @@ def _run_one(
         )
         total_in = sum(r.input_tokens for r in result.llm_responses)
         total_out = sum(r.output_tokens for r in result.llm_responses)
+        # Chunk 7c.7 sub-fix 1c-struct: persist cache token fields so
+        # the analyzer's token-decomposition section can accurately
+        # account for the cached system prompt's cost. Anthropic's
+        # usage.input_tokens with prompt caching enabled is the
+        # UNCACHED portion only (the user message); cached system
+        # prompts go to cache_creation_input_tokens (first call) or
+        # cache_read_input_tokens (subsequent). Without these the
+        # JSONL's "input_tokens" misleadingly excludes the system
+        # prompt — making the decomposition arithmetic wrong.
+        total_cache_creation = sum(
+            r.cache_creation_input_tokens for r in result.llm_responses
+        )
+        total_cache_read = sum(
+            r.cache_read_input_tokens for r in result.llm_responses
+        )
         out.update({
             "source": result.source,
             "validation_ok": result.validation.ok,
@@ -536,6 +562,8 @@ def _run_one(
             "translate_s": translate_s,
             "llm_calls": len(result.llm_responses),
             "input_tokens": total_in,
+            "cache_creation_input_tokens": total_cache_creation,
+            "cache_read_input_tokens": total_cache_read,
             "output_tokens": total_out,
             "prose": result.text,
             # Chunk 6.9 sub-item 1 — preserve LLM failed-attempt prose
@@ -556,6 +584,18 @@ def _run_one(
             "interpretive_claims": _extract_interpretive_claims(
                 result.text, _extract_findings_summary(findings_dict),
             ),
+            # Chunk 7c.7 sub-fix 1a-struct — persist trajectory_summary
+            # projections (q_first/q_last/q_trough/q_peak/location per
+            # trajectory_summary found in findings) so the analyzer's
+            # trough-scan can disambiguate "validator works" from "no
+            # real cases in sample." findings_summary is intentionally
+            # lossy and dropped trajectory data; this field is the
+            # less-lossy projection sized for trough-scan needs only.
+            # Empty list on rows where findings has no trajectory_summary
+            # or findings_dict is None.
+            "trajectory_summaries": (
+                _collect_trajectory_summaries(findings_dict) if findings_dict else []
+            ),
         })
     except Exception as exc:
         logger.exception(f"smoke_battery: handler {handler}/{mode} on {position['id']} crashed")
@@ -567,11 +607,14 @@ def _run_one(
             "translate_s": 0.0,
             "llm_calls": 0,
             "input_tokens": 0,
+            "cache_creation_input_tokens": 0,  # Chunk 7c.7 — back-compat default.
+            "cache_read_input_tokens": 0,  # Chunk 7c.7 — back-compat default.
             "output_tokens": 0,
             "prose": f"(crash: {type(exc).__name__}: {exc})",
             "llm_attempt_texts": [],
             "findings_summary": {},
             "interpretive_claims": [],  # Chunk 7b.2.C — back-compat default.
+            "trajectory_summaries": [],  # Chunk 7c.7 — back-compat default.
         })
     return out
 
