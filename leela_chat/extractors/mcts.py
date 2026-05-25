@@ -123,21 +123,25 @@ def _populate_pv_san(
     Per CLAUDE.md S5 (Pydantic immutability + ``frozen=True``): build a
     new findings via ``model_copy`` rather than mutating in place.
 
-    **Silent partial-PV degradation (intentional):** if the SAN walk fails
-    midway (Lc0 has been observed to emit truncated or otherwise malformed
-    PVs on very short searches), this function logs a WARNING and keeps
-    whatever SAN sequence was built up to the failure point — the
-    candidate's ``pv_san`` gets the partial line, not raised exception, not
-    empty list. Rationale: partial PV is better than no PV for prose
+    **Partial-PV degradation surfaced via pv_san_truncated flag (7c.5.B):**
+    if the SAN walk fails midway (Lc0 has been observed to emit truncated
+    or otherwise malformed PVs on very short searches), this function logs
+    a WARNING, keeps whatever SAN sequence was built up to the failure
+    point AS the child's ``pv_san``, AND sets the child's
+    ``pv_san_truncated=True`` so downstream consumers (prompts, validator)
+    can react. Rationale: partial PV is better than no PV for prose
     citation, and the validator's ``_collect_trusted_moves`` walks each
-    SAN entry independently so the partial sequence stays trusted. The
-    silent-degradation behaviour is a deliberate choice, not a bug — if
-    you're debugging "Leela's PV is shorter than I expected for top
-    candidate X," check the loguru output for the warning.
+    SAN entry independently so the partial sequence stays trusted; but
+    the truncation flag prevents prose from drawing conclusions about
+    positions reached at the (non-existent) end of the line. Pre-7c.5.B
+    this was silent-with-WARN only; the upgrade to findings-level flag
+    matters because 7c (focused pass) + 7d (exploration pass) make
+    deeper PVs more common and silent truncation in any of three PV
+    sources by 7m could produce prose unverifiable against findings.
     """
     import chess as chess_mod
 
-    pv_san_by_first_uci: dict[str, list[str]] = {}
+    pv_san_by_first_uci: dict[str, tuple[list[str], bool]] = {}
     for _idx, uci_sequence in principal_variations.items():
         if not uci_sequence:
             continue
@@ -145,6 +149,7 @@ def _populate_pv_san(
         # Convert the full PV to SAN by walking it on a copy of the board.
         san_sequence: list[str] = []
         scratch_board = board.copy()
+        truncated = False
         try:
             for uci in uci_sequence:
                 move = chess_mod.Move.from_uci(uci)
@@ -152,19 +157,26 @@ def _populate_pv_san(
                 scratch_board.push(move)
         except (ValueError, chess_mod.IllegalMoveError, AssertionError) as exc:
             # Malformed PV (Lc0 has been known to emit truncated PVs on
-            # very short searches). Keep whatever we got + log.
+            # very short searches). Keep whatever we got + log + set the
+            # truncation flag for downstream consumers.
             logger.warning(
                 f"PV walk aborted at move {len(san_sequence)+1} of "
                 f"{len(uci_sequence)} (first={first_uci}): {exc}"
             )
-        pv_san_by_first_uci[first_uci] = san_sequence
+            truncated = True
+        pv_san_by_first_uci[first_uci] = (san_sequence, truncated)
 
     # Build new children list with pv_san populated where it matches.
+    # Per 7c.5.B: also surface the truncation flag.
     new_children = []
     for child in findings.children:
-        pv = pv_san_by_first_uci.get(child.uci)
-        if pv is not None and not child.pv_san:
-            new_children.append(child.model_copy(update={"pv_san": pv}))
+        pv_data = pv_san_by_first_uci.get(child.uci)
+        if pv_data is not None and not child.pv_san:
+            pv, truncated = pv_data
+            new_children.append(child.model_copy(update={
+                "pv_san": pv,
+                "pv_san_truncated": truncated,
+            }))
         else:
             new_children.append(child)
     return findings.model_copy(update={"children": new_children})

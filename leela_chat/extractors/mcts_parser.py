@@ -237,7 +237,27 @@ class MCTSChild(BaseModel):
             "Principal variation in SAN, beginning with this move. Empty "
             "in Phase 2 Chunk 2 — verbose-move-stats does not surface per-"
             "child PV; Chunks 5-6 may revisit via deeper tree dumps or "
-            "move-forcing if the handlers need it."
+            "move-forcing if the handlers need it. Chunk 7b populates this "
+            "from python-chess's info['pv'] in MultiPv>=1 and focused-pass "
+            "(searchmoves) modes via _populate_pv_san."
+        ),
+    )
+
+    pv_san_truncated: bool = Field(
+        default=False,
+        description=(
+            "Chunk 7c.5.B — True iff the SAN-walk of this child's PV "
+            "stopped early (Lc0 emitted a UCI sequence whose later moves "
+            "are illegal on the walked board state). _populate_pv_san "
+            "catches the truncation, logs a WARN, and surfaces it here as "
+            "a findings-level flag so downstream consumers (prompts, "
+            "validator) can react. ``pv_san`` still contains whatever "
+            "valid prefix was walked before truncation (partial PV is "
+            "better than no PV). Becomes more important at 7c+ where "
+            "focused-pass + multi-config-ensemble produce three PV "
+            "sources by 7m — silent truncation in any of them could "
+            "produce prose claiming conclusions about positions that "
+            "never appeared in the actual line."
         ),
     )
 

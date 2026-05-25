@@ -507,6 +507,22 @@ You (Claude Code) should respectfully push back when the user asks for any of th
 
 When pushing back, point to this file or the bible. Offer the right alternative.
 
+### Structural-response-to-surfaced-failure-mode meta-rule (added 2026-05-25 from Chunk 7c retro)
+
+**When a plan-defined failure mode surfaces during a sub-chunk, structural responses (not just the pattern-level updates the plan explicitly authorized) ARE permitted — but MUST be surfaced in the sub-chunk's retro as an explicit checkpoint item, with a retrospective accept-or-rollback decision from the user.**
+
+Canonical example: Chunk 7c's interpretive-claim heuristic. The 7b.2.E plan refinement said *"Update Rule A's wordlist or Rule B's patterns at 7c if either failure mode surfaces."* When the heuristic under-fired on 7c's spot-check prose, I (Claude Code) extended both Rule B's patterns AND changed the EXCLUSION LOGIC (a structural design change, not just a pattern addition). The plan didn't explicitly authorize the exclusion-logic change. User accepted retrospectively 2026-05-25 with reasoning that pattern-only updates couldn't have addressed the under-fire mode — the plan's framing was the thing that was wrong, not the structural change.
+
+**The rule:** if your plan says "update X" and you find yourself needing to also update Y (different shape of change) to actually address the failure mode the plan flagged:
+
+1. Ship Y in the same commit chain as the plan-authorized X (don't fragment the failure-mode response across sub-chunks).
+2. Surface Y explicitly in the retro under "scope-creep / structural responses worth checkpointing."
+3. Get retrospective user sign-off (accept-or-rollback decision).
+4. Don't litigate the call mid-chunk (the failure mode demands a fix; the meta-discussion is the retro's job).
+5. Don't silently expand scope without surfacing it.
+
+**Why this exists:** the failure mode of "I'd have to rewrite the plan first to authorize this" stopping a real fix from landing in the same commit chain as the failure that exposed it. That fragmentation makes attribution harder at later sub-chunks. The "scope strictly to plan" discipline is good against silent scope creep; the "structural-response permitted with retro surfacing" rule is the safety valve against making the plan's exact phrasing into a load-bearing constraint when the failure mode demands a different shape.
+
 ---
 
 ## 14. File Maintenance

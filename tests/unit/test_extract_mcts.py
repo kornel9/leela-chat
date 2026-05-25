@@ -190,3 +190,76 @@ def test_extract_mcts_multipv_1_does_not_populate_pv_san() -> None:
 
     # No child should have a populated pv_san — the parser leaves them empty.
     assert all(not c.pv_san for c in findings.children)
+
+
+# === Chunk 7c.5.B: pv_san_truncated flag ====================================
+
+
+def test_pv_san_truncated_set_when_san_walk_aborts() -> None:
+    """When Lc0 emits a UCI sequence whose later moves are illegal on the
+    walked board state, _populate_pv_san catches the truncation and sets
+    the child's pv_san_truncated=True. The flag is surfaced as a findings-
+    level signal so downstream consumers (prompts, validator) can react
+    instead of seeing a silent partial PV."""
+    text = (FIXTURES_DIR / "walkthrough_rxd4.txt").read_text().splitlines()
+    info_lines = [line for line in text if line and not line.startswith("#")]
+    eng = MagicMock()
+    eng.analyse_verbose.return_value = Lc0SearchResult(
+        info_string_lines=info_lines,
+        bestmove_uci="d8d4",
+        nodes_requested=2000,
+        wall_seconds=0.4,
+        search_complete=True,
+        multipv_requested=1,
+        # PV starts cleanly (Rxd4 Qc3) then becomes illegal at the 3rd move
+        # (a3a8 would be a queen jump that's blocked / wrong square).
+        principal_variations={
+            1: ["d8d4", "a3c3", "a3a8"],  # 3rd move from a3 is illegal: queen just moved
+        },
+    )
+    board = chess.Board(
+        "1r1r2k1/5ppp/p3pn2/4q3/b1PN4/Q4P2/P2RB1PP/KR6 b - - 0 1",
+    )
+
+    findings = extract_mcts(board, engine=eng, nodes=2000, multipv=1)
+
+    rxd4 = next((c for c in findings.children if c.uci == "d8d4"), None)
+    assert rxd4 is not None
+    # Truncation: walker captured "Rxd4" and "Qc3" before the 3rd move
+    # raised. The pv_san_truncated flag should be True.
+    assert rxd4.pv_san_truncated is True, (
+        f"Expected pv_san_truncated=True after walk aborted; "
+        f"pv_san={rxd4.pv_san}, pv_san_truncated={rxd4.pv_san_truncated}"
+    )
+    # Partial PV preserved (1-2 valid moves before the abort).
+    assert len(rxd4.pv_san) >= 1
+    assert rxd4.pv_san[0] == "Rxd4"
+
+
+def test_pv_san_truncated_false_when_walk_completes() -> None:
+    """When the SAN walk completes successfully, pv_san_truncated stays
+    False (default). Regression guard against accidentally flagging clean
+    PVs as truncated."""
+    text = (FIXTURES_DIR / "walkthrough_rxd4.txt").read_text().splitlines()
+    info_lines = [line for line in text if line and not line.startswith("#")]
+    eng = MagicMock()
+    eng.analyse_verbose.return_value = Lc0SearchResult(
+        info_string_lines=info_lines,
+        bestmove_uci="d8d4",
+        nodes_requested=2000,
+        wall_seconds=0.4,
+        search_complete=True,
+        multipv_requested=1,
+        # Fully legal 2-move PV.
+        principal_variations={1: ["d8d4", "a3c3"]},
+    )
+    board = chess.Board(
+        "1r1r2k1/5ppp/p3pn2/4q3/b1PN4/Q4P2/P2RB1PP/KR6 b - - 0 1",
+    )
+
+    findings = extract_mcts(board, engine=eng, nodes=2000, multipv=1)
+
+    rxd4 = next((c for c in findings.children if c.uci == "d8d4"), None)
+    assert rxd4 is not None
+    assert rxd4.pv_san == ["Rxd4", "Qc3"]
+    assert rxd4.pv_san_truncated is False
