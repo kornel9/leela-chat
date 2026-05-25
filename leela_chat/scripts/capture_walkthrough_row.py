@@ -59,6 +59,18 @@ def main() -> int:
         "--mode", default="deep", choices=("quick", "deep"),
         help="Latency mode (default: deep; did_you_consider auto-upgrades quick→deep)",
     )
+    parser.add_argument(
+        "--fen", default=WALKTHROUGH_FEN,
+        help="Position FEN to analyze (default: walkthrough_rxd4 fixture)",
+    )
+    parser.add_argument(
+        "--focal-uci", default=WALKTHROUGH_FOCAL_UCI,
+        help="Focal move UCI (default: d8d4 / Rxd4)",
+    )
+    parser.add_argument(
+        "--position-id", default="walkthrough_rxd4",
+        help="Position id stamped on the row (for analyzer + retro labels)",
+    )
     args = parser.parse_args()
 
     timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -100,13 +112,13 @@ def _capture_with_context_inner(ctx, args) -> int:
 
     # Build the position dict in the schema _run_one expects.
     position = {
-        "id": "walkthrough_rxd4",
-        "fen": WALKTHROUGH_FEN,
+        "id": args.position_id,
+        "fen": args.fen,
         "category": "tactical",
-        "stratum": "walkthrough_rxd4_fixture",
+        "stratum": f"{args.position_id}_fixture",
         "themes": ["sacrifice", "middlegame"],
         "rating": 0,  # canonical fixture, not from puzzle DB
-        "focal_uci": WALKTHROUGH_FOCAL_UCI,
+        "focal_uci": args.focal_uci,
         "focal_source": "fixture",
     }
 
@@ -119,7 +131,7 @@ def _capture_with_context_inner(ctx, args) -> int:
         logger.warning(f"MCTS bestmove failed: {exc}")
         position["_mcts_bestmove_uci"] = None
 
-    logger.info(f"running {args.handler}/{args.mode} on walkthrough_rxd4 (single LLM call)")
+    logger.info(f"running {args.handler}/{args.mode} on {args.position_id} (single LLM call)")
     # Single-call capture: previously _run_one was called for the row
     # AND _answer_one was called separately for the sidecar findings_dict
     # — TWO LLM calls per script run with independent MCTS + LLM
@@ -130,8 +142,17 @@ def _capture_with_context_inner(ctx, args) -> int:
     # test needs row prose + findings_dict from the SAME call. Refactored
     # to call _answer_one once + build BOTH the row AND the sidecar
     # from the unified result.
+    # Compute the focal SAN from focal_uci against the actual position
+    # so the question is correct for non-walkthrough FENs.
+    focal_san_for_question = "(focal)"
+    if args.focal_uci:
+        try:
+            _qboard = chess.Board(args.fen)
+            focal_san_for_question = _qboard.san(chess.Move.from_uci(args.focal_uci))
+        except Exception as exc:
+            logger.warning(f"focal_uci → SAN conversion failed: {exc}; question will say '(focal)'")
     question = (
-        "Did you consider Rxd4?" if args.handler == "did_you_consider"
+        f"Did you consider {focal_san_for_question}?" if args.handler == "did_you_consider"
         else "Why this move?" if args.handler == "why_this_move"
         else "What is Leela seeing here?"
     )

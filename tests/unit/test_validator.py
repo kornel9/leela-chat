@@ -659,3 +659,86 @@ def test_validator_no_misfire_on_real_walkthrough_did_you_consider_v4_row():
         f"If the new validator behavior is correct, re-capture the "
         f"fixture via `uv run python -m leela_chat.scripts.capture_walkthrough_row`."
     )
+
+
+# === Chunk 7c.9: trough_explanation walker coverage =======================
+
+def test_trusted_moves_collected_from_trough_explanation():
+    """The TrajectoryDecomposition schema uses literal `uci` / `san` /
+    `pv_san` keys (per 7c.9 pre-flight). The validator's
+    _collect_trusted_moves walker picks these up natively — no walker
+    extension needed. This test pins that contract.
+    """
+    from leela_chat.validator import _collect_trusted_moves
+
+    # Construct a findings dict shape that mirrors how
+    # DidYouConsiderFindings.model_dump() serializes trough_explanation.
+    # The walker is shape-agnostic; it recurses dicts/lists and adds
+    # literal-key matches to its sets.
+    findings = {
+        "fen": "8/8/8/8/8/8/8/4K2R w K - 0 1",
+        "trough_explanation": {
+            "uci": "g1f3",
+            "san": "Nf3",
+            "pv_san": ["Nf3", "Nc6", "Bb5"],
+            "snapshots": [
+                {"phase": "pre", "nodes_searched": 100, "visits": 5, "q": 0.40},
+                {"phase": "at", "nodes_searched": 200, "visits": 8, "q": 0.10},
+                {"phase": "post", "nodes_searched": 300, "visits": 9, "q": 0.05},
+            ],
+            "q_delta_pre_to_trough": -0.30,
+        },
+    }
+    sans, ucis = _collect_trusted_moves(findings)
+
+    # Candidate's literal-key fields surfaced as trusted.
+    assert "Nf3" in sans, f"Expected Nf3 in sans; got {sorted(sans)}"
+    assert "Nc6" in sans, f"Expected Nc6 in sans from pv_san; got {sorted(sans)}"
+    assert "Bb5" in sans, f"Expected Bb5 in sans from pv_san; got {sorted(sans)}"
+    assert "g1f3" in ucis, f"Expected g1f3 in ucis; got {sorted(ucis)}"
+
+    # The snapshots' `phase` field is NOT a chess move; should NOT leak
+    # into sans/ucis. (Defensive: confirms the walker doesn't accidentally
+    # treat "pre" / "at" / "post" strings as SAN.)
+    assert "pre" not in sans
+    assert "at" not in sans
+    assert "post" not in sans
+
+
+def test_validator_flags_move_not_in_trough_explanation_pv_san():
+    """False-positive guard: a sentence citing a SAN NOT in
+    trough_explanation.pv_san (or any other trusted source) flags as
+    illegal_move. Confirms the walker's coverage is doing real work.
+    """
+    findings = {
+        "fen": "8/8/8/8/8/8/8/4K2R w K - 0 1",
+        "trough_explanation": {
+            "uci": "g1f3",
+            "san": "Nf3",
+            "pv_san": ["Nf3", "Nc6", "Bb5"],
+            "snapshots": [
+                {"phase": "pre", "nodes_searched": 100, "visits": 5, "q": 0.40},
+                {"phase": "at", "nodes_searched": 200, "visits": 8, "q": 0.10},
+                {"phase": "post", "nodes_searched": 300, "visits": 9, "q": 0.05},
+            ],
+            "q_delta_pre_to_trough": -0.30,
+        },
+    }
+    # Prose cites moves that exist in trough_explanation.pv_san (Nf3, Nc6)
+    # AND a move that does NOT (Qd8 — not in pv_san, not legal on the
+    # K+R-only fen). Validator should let Nf3/Nc6 pass but flag Qd8.
+    prose = (
+        "Leela explored Nf3 then Nc6, redirecting back to the focal move "
+        "with Bb5 the settled continuation. Note: Qd8 was never visited."
+    )
+    fen = "8/8/8/8/8/8/8/4K2R w K - 0 1"
+    r = validate_response(prose, fen=fen, findings=findings)
+
+    illegal_spans = [e.span for e in r.errors if e.kind == "illegal_move"]
+    # Qd8 is the offending span; Nf3 / Nc6 / Bb5 are trusted via pv_san.
+    assert "Qd8" in illegal_spans, (
+        f"Expected Qd8 to be flagged as illegal_move; got spans: {illegal_spans}"
+    )
+    assert "Nf3" not in illegal_spans
+    assert "Nc6" not in illegal_spans
+    assert "Bb5" not in illegal_spans

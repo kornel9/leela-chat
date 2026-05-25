@@ -406,7 +406,15 @@ def _is_grounded(value: float, flat_values: set[float], *, is_percent: bool) -> 
 # T=0.10 is below all the "real trough" cases and above all the "no real
 # trough" cases in the captured data. Re-tune if 7o or 7d surfaces an
 # edge case where the threshold mis-fires.
-_TROUGH_DELTA_THRESHOLD = 0.10
+#
+# Chunk 7c.9 (sub-fix 4-pre.1): promoted from private `_TROUGH_DELTA_THRESHOLD`
+# to public `TROUGH_DELTA_THRESHOLD` so the new `extract_trajectory_decomposition`
+# extractor can import and gate on the same value. Future threshold tuning
+# lands in ONE place. The private alias is preserved for back-compat (one
+# external in-test reference exists; rather than touch tests we keep both
+# names bound to the same float).
+TROUGH_DELTA_THRESHOLD = 0.10
+_TROUGH_DELTA_THRESHOLD = TROUGH_DELTA_THRESHOLD  # back-compat alias.
 
 # Round-aware tolerance for "is this Q value cited in the prose?". 0.005
 # means "+0.92" matches a target of 0.917 (delta 0.003) and "+0.917" also
@@ -484,7 +492,7 @@ def _q_value_cited_in_prose(
 
 def _check_trough_completeness(
     response_text: str, findings: dict[str, Any],
-    *, threshold: float = _TROUGH_DELTA_THRESHOLD,
+    *, threshold: float = TROUGH_DELTA_THRESHOLD,
 ) -> list[ValidationError]:
     """Flag prose that cites q_first/q_last from a trajectory_summary
     whose q_trough deviates by ≥ ``threshold`` without also citing q_trough.

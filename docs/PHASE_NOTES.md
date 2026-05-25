@@ -11,7 +11,7 @@
 ## Current Status
 
 - **Phase:** 2 — MCTS Integration. Entered 2026-05-19 after Phase 1's informal close. Phase 2 entry brief delivered + acknowledged; Phase 2 plan written (see `/home/kornel/.claude/plans/tell-me-and-explain-mutable-axolotl.md`).
-- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19; Chunk 6 trilogy done 2026-05-19; Chunk 6.5 done 2026-05-20; Chunk 6.6 + 6.7 + 6.8 + 6.8.1 done 2026-05-21; Chunk 6.9 done 2026-05-24 (subjective gate cleared by AI scoring per user delegation; user manual re-scoring deferred to Chunk 7's 7o once chess-content extractors land per CLAUDE.md §2 Rule 1 constraint). **Chunk 7 plan Phase B done 2026-05-24** — ADR-0011 (quality bar shift to super-GM 2700+), ADR-0012 (deep-mode latency cap relaxation; quick mode preserves <30s; deepest mode out-of-scope; cap now <300s after Chunk 7c.6 amendment), ADR-0013 (Tier-2 MCTS deferred to post-Phase-3 evidence) all landed; walkthrough_rxd4 v5/v2 baseline prose preserved as test fixture; 2500+ rater recruitment in Pending user action items (does NOT block). **Chunk 7 Phase C in flight:** 7a/7b/7b.1/7b.2/7b.2.E/7c/7c.5/7c.6/7c.7/7c.8 done; pre-7d work bundle final step (7c.9 → 7d). ADR-0014 codified the bundling-rule precedent at 7c.5.C; ADR-0014 framing-refinement preamble + Reference: structural-response examples subsection added at 7c.6. ADR-0015 (adaptive MultiPv mapping) accepted at 7c.8; 7n's MCTS-baseline ADR shifts to ADR-0016. Smoke battery JSONL schema gained `trajectory_summaries` + `cache_creation_input_tokens` + `cache_read_input_tokens` fields at 7c.7; MCTSFindings gained `multipv_used` field at 7c.8. Per-handler prompt versions at 7c.8 close: what_is_leela_seeing v9 / why_this_move v6 / did_you_consider v5 (all deep-mode versions; quick stays at v6/v3 / N-A respectively).
+- **Active chunk:** Phase 2 Chunks 1-5 done 2026-05-19; Chunk 6 trilogy done 2026-05-19; Chunk 6.5 done 2026-05-20; Chunk 6.6 + 6.7 + 6.8 + 6.8.1 done 2026-05-21; Chunk 6.9 done 2026-05-24 (subjective gate cleared by AI scoring per user delegation; user manual re-scoring deferred to Chunk 7's 7o once chess-content extractors land per CLAUDE.md §2 Rule 1 constraint). **Chunk 7 plan Phase B done 2026-05-24** — ADR-0011 (quality bar shift to super-GM 2700+), ADR-0012 (deep-mode latency cap relaxation; quick mode preserves <30s; deepest mode out-of-scope; cap now <300s after Chunk 7c.6 amendment), ADR-0013 (Tier-2 MCTS deferred to post-Phase-3 evidence) all landed; walkthrough_rxd4 v5/v2 baseline prose preserved as test fixture; 2500+ rater recruitment in Pending user action items (does NOT block). **Chunk 7 Phase C in flight:** 7a/7b/7b.1/7b.2/7b.2.E/7c/7c.5/7c.6/7c.7/7c.8/7c.9 done; pre-7d work bundle COMPLETE — next is 7d (multi-config MCTS ensemble). ADR-0014 codified the bundling-rule precedent at 7c.5.C; framing-refinement preamble + Reference: structural-response examples subsection added at 7c.6. ADR-0015 (adaptive MultiPv mapping) accepted at 7c.8; 7n's MCTS-baseline ADR shifts to ADR-0016. Smoke battery JSONL schema gained `trajectory_summaries` + `cache_creation_input_tokens` + `cache_read_input_tokens` fields at 7c.7; MCTSFindings gained `multipv_used` field at 7c.8; DidYouConsiderFindings gained `trough_explanation: TrajectoryDecomposition | None` field at 7c.9. Per-handler prompt versions at 7c.9 close: what_is_leela_seeing v9 / why_this_move v6 / did_you_consider v6 (deep-mode versions; quick stays at v6/v3 / N-A respectively). Cumulative meta:feature ratio at 7c.9 close: 68% meta (15:7); 7e entropy-centralization DEFERRED per user directive (handler-local works; centralize when binding).
 - **Last session:** 2026-05-25
 - **Chunk 7 entry criteria** (HARD prerequisites, promoted from soft "must include" in Chunk 6.7 commit B; must hold before any new Chunk-7 extractor lands). **Chunk 6.9 closed the prompt-fragility carry-over from 6.8: validation_ok 100%, illegal_move 0, templated 0%, forbidden-language hits 1/100 down from 4/100. AI subjective quality at parity or better on all 5 scored cells; user re-scoring deferred to post-7k+7l per the user-delegation close.**
   1. **Extractor invocation is parallelised.** Current sequential `handler_s` is ~7-8s detailed (extractors + ~750ms layer emergence). Chunk 7 adds ~2-4s of additional extractor time pre-parallelisation → projected post-Chunk-7 detailed latency ~20-25s, with Phase 3 probes pushing it over Phase 1's `<30s` exit criterion (CLAUDE.md §11). Chunk 7's FIRST deliverable is a per-extractor latency baseline on the walkthrough Rxd4 fixture + an `asyncio.gather` (or `concurrent.futures.ThreadPoolExecutor`) wrapper around extractor invocation so the slowest single extractor sets the floor instead of the sum. Parallelisation must demonstrably hold detailed-mode `handler_s` under ~10s before any new Chunk-7 extractor lands. The Phase 2 exit criterion in CLAUDE.md §11 has been amended to mention this ceiling explicitly.
@@ -2018,3 +2018,71 @@ Per the plan's "drop if multipv=15 doubles cost" trigger: multipv=15 is **2.67x*
 2. **7c.8.B:** handler wiring (3 handlers refactored) + prompt files (v9/v6/v5) + PROMPT_VERSION bumps + ADR-0015 + PHASE_NOTES retro + plan-file update (none needed; just ADR-0015 → ADR-0016 shift documented in ADR text).
 
 **Next: Chunk 7c.9 — extract_trajectory_decomposition (WHY narration for troughs) + did_you_consider/v6 prompt + validator extension for pv_snapshots dict.**
+
+#### 2026-05-25 — Pre-7c.9 prep (teardown fix + trajectory_decomposition pre-flight)
+
+Per user's directive to collapse the predicted 7c.9 schema-fire BEFORE 7c.9 starts, ran two read-only investigations.
+
+**Capture-script teardown hang investigated + FIXED** (commit `f211987`). Root cause: `capture_walkthrough_row.py` imported `_build_context` from `leela_chat.cli.__main__` but never called `_close_context`. Lc0 + Stockfish subprocesses leaked → Python's interpreter waited on unreaped children at exit. The smoke battery (`run_smoke_battery.py`) already wrapped the same context build in try/finally + `_close_context` (lines 765/772) — that's why smoke battery does NOT leak. **Implication for 7d batch run:** smoke battery is safe; the hang was capture-script-specific. Fix: extracted body into `_capture_with_context_inner`, wrapped in try/finally with `_close_context(ctx)` in finally. Verified by pod run without `timeout` wrapper — exit 0 clean.
+
+**Trajectory_decomposition pre-flight: two structural findings, both larger than the predicted "shape adjustment."**
+
+1. **Per-snapshot PVs do NOT exist.** Plan's algorithm step 4 said "grab the PV for the top candidate at each of pre/at/post snapshots." Inspection confirmed: Lc0's `--log-live-stats` emits per-child `{nodes_searched, visits, q}` at each block — but NOT per-child PVs per block. `pv_san` is captured ONCE per child (final state) from python-chess's terminal `info["pv"]`. **The plan's `pv_snapshots: dict[str, list[str]]` is unbuildable from current extractor output.** Structural answer: use the culprit candidate's FINAL `pv_san` only.
+
+2. **Validator walker matches LITERAL key names.** `_collect_trusted_moves` has three exact key matches: `san`, `uci`, `pv_san`. NOT `pv_*` prefix. The original plan's walker-verification probe would have failed; the planned walker extension would have been required.
+
+**Combined response:** revised the 7c.9 plan to a schema with literal walker-compatible keys (`uci` / `san` / `pv_san` at the top level of TrajectoryDecomposition) + a rich `snapshots: list[TrajectorySnapshot]` field carrying pre/at/post `{phase, nodes_searched, visits, q}` (no SAN content; walker ignores).
+
+**Pre-flight collapsed AT LEAST 2 structural fires from 7c.9's in-flight surface:** (a) schema rewrite mid-implementation, (b) validator walker extension that turns out to not be needed. Cost: ~10 min investigation + ~15 min plan revision. Avoided: hours of in-flight refactor.
+
+#### 2026-05-25 — Chunk 7c.9 done (trough decomposition: extractor + findings + prompt v6, walker-native schema)
+
+**Single sub-fix arc per plan + zero new structural-response fires at implementation time** — the pre-flight's structural-response surface absorbed the schema/walker complexity before code landed.
+
+**4-pre.1 — TROUGH_DELTA_THRESHOLD promotion.** `_TROUGH_DELTA_THRESHOLD` (private from 7c.5.A) promoted to public `TROUGH_DELTA_THRESHOLD = 0.10` in `leela_chat/validator/__init__.py`; the private alias preserved as a back-compat (one external in-test reference). `_check_trough_completeness`'s default keyword arg now references the public name. The new extractor imports it: `from leela_chat.validator import TROUGH_DELTA_THRESHOLD`. Future threshold tuning lands in ONE place.
+
+**4a — extract_trajectory_decomposition (new extractor module).** `leela_chat/extractors/trajectory_decomposition.py`. Two Pydantic models:
+- `TrajectorySnapshot`: `{phase, nodes_searched, visits, q}`. Used as a 3-element list inside TrajectoryDecomposition.
+- `TrajectoryDecomposition`: 5 fields — `uci` (walker-trusted literal key), `san` (walker-trusted), `pv_san` (walker-trusted; culprit's FINAL line), `snapshots` (the 3-element rich list), `q_delta_pre_to_trough` (convenience scalar; always ≤ 0 by construction).
+
+Algorithm: detect focal trough → find i* in focal trajectory_full → i_pre/i_post by index neighbors → per-non-focal child delta at i* vs i_pre → most-negative wins → snapshots from culprit's trajectory_full → done. 6 None-returning gates (focal not in children / no summary / no trajectory_full / shallow trough / i_at=0 / no negative delta).
+
+Index-aligned children was a load-bearing assumption — verified by inspection of captured fixture (all 10 children have same `trajectory_full` length and same `nodes_searched` at each index).
+
+**4a-tests — 10 unit tests** covering all 6 None-returning gates + happy path (clear culprit identified + 3 snapshots) + tie-break (most-negative wins) + edge case (i_at at last block) + threshold-override (for smaller-trough fixtures). All 10 pass.
+
+**4b — Handler wire-up.** Added `trough_explanation: TrajectoryDecomposition | None = None` to `DidYouConsiderFindings`. Handler calls `extract_trajectory_decomposition(full_mcts, focal_uci=focal_uci)` AFTER the focused-pass section. **Uses `full_mcts` (un-truncated), NOT `mcts_truncated`** — a culprit candidate may live outside the top-N-by-visits range if Leela briefly explored a low-prior move.
+
+**4c — Validator tests, no walker code change** (pre-flight confirmed literal-key match was sufficient). 2 new tests: (a) walker picks up TrajectoryDecomposition's san/uci/pv_san; phase strings DON'T leak into sans. (b) prose citing a SAN not in any trusted source flags illegal_move; SANs in pv_san pass clean.
+
+**4d — Prompt bump v5 → v6.** Copied v5 → v6; added top-of-prompt "v6 addition: trough WHY-narration via trough_explanation" section + suggested narration template + 4 anti-patterns (don't claim per-snapshot PVs, don't synthesise WHY when None, don't blame the focal itself, cite pv_san cleanly). PROMPT_VERSION 5 → 6 with full v6 change-rationale block in the handler-constants comment. Per CLAUDE.md §3: v5.md retained.
+
+**4e — Pod spot-checks (2 positions):**
+
+*Spot-check 1: walkthrough_rxd4 (did_you_consider/v6/deep) — None-path.* Focal max_delta = 0.047 (q_first=+0.951, q_trough=+0.904, q_last=+0.918) → below 0.10 threshold → `trough_explanation = None`. **LLM correctly suppressed the optional WHY section** — prose mentions the mild trough naturally ("drifted to a mild trough of +0.90 around 3349 visits before settling at +0.92") without invoking the WHY-narration template. validation_ok=True; 0 errors; prompt_version=6 loaded.
+
+*Spot-check 2: puzzle_SGLK2 (FEN `5r1k/6p1/p5qp/...`, focal Bxe5).* The position has focal Bxe5 as NOT the engine pick (engine prefers f4) and the focal's Q is constantly -1.0 throughout the trajectory (focal is a clear blunder); max_delta=0.0 → `trough_explanation = None`. Note: this run also triggered templated fallback due to LLM hallucinating Qh2# (existing validator behavior — caught by `illegal_move`; NOT a 7c.9 regression). 7c.9's None-path still engaged cleanly: trough_explanation=None, no WHY-narration attempted.
+
+**Real-data populated-path verification: not achieved in spot-checks.** Both spot-checks landed in the None-path. The populated-path is covered by 10 synthetic unit tests. This is a small gap for 7c.9's real-data verification — the 7d/7e/7f sub-chunks' walkthrough_rxd4 smoke checks may stumble across a real-trough capture (MCTS variance), OR a future spot-check on a position with known refutation lines can target the populated path explicitly. Documenting honestly; not blocking.
+
+**Capture-script enhancement (incidental).** Added `--fen` / `--focal-uci` / `--position-id` CLI flags to `capture_walkthrough_row.py` so future spot-checks can use arbitrary positions without script edits. Question SAN now derives from `focal_uci` against the actual FEN (not hardcoded "Rxd4"). Cost: 5 min; pays off whenever a non-walkthrough spot-check is needed.
+
+**Tests:** 272 baseline + 10 trajectory_decomposition + 2 validator = **284 pass**.
+
+**Cost:** ~$0.10 Anthropic (2 spot-checks) + ~6 min pod wall-clock.
+
+**Cumulative meta:feature ratio (per user's pre-7d-review tracking directive).** Classification per the user's framing: **meta** = validator extensions / ADRs / measurement / docs / infrastructure; **feature** = extractors / handlers / prompts that change user-facing behavior.
+
+Chunk-7 sub-chunks through 7c.9:
+- **Feature (7):** 7a (mode arch + parallelization), 7a.1 (mode wire-up), 7b (MultiPv MCTS), 7b.1 (pv_san prompts), 7c (focused MCTS), 7c.8 (adaptive MultiPv), 7c.9 (trough decomposition).
+- **Meta (15):** 7a.2 (latency measurement), 7a.3 (extension-friendliness test), 7b.1's CLAUDE.md amendment, 7b.2.A/B (spot-check docs), 7b.2.C (interpretive-claim capture), 7b.2.E (plan refinement), 7c.5.A (validator extension), 7c.5.B (findings flag), 7c.5.C (ADR-0014), 7c.5.D (CLAUDE.md §13), 7c.5.E (measurement), 7c.6 (docs bundle), 7c.7.A (analyzer/smoke-battery infra), 7c.7.B (regression-test fixture), pre-7c.9 teardown fix.
+
+**Ratio: 15 meta / 7 feature = 68% meta through Chunk 7c.9.** Above the 40% threshold the user flagged for "deliberate read."
+
+**Honest read.** The pre-7d arc was DESIGNED to be meta-heavy — 7c.5 was structural fixes from 7c retro; 7c.6/7/8/9 was the user's explicit pre-7d work bundle. The meta-density is the cost of "do the structural work BEFORE 7d so 7d's prose-quality regression debugging isn't entangled with structural drift." Defensible by intent. Trajectory from here: 7d/7e/7f/7k.1-3/7l.1-2 = 8 mostly-feature sub-chunks. End-state estimate at 7o: ~60% meta. Will re-evaluate at 7o close.
+
+**Per the user's directive:** "If it's still >50% after 7c.9, defer 7e's entropy-centralization to the moment it actually binds." Current ratio is 68%. **Decision: 7e's entropy-centralization is DEFERRED.** Handler-local entropy computation (each handler computes inline via `policy_entropy_normalized`) works fine; centralize at the moment a third caller needs it OR a clear pain-point surfaces.
+
+**Discipline retrospective.** **Zero new structural-response fires at implementation time** for 7c.9. The pre-flight absorbed the schema/walker complexity into a plan revision BEFORE code landed. Pre-flight cost: ~25 min. Avoided: hours of in-flight refactor + test-rewrite + validator-extension-then-removal. This is the leverage point the user's pre-flight directive identified.
+
+**Next: 7d — multi-config MCTS ensemble (deep mode).** Per the user's pre-7d directive: brief Phase 3 readiness with pre-flight on the latency check (100k nodes × multipv=5) AND the parallel-Lc0 GPU contention check. Same playbook as 7c.9.

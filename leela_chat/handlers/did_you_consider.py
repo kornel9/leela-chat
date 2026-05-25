@@ -42,6 +42,10 @@ from leela_chat.extractors.layer_emergence import (
     LayerEmergenceResult,
     extract_layer_emergence,
 )
+from leela_chat.extractors.trajectory_decomposition import (
+    TrajectoryDecomposition,
+    extract_trajectory_decomposition,
+)
 from leela_chat.extractors.mcts_parser import (
     MCTSChild,
     MCTSFindings,
@@ -102,7 +106,16 @@ if TYPE_CHECKING:
 # Adds top-of-prompt "v5 addition: adaptive MultiPv citation" pointing
 # at `mcts.multipv_used`. Per the bundling rule; per CLAUDE.md §3:
 # v4.md retained.
-PROMPT_VERSION = 5
+# v5 → v6 (2026-05-25, Chunk 7c.9): trough_explanation findings field
+# + new "v6 addition: trough WHY-narration via trough_explanation"
+# section. Per the bundling rule (CLAUDE.md §8): this prompt bump
+# ships in the same commit chain as the new findings field. The
+# extractor (extract_trajectory_decomposition) lives in
+# leela_chat/extractors/trajectory_decomposition.py and produces a
+# 5-field TrajectoryDecomposition or None. Walker-trusted via literal
+# san/uci/pv_san key names (per 7c.9 pre-flight). Per CLAUDE.md §3:
+# v5.md retained.
+PROMPT_VERSION = 6
 HANDLER_NAME = "did_you_consider"
 
 # MCTS top-N to surface to the LLM (mirrors why_this_move).
@@ -269,6 +282,26 @@ class DidYouConsiderFindings(BaseModel):
             "the two together let prose compare 'Q under normal search "
             "vs Q under focused concentration'. None when focused pass "
             "skipped or no trajectory data."
+        ),
+    )
+
+    # === Chunk 7c.9: trough decomposition ===
+    trough_explanation: TrajectoryDecomposition | None = Field(
+        default=None,
+        description=(
+            "Chunk 7c.9 — when the focal trajectory has a meaningful "
+            "trough (max_delta > TROUGH_DELTA_THRESHOLD; same trigger as "
+            "7c.5.A's incomplete_trough_citation validator check), this "
+            "field surfaces the OTHER candidate Leela was exploring at "
+            "the moment focal's Q dipped — 'Leela was sampling X here, "
+            "found it worse than first impressions, and PUCT redirected "
+            "back to the focal.' Five-field schema (uci/san/pv_san/"
+            "snapshots/q_delta_pre_to_trough); walker-trusted via literal "
+            "key names (per 7c.9 pre-flight). None when no real trough "
+            "OR no clear culprit OR focused-pass-only handler context. "
+            "See `leela_chat.extractors.trajectory_decomposition` for the "
+            "algorithm; ADR-0015 + 7c.9 PHASE_NOTES retro for the design "
+            "rationale (per-snapshot PVs not captured by Lc0; final-only)."
         ),
     )
 
@@ -472,6 +505,19 @@ def handle_did_you_consider(
         # Focal move not present in deepest snapshot → search never reached.
         search_dismissal = "never_explored"
 
+    # === Chunk 7c.9: trough decomposition ===
+    # Runs against `full_mcts` (NOT `mcts_truncated`) so the culprit-
+    # finding step can see ALL root children's trajectory_full, not just
+    # the top-MCTS_TOP_N_FOR_LLM by visits. A culprit may be outside the
+    # top-N visits range if Leela briefly explored a low-prior move before
+    # redirecting. Returns None when no meaningful trough OR no culprit;
+    # the prompt handles None by skipping the WHY-narration section.
+    trough_explanation: TrajectoryDecomposition | None = None
+    if full_mcts is not None:
+        trough_explanation = extract_trajectory_decomposition(
+            full_mcts, focal_uci=focal_uci,
+        )
+
     return DidYouConsiderFindings(
         fen=leela.fen,
         side_to_move=leela.side_to_move,
@@ -500,6 +546,8 @@ def handle_did_you_consider(
         focused_q=focused_q,
         focused_pv_san=focused_pv_san,
         focused_trajectory_summary=focused_trajectory_summary,
+        # Chunk 7c.9 trough decomposition.
+        trough_explanation=trough_explanation,
     )
 
 
