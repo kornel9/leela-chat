@@ -1832,3 +1832,57 @@ What 7c does NOT do:
 - No update to other handlers (Handlers 1 + 2) — focused-pass data is did_you_consider-specific by design.
 
 Next: **7d — multi-config MCTS ensemble (deep mode)** with the 100k-node multipv=5 latency check first per the 7b.2.E refinement (pre-commit decision: verdict pass stays at multipv=1 regardless of measurement, per the plan's 7d trade-off pre-commit).
+
+#### 2026-05-25 — Chunk 7c.5 done (pre-7d structural fixes from 7c retro)
+
+Four sub-commits per the plan, ordered by structural urgency. **Gates 7d**: without 7c.5.A's validator extension, 7d's multi-config ensemble prose (two trajectories per cell: verdict + exploration) would likely repeat the trough-prose violation across BOTH trajectories instead of one.
+
+**7c.5.A (commit `ed12285`) — validator trough-prose semantic-completeness check.** New `incomplete_trough_citation` error kind in `validator/types.py`. Two new helpers in `validator/__init__.py`: `_collect_trajectory_summaries` (walks findings recursively for any dict with both `q_first` and `q_trough` numeric fields — matches MCTSTrajectorySummary structurally without coupling to class name) + `_q_value_cited_in_prose` (round-aware match reusing `_SIGNED_NUMBER_RE` for consistency). New `_check_trough_completeness` step in `validate_response`: fires when `max(|q_trough−q_first|, |q_trough−q_last|) > T=0.10` AND prose cites q_first/q_last AND not q_trough. 6 new tests (1 trigger + 5 false-positive guards). Threshold T=0.10 tuned against captured trajectories: 7c focused (max_delta=0.276, fires), canonical walkthrough Rxd4 (0.50, fires), Rxb1+ refutation (0.38, fires), Italian-game Bc5 concordant pick (0.03, doesn't fire). Offline verification confirmed: the canonical 7c spot-check prose now fires the check as expected.
+
+**7c.5.B + D (commit `df6ec6b`) — pv_san_truncated findings flag + CLAUDE.md §13 structural-response meta-rule.** New `MCTSChild.pv_san_truncated: bool = False` field in `mcts_parser.py`. `_populate_pv_san` in `mcts.py` now sets this flag when the SAN walker catches the truncation exception. 2 new tests (trigger + regression guard). The flag surfaces in JSONL findings_summary via the existing recursive walk; prompt-side awareness deferred to 7m per the plan ("v5+ prompts citing pv_san should respect pv_san_truncated=True"). CLAUDE.md §13 amendment codifies the implicit rule that 7c's exclusion-refinement scope-creep exposed: structural responses to plan-defined failure modes ARE permitted (when pattern-only updates couldn't address the failure mode) but MUST be surfaced in the retro for retrospective accept-or-rollback. Canonical example referenced: the 7c exclusion-refinement (accepted retrospectively 2026-05-25).
+
+**7c.5.C (commit `7fceae1`) — ADR-0014 bundling-rule first behavioral pass precedent.** Doc-only commit establishing precedent: 7c passed the bundling rule's first behavioral test (new findings + matching prompt-version bump shipped in same commit chain). The crucial framing fix from the 7c retro pushback is recorded in the ADR: the rule's primary value is NOT surviving hard tests but ELIMINATING the decision-point "is this coupling tight enough to defer?" — easy-test outcomes validate the rule just as well as hard ones because the decision-elimination property holds regardless. My initial 7c retro framing pre-discounted the easy test; this ADR corrects that framing in writing. ADR-numbering shift documented: 7n's MCTS-baseline ADR becomes ADR-0015 (was pre-allocated as 0014).
+
+**7c.5.E (this commit) — controlled-sample measurement of token cost + translate_s.** Pod-side smoke battery with `--positions 5 --reuse-fixture` = 25 cells. New `leela_chat/scripts/analyze_token_baseline.py` decomposes per-cell `input_tokens` into prompt-file-approximate + findings-JSON-approximate components (calibration caveat: chars/token ratio is rough; quick-mode in_tokens < prompt_approx because the 4-chars/token heuristic over-counts for markdown-heavy prompts — true ratio is probably ~7 chars/token for these files).
+
+**Per-handler-per-mode statistics (5 positions × 5 cells = 25 measured cells):**
+
+| Handler | Mode | n | in_tokens median | in_tokens p25-p75 | out_tokens median | translate_s median | handler_s median |
+|---|---|---|---|---|---|---|---|
+| did_you_consider | deep (v4) | 5 | 17013 | 10861-21297 | 1145 | 29.37 | 0.40 |
+| what_is_leela_seeing | deep (v8) | 5 | 10238 | 9963-10248 | 689 | 18.68 | 0.35 |
+| what_is_leela_seeing | quick (v6) | 5 | 2299 | 2236-2321 | 464 | 10.27 | 1.13 |
+| why_this_move | deep (v5) | 5 | 8230 | 8199-10268 | 589 | 15.12 | 0.35 |
+| why_this_move | quick (v3) | 5 | 3749 | 3369-3808 | 378 | 11.24 | 0.30 |
+
+**Findings-JSON-size decomposition (approximate, with calibration caveat):**
+
+- did_you_consider deep: ~11160 tokens of findings JSON dominates (focal callouts + dual-timescale dismissal + focused-pass pv_san — the largest findings shape).
+- what_is_leela_seeing deep: ~4577 tokens findings.
+- why_this_move deep: ~2027 tokens findings (smaller — no always-deep handler-3-style dismissal data, no focused pass).
+- Quick modes: findings JSON is small (<1k); prompt size dominates input.
+
+**Per-position variance is significant.** did_you_consider deep input_tokens range 10861-21297 across 5 positions — over 2x spread. translate_s for the same cell: median 29.37s with std dev 7.23s. Conclusion: per-cell baseline comparisons are noisy at n=5; cross-position medians are more meaningful than per-position deltas.
+
+**Baseline comparison vs 7b.2.B (Handler 3 v3, single walkthrough_rxd4 call: in=21573, translate_s=10.23s):**
+- Current Handler 3 v4 median in_tokens = 17013 — LOWER than baseline (Δ -4560). But this is comparing the 5-position median against the walkthrough-only baseline; the position mix pulls the median down. The 7c.5.E p75 of 21297 is close to the 7b.2.B baseline of 21573 (walkthrough-specific).
+- Current Handler 3 v4 median translate_s = 29.37s — much higher than baseline 10.23s (Δ +19.14s). Likely a mix of: longer prose generation under v4 (focused-pass section adds output complexity), per-position output-length variance, Anthropic-side response-time variance.
+- **The baseline comparison is harder to interpret cleanly than expected.** 7b.2.B was a single call on a fixture; this is 5 calls on a position mix. Future baselines should match: same fixture set + same call count for direct comparability.
+
+**40k-threshold check (7b.2.E watch trigger):** max observed in_tokens across all 25 cells = 21297 (Handler 3 deep, walkthrough-adjacent). **Well below 40k.** Trigger doesn't fire. Trend monitoring should continue per the plan: as 7d/7e/7f/7k/7l land their findings additions, the max in_tokens will climb; expect 40k threshold to be approached around 7k/7l (chess-content extractors add per-candidate detail).
+
+**Trough-prose check integration signal (7c.5.A validation in real prose):**
+- **`incomplete_trough_citation` fires: 0 of 25 cells (0.0%).**
+- **Interpretation:** v4-era prompts already adhere to the trough-prose contract on this 5-position sample. Either (a) positions in this sample don't have meaningful troughs in their trajectories (Italian-game-style concordant picks where q_trough ≈ q_first ≈ q_last; under-detection by the heuristic is correct here per the shallow-trough false-positive guard); OR (b) prose consistently cites q_trough when present (no contract violations). Both interpretations support the heuristic's correctness on this sample.
+- **The validator is NOT over-firing.** Important regression guard: I was worried the new check might surface false positives on borderline trajectories. The 0-fire rate at n=25 cells is good news for the threshold tuning.
+- **Caveat:** n=25 is small. 7o's full 100-cell battery will be the real signal. If the rate stays at 0%, either the prompts are robustly compliant OR the heuristic is too narrow (worth re-checking at 7o by inspecting the actual trajectory shapes vs the prose).
+
+What 7c.5 does NOT do:
+- Doesn't update prompts (v5+ work deferred to 7m per the plan's iteration backlog: belt-and-suspenders trough-prose anti-pattern strengthening + pv_san_truncated awareness + replacement for v4's "focused PV is deeper" depth claim).
+- Doesn't change handler shape (only validator + extractor + ADR + measurement).
+
+Tests: 292 pass (was 284 + 6 trough-completeness + 2 pv_san_truncated tests).
+
+Cost: ~$0.50 Anthropic + ~5 min pod time (faster than projected; the v4 prompts' input-token cost was offset by the smaller-than-expected findings JSON for some positions).
+
+Next: **7d — multi-config MCTS ensemble (deep mode)** with the 100k-node multipv=5 latency check first + the pre-committed trade-off (verdict pass stays at multipv=1 regardless of measurement) per the 7b.2.E refinement.
