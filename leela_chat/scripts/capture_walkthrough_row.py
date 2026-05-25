@@ -68,16 +68,37 @@ def main() -> int:
 
     # Late-bind the context build + _run_one import so the script can
     # be inspected off-pod without crashing on the BT4 / Lc0 imports.
-    from leela_chat.cli.__main__ import _build_context
+    from leela_chat.cli.__main__ import _build_context, _close_context
     from leela_chat.llm.client import LLMMode
     from leela_chat.scripts.run_smoke_battery import _mcts_bestmove, _run_one
 
     logger.info(f"output: {args.out}")
     logger.info(f"building LLM context (mode=PROD)")
     ctx = _build_context(mode=LLMMode.PROD, verbose=False)
+    # Pre-7c.9 fix: wrap the script body in try/finally so the engine
+    # subprocesses (Lc0, Stockfish) get reaped on exit. Without this,
+    # the script hangs at teardown waiting on unreaped children — was
+    # the user's first surface symptom of #180. The smoke battery's
+    # main() already does this pattern.
+    try:
+        return _capture_with_context_inner(ctx, args)
+    finally:
+        logger.info("closing engines (capture-script teardown)")
+        _close_context(ctx)
+
+
+def _capture_with_context_inner(ctx, args) -> int:
+    """Body of main() after context build. Extracted only so main() can
+    wrap the call in try/finally for engine teardown."""
+    import chess
+    from leela_chat.cli.__main__ import _answer_one
+    from leela_chat.scripts.run_smoke_battery import (
+        _extract_findings_summary, _extract_interpretive_claims, _mcts_bestmove, _run_one,
+    )
+    from leela_chat.validator import _collect_trajectory_summaries
+    import time
 
     # Build the position dict in the schema _run_one expects.
-    import chess
     position = {
         "id": "walkthrough_rxd4",
         "fen": WALKTHROUGH_FEN,
@@ -109,8 +130,6 @@ def main() -> int:
     # test needs row prose + findings_dict from the SAME call. Refactored
     # to call _answer_one once + build BOTH the row AND the sidecar
     # from the unified result.
-    from leela_chat.cli.__main__ import _answer_one
-    import time
     question = (
         "Did you consider Rxd4?" if args.handler == "did_you_consider"
         else "Why this move?" if args.handler == "why_this_move"
@@ -126,13 +145,10 @@ def main() -> int:
     _total_s = time.perf_counter() - t0
 
     # Build smoke-battery-shaped row from the single call. Mirrors
-    # _run_one's row construction logic (field-for-field). Importing
-    # the validator helper to populate trajectory_summaries — same
-    # pattern as run_smoke_battery.py per 7c.7 sub-fix 1a-struct.
-    from leela_chat.validator import _collect_trajectory_summaries
-    from leela_chat.scripts.run_smoke_battery import (
-        _extract_findings_summary, _extract_interpretive_claims,
-    )
+    # _run_one's row construction logic (field-for-field). The
+    # _collect_trajectory_summaries / _extract_findings_summary /
+    # _extract_interpretive_claims helpers are imported at the top
+    # of _capture_with_context_inner.
     focal_uci = position["focal_uci"] if args.handler in ("why_this_move", "did_you_consider") else None
     total_in = sum(r.input_tokens for r in result.llm_responses)
     total_out = sum(r.output_tokens for r in result.llm_responses)
