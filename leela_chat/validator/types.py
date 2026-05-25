@@ -28,6 +28,12 @@ ErrorKind = Literal[
     "format_violation",     # response violates structural rules (e.g., lists when prose required)
     "api_error",            # LLM call itself failed (overload, rate limit, network) — orchestrator path
     "empty_response",       # LLM returned no text content — defensive sentinel
+    "incomplete_trough_citation",  # 7c.5.A — prose cites q_first/q_last from a
+                            # trajectory_summary whose q_trough deviates by ≥ T
+                            # without citing q_trough. Per the trough-prose
+                            # contract: if there's a real trough, prose MUST
+                            # surface it; warm-value-only citations frame
+                            # post-trough drift as "stable" which is misleading.
 ]
 
 

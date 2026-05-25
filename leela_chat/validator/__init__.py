@@ -100,6 +100,7 @@ def validate_response(
     errors: list[ValidationError] = []
     errors.extend(_check_legality(response_text, fen, findings))
     errors.extend(_check_grounding(response_text, findings))
+    errors.extend(_check_trough_completeness(response_text, findings))
     result = ValidationResult(ok=not errors, errors=errors)
     if not result.ok:
         logger.warning(
@@ -390,3 +391,153 @@ def _is_grounded(value: float, flat_values: set[float], *, is_percent: bool) -> 
             if abs(cand - fv) <= tol:
                 return True
     return False
+
+
+# --- Trough-prose semantic-completeness check (Chunk 7c.5.A) ---------------
+
+
+# Threshold for "the trajectory has a meaningful trough": q_trough deviates
+# from q_first OR q_last by this much (in Q-units; range -1 to +1, so 0.10
+# is a 10-percentage-point difference). Tuned 2026-05-25 against:
+# - 7c walkthrough_rxd4 focused trajectory: max_delta = 0.276 → fires ✓
+# - Canonical walkthrough_rxd4 normal-pass Rxd4: max_delta = 0.50 → fires ✓
+# - Walkthrough Rxb1+ (refutation trajectory): max_delta = 0.38 → fires ✓
+# - Italian-game Bc5 (concordant pick, no real trough): max_delta ≈ 0.03 → doesn't fire ✓
+# T=0.10 is below all the "real trough" cases and above all the "no real
+# trough" cases in the captured data. Re-tune if 7o or 7d surfaces an
+# edge case where the threshold mis-fires.
+_TROUGH_DELTA_THRESHOLD = 0.10
+
+# Round-aware tolerance for "is this Q value cited in the prose?". 0.005
+# means "+0.92" matches a target of 0.917 (delta 0.003) and "+0.917" also
+# matches a target of 0.914 (delta 0.003) — both within rounding-to-2-or-3
+# decimals tolerance. Tighter than _is_grounded's tolerance because we're
+# checking semantic completeness, not numeric grounding.
+_Q_CITATION_TOLERANCE = 0.005
+
+
+def _collect_trajectory_summaries(findings: Any) -> list[dict]:
+    """Walk findings recursively for any ``trajectory_summary`` substructure.
+
+    A ``trajectory_summary`` is detected structurally: any dict containing
+    both ``q_first`` AND ``q_trough`` keys with numeric values. This
+    matches :class:`MCTSTrajectorySummary` (the Phase 2 MCTS trajectory
+    summary used by the dual-timescale handlers) without coupling to the
+    specific class name — future Pydantic models with the same shape
+    (e.g., a Chunk-7d exploration-pass trajectory summary) will be
+    detected automatically.
+
+    Returns:
+        List of dicts with ``q_first`` / ``q_last`` / ``q_trough`` /
+        ``q_peak`` (when present) as floats, plus ``location`` (dotted
+        path through the findings structure for error messages).
+    """
+    out: list[dict] = []
+
+    def _walk(obj: Any, path: str) -> None:
+        if isinstance(obj, dict):
+            if (
+                "q_first" in obj and "q_trough" in obj
+                and isinstance(obj.get("q_first"), (int, float))
+                and not isinstance(obj.get("q_first"), bool)
+                and isinstance(obj.get("q_trough"), (int, float))
+                and not isinstance(obj.get("q_trough"), bool)
+                and isinstance(obj.get("q_last"), (int, float))
+                and not isinstance(obj.get("q_last"), bool)
+            ):
+                out.append({
+                    "q_first": float(obj["q_first"]),
+                    "q_last": float(obj["q_last"]),
+                    "q_trough": float(obj["q_trough"]),
+                    "q_peak": float(obj["q_peak"]) if isinstance(obj.get("q_peak"), (int, float)) and not isinstance(obj.get("q_peak"), bool) else None,
+                    "location": path or "<root>",
+                })
+            for k, v in obj.items():
+                _walk(v, f"{path}.{k}" if path else str(k))
+        elif isinstance(obj, list):
+            for i, v in enumerate(obj):
+                _walk(v, f"{path}[{i}]")
+
+    _walk(findings, "")
+    return out
+
+
+def _q_value_cited_in_prose(
+    value: float, prose: str, tolerance: float = _Q_CITATION_TOLERANCE,
+) -> bool:
+    """Round-aware: does ANY signed-decimal in the prose match ``value``?
+
+    Reuses ``_SIGNED_NUMBER_RE`` (the same extractor the grounding check
+    uses) so the citation set is consistent across checks. Tolerance is
+    deliberately tight: this is a semantic-completeness check, NOT a
+    numeric-grounding check.
+    """
+    for match in _SIGNED_NUMBER_RE.finditer(prose):
+        try:
+            cited = float(match.group(1))
+        except (TypeError, ValueError):  # pragma: no cover — regex guarantees parseability
+            continue
+        if abs(cited - value) <= tolerance:
+            return True
+    return False
+
+
+def _check_trough_completeness(
+    response_text: str, findings: dict[str, Any],
+    *, threshold: float = _TROUGH_DELTA_THRESHOLD,
+) -> list[ValidationError]:
+    """Flag prose that cites q_first/q_last from a trajectory_summary
+    whose q_trough deviates by ≥ ``threshold`` without also citing q_trough.
+
+    This is a CONDITIONAL-CITATION check (different shape from the
+    ``_collect_derived_percentages`` check which is additive numeric
+    grounding). Catches the 7c failure mode: prose said "Q stable in a
+    tight +0.917 to +0.923 band" when the trajectory's q_trough was
+    +0.647 — the warm-value-only citation framed a real trough as
+    stability, misleading the reader.
+
+    Per the trough-prose contract (v3+ prompts' rule 4): trough citation
+    is required when the trough is meaningful. The validator enforces
+    the contract; the prompt-side anti-pattern strengthening lands as a
+    belt-and-suspenders iteration at 7m.
+    """
+    errors: list[ValidationError] = []
+    for summary in _collect_trajectory_summaries(findings):
+        q_first = summary["q_first"]
+        q_last = summary["q_last"]
+        q_trough = summary["q_trough"]
+        location = summary["location"]
+
+        # No real trough → nothing to enforce. Skip silently.
+        max_delta = max(abs(q_trough - q_first), abs(q_trough - q_last))
+        if max_delta <= threshold:
+            continue
+
+        # Real trough exists. Check what the prose cites.
+        cites_first = _q_value_cited_in_prose(q_first, response_text)
+        cites_last = _q_value_cited_in_prose(q_last, response_text)
+        cites_trough = _q_value_cited_in_prose(q_trough, response_text)
+
+        # Trough-prose contract: if the prose cites either warm value,
+        # it MUST also cite q_trough. Citing q_trough without q_first /
+        # q_last is fine (the trough story is complete on its own).
+        if (cites_first or cites_last) and not cites_trough:
+            # Pick whichever warm value was cited for the span; prefer
+            # q_last (the more common rule-4 violation pattern).
+            cited_value = q_last if cites_last else q_first
+            errors.append(ValidationError(
+                kind="incomplete_trough_citation",
+                detail=(
+                    f"Prose cites {cited_value:+.3f} (from {location}'s "
+                    f"trajectory_summary q_first/q_last) but does not cite "
+                    f"q_trough ({q_trough:+.3f}, delta "
+                    f"{abs(q_trough - cited_value):.3f} > threshold "
+                    f"{threshold}). Per the trough-prose contract, prose "
+                    f"citing q_first or q_last from a trajectory with a "
+                    f"meaningful trough MUST also cite q_trough — warm-value-"
+                    f"only citations frame post-trough drift as 'stable' "
+                    f"which is misleading. See v3+ prompts rule 4."
+                ),
+                span=f"{cited_value:+.3f}",
+            ))
+    return errors

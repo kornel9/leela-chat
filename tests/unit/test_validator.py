@@ -467,3 +467,123 @@ def test_san_capture_x_NOT_stripped():
     # passes. The test's value is documentary: ensures we never strip x.)
     # Just check the validator doesn't crash:
     assert r is not None
+
+
+# === Chunk 7c.5.A: trough-prose semantic-completeness check ================
+
+_TROUGH_FEN = "1r1r2k1/5ppp/p3pn2/4q3/b1PN4/Q4P2/P2RB1PP/KR6 b - - 0 1"
+
+
+def _findings_with_trajectory(q_first: float, q_last: float, q_trough: float,
+                              q_peak: float | None = None) -> dict:
+    """Build a minimal findings dict with one trajectory_summary at
+    mcts.children[0]. q_peak defaults to max(q_first, q_last)."""
+    if q_peak is None:
+        q_peak = max(q_first, q_last)
+    return {
+        "fen": _TROUGH_FEN,
+        "mcts": {
+            "total_nodes_searched": 5000,
+            "children": [{
+                "san": "Rxd4",
+                "uci": "d8d4",
+                "visits": 4400,
+                "trajectory_summary": {
+                    "q_first": q_first,
+                    "q_last": q_last,
+                    "q_peak": q_peak,
+                    "q_peak_at_visits": 359,
+                    "q_trough": q_trough,
+                    "q_trough_at_visits": 22,
+                    "q_stabilized_at_visits": 1000,
+                    "visit_growth_rate": 183.0,
+                    "q_crossed_zero": False,
+                    "inflection_points": [],
+                    "block_count": 23,
+                },
+            }],
+        },
+    }
+
+
+def test_trough_completeness_trigger_canonical_7c_case():
+    """Canonical 7c spot-check case: prose cites q_first/q_last but not
+    q_trough; trough delta is 0.276 (well above T=0.10) → flag fires.
+
+    The actual 7c spot-check prose: 'Q stable in a tight +0.917 to +0.923
+    band over 5739 concentrated visits'. Cites +0.917 (rounded q_first
+    +0.914) and +0.923 (q_last). q_trough is +0.647 — not cited. The
+    flag should fire.
+    """
+    findings = _findings_with_trajectory(
+        q_first=0.914, q_last=0.923, q_trough=0.647,
+    )
+    prose = "The focused trajectory shows Q stable in a tight +0.917 to +0.923 band over 5739 concentrated visits, confirming the verdict at higher resolution."
+    r = validate_response(prose, fen=_TROUGH_FEN, findings=findings)
+    assert any(e.kind == "incomplete_trough_citation" for e in r.errors), (
+        f"Expected incomplete_trough_citation error; got: {[e.kind for e in r.errors]}"
+    )
+    # Error detail should mention q_trough and the delta.
+    err = next(e for e in r.errors if e.kind == "incomplete_trough_citation")
+    assert "+0.647" in err.detail, f"Expected q_trough value in detail; got: {err.detail}"
+
+
+def test_trough_completeness_q_trough_cited_passes():
+    """Prose cites q_first AND q_trough — trough-prose contract satisfied."""
+    findings = _findings_with_trajectory(
+        q_first=0.914, q_last=0.923, q_trough=0.647,
+    )
+    prose = (
+        "Q opened at +0.914 from the V-head, dipped to a trough of +0.647 "
+        "before climbing back to +0.923 as visits accumulated."
+    )
+    r = validate_response(prose, fen=_TROUGH_FEN, findings=findings)
+    assert not any(e.kind == "incomplete_trough_citation" for e in r.errors), (
+        f"Did not expect incomplete_trough_citation; got: {[(e.kind, e.span) for e in r.errors]}"
+    )
+
+
+def test_trough_completeness_shallow_trough_no_flag():
+    """Shallow trough (delta < T=0.10) — no real trough story to enforce.
+    Prose cites q_first/q_last without q_trough; should NOT fire."""
+    findings = _findings_with_trajectory(
+        q_first=0.92, q_last=0.95, q_trough=0.90,  # max delta 0.05 < 0.10
+    )
+    prose = "Q opened at +0.92 and settled at +0.95 as visits accumulated."
+    r = validate_response(prose, fen=_TROUGH_FEN, findings=findings)
+    assert not any(e.kind == "incomplete_trough_citation" for e in r.errors)
+
+
+def test_trough_completeness_no_trajectory_summary_no_flag():
+    """Findings without any trajectory_summary substructure — nothing
+    to check; no flag regardless of prose content."""
+    findings = {"fen": _TROUGH_FEN, "mcts": None}
+    prose = "Q stable around +0.92 throughout the search."
+    r = validate_response(prose, fen=_TROUGH_FEN, findings=findings)
+    assert not any(e.kind == "incomplete_trough_citation" for e in r.errors)
+
+
+def test_trough_completeness_prose_without_q_citations_no_flag():
+    """Trajectory has a real trough but prose doesn't cite any signed
+    decimals from the trajectory — nothing to be incomplete about."""
+    findings = _findings_with_trajectory(
+        q_first=0.914, q_last=0.923, q_trough=0.647,
+    )
+    prose = "Leela's MCTS commits to Rxd4 with 88% of visits over the search."
+    r = validate_response(prose, fen=_TROUGH_FEN, findings=findings)
+    assert not any(e.kind == "incomplete_trough_citation" for e in r.errors)
+
+
+def test_trough_completeness_trough_cited_without_q_first_passes():
+    """Prose cites ONLY q_trough (skips warm values) — trough-story is
+    complete on its own (the rule is "if you cite warm, also cite trough",
+    not "always cite both")."""
+    findings = _findings_with_trajectory(
+        q_first=0.914, q_last=0.923, q_trough=0.647,
+    )
+    prose = (
+        "Search-time Q hit a trough of +0.647 at visit 22 before search "
+        "redirected effort to the better candidate."
+    )
+    r = validate_response(prose, fen=_TROUGH_FEN, findings=findings)
+    assert not any(e.kind == "incomplete_trough_citation" for e in r.errors)
