@@ -1,0 +1,1822 @@
+{
+  "captured_at": "2026-05-25T11:50:11.627764+00:00",
+  "position_id": "walkthrough_rxd4",
+  "fen": "1r1r2k1/5ppp/p3pn2/4q3/b1PN4/Q4P2/P2RB1PP/KR6 b - - 0 1",
+  "handler": "did_you_consider",
+  "mode": "deep",
+  "focal_uci": "d8d4",
+  "prompt_version": 4,
+  "prose": "Yes, Rxd4 is Leela's committed pick \u2014 4295 of 4877 visits (88%, Q +0.92), squarely in the winning bucket. This is the substantive case: the network's pattern recognition does not suggest this move at any layer of computation. Rxd4's rank sat at 43 at L=0, drifted through the 20s\u201330s across every intermediate layer, and only reached rank 9 at the final layer \u2014 it never entered BT4's top-5, so its discovery is a search artifact, not a network-emergence finding. Search-time, Q opened at +0.95 (already-deep V-head on the first few hundred visits), drifted to a trough of +0.89 around visit 2970 as deeper refutations were sampled, and the late drift back to +0.92 is search settling rather than the move improving; visits accumulated freely throughout. Stockfish at depth 15 corroborates strongly, ranking Rxd4 first at \u22124.02 with the line Rxd4 Qc3 Rxb1+ Kxb1 Qb8+. Under a focused search with all budget concentrated below Rxd4, Leela's intended continuation runs 15 plies: Rxd4 Qc3 Rxb1+ Kxb1 Qb8+ Qb2 Rd8 Qxb8 Rxb8+ Kc1 Nd7 Bd1 Bc6 Rd6 Rc8 \u2014 identical to the normal pass's PV, and within the focused subtree Q opened at +0.92 and held in a narrow +0.917 to +0.925 band over 5680 concentrated visits, confirming the verdict is stable rather than reliant on a single trajectory bump. Both engines agree at the line level for the first five plies (Rxd4 Qc3 Rxb1+ Kxb1 Qb8+) before Stockfish's PV truncates and Leela's extends through the queen trade and into the winning endgame.",
+  "validation_ok": true,
+  "validation_errors": [],
+  "findings_dict": {
+    "fen": "1r1r2k1/5ppp/p3pn2/4q3/b1PN4/Q4P2/P2RB1PP/KR6 b - - 0 1",
+    "side_to_move": "black",
+    "eval_cp": -108,
+    "wdl": {
+      "white_wins": 0.03395295515656471,
+      "draw": 0.3729361891746521,
+      "black_wins": 0.5931108593940735
+    },
+    "moves_left_estimate": 64.25758361816406,
+    "top_moves": [
+      {
+        "uci": "b8b1",
+        "san": "Rxb1+",
+        "policy_pct": 33.00784230232239
+      },
+      {
+        "uci": "b8c8",
+        "san": "Rbc8",
+        "policy_pct": 16.37324094772339
+      },
+      {
+        "uci": "a4e8",
+        "san": "Be8",
+        "policy_pct": 11.897490918636322
+      },
+      {
+        "uci": "e5f4",
+        "san": "Qf4",
+        "policy_pct": 10.581671446561813
+      },
+      {
+        "uci": "b8a8",
+        "san": "Ra8",
+        "policy_pct": 9.121780842542648
+      }
+    ],
+    "stockfish": {
+      "depth": 15,
+      "nodes": 410094,
+      "root_eval_cp": -402,
+      "root_mate_in": null,
+      "top_moves": [
+        {
+          "uci": "d8d4",
+          "san": "Rxd4",
+          "eval_cp": -402,
+          "mate_in": null,
+          "pv_san": [
+            "Rxd4",
+            "Qc3",
+            "Rxb1+",
+            "Kxb1",
+            "Qb8+"
+          ]
+        },
+        {
+          "uci": "b8a8",
+          "san": "Ra8",
+          "eval_cp": -160,
+          "mate_in": null,
+          "pv_san": [
+            "Ra8",
+            "Qxa4",
+            "Rxd4",
+            "Rxd4",
+            "Qxd4+"
+          ]
+        },
+        {
+          "uci": "e5f4",
+          "san": "Qf4",
+          "eval_cp": -131,
+          "mate_in": null,
+          "pv_san": [
+            "Qf4",
+            "Rd3",
+            "Nd7",
+            "Nb3",
+            "Qxc4"
+          ]
+        }
+      ],
+      "engine_name": "Stockfish"
+    },
+    "mcts": {
+      "total_nodes_searched": 4877,
+      "bestmove_uci": "d8d4",
+      "bestmove_san": "Rxd4",
+      "children": [
+        {
+          "uci": "d8d4",
+          "san": "Rxd4",
+          "visits": 4295,
+          "visits_in_flight": 156,
+          "prior_pct": 6.79,
+          "q": 0.91785,
+          "v": 0.9134,
+          "wl": 0.91785,
+          "draw": 0.012,
+          "moves_left": 67.9,
+          "u": 0.00227,
+          "s": 0.92918,
+          "pv_san": [
+            "Rxd4",
+            "Qc3",
+            "Rxb1+",
+            "Kxb1",
+            "Qb8+",
+            "Qb2",
+            "Rd8",
+            "Qxb8",
+            "Rxb8+",
+            "Kc1",
+            "Nd7",
+            "Bd1",
+            "Bc6",
+            "Rd6",
+            "Rc8"
+          ],
+          "pv_san_truncated": false,
+          "trajectory": [
+            {
+              "nodes_searched": 848,
+              "visits": 600,
+              "q": 0.95212
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 772,
+              "q": 0.94804
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 1463,
+              "q": 0.95381
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 2970,
+              "q": 0.89473
+            },
+            {
+              "nodes_searched": 3820,
+              "visits": 3294,
+              "q": 0.90092
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 4295,
+              "q": 0.91785
+            }
+          ],
+          "trajectory_selected": [
+            {
+              "nodes_searched": 848,
+              "visits": 600,
+              "q": 0.95212
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 772,
+              "q": 0.94804
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 1463,
+              "q": 0.95381
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 2970,
+              "q": 0.89473
+            },
+            {
+              "nodes_searched": 3820,
+              "visits": 3294,
+              "q": 0.90092
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 4295,
+              "q": 0.91785
+            }
+          ],
+          "trajectory_full": [
+            {
+              "nodes_searched": 848,
+              "visits": 600,
+              "q": 0.95212
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 772,
+              "q": 0.94804
+            },
+            {
+              "nodes_searched": 1390,
+              "visits": 1114,
+              "q": 0.95342
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 1463,
+              "q": 0.95381
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 2970,
+              "q": 0.89473
+            },
+            {
+              "nodes_searched": 3820,
+              "visits": 3294,
+              "q": 0.90092
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 4295,
+              "q": 0.91785
+            }
+          ],
+          "trajectory_summary": {
+            "q_first": 0.95212,
+            "q_last": 0.91785,
+            "q_peak": 0.95381,
+            "q_peak_at_visits": 1463,
+            "q_trough": 0.89473,
+            "q_trough_at_visits": 2970,
+            "q_stabilized_at_visits": 2970,
+            "visit_growth_rate": 615.8333333333334,
+            "q_crossed_zero": false,
+            "inflection_points": [
+              {
+                "nodes_searched": 3820,
+                "visits": 3294,
+                "q": 0.90092
+              }
+            ],
+            "block_count": 7
+          }
+        },
+        {
+          "uci": "b8c8",
+          "san": "Rbc8",
+          "visits": 129,
+          "visits_in_flight": 0,
+          "prior_pct": 11.04,
+          "q": 0.80054,
+          "v": 0.6806,
+          "wl": 0.80054,
+          "draw": 0.165,
+          "moves_left": 103.5,
+          "u": 0.12667,
+          "s": 0.92778,
+          "pv_san": [
+            "Rbc8",
+            "Qxa4",
+            "Rxd4",
+            "Rxd4",
+            "Qxd4+",
+            "Rb2",
+            "Qg1+",
+            "Qd1",
+            "Qxh2",
+            "c5",
+            "Nd5",
+            "Qd4",
+            "a5",
+            "Ba6"
+          ],
+          "pv_san_truncated": false,
+          "trajectory": [
+            {
+              "nodes_searched": 848,
+              "visits": 32,
+              "q": 0.82124
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 33,
+              "q": 0.82648
+            },
+            {
+              "nodes_searched": 1390,
+              "visits": 43,
+              "q": 0.80772
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 47,
+              "q": 0.81514
+            },
+            {
+              "nodes_searched": 3820,
+              "visits": 129,
+              "q": 0.80054
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 129,
+              "q": 0.80054
+            }
+          ],
+          "trajectory_selected": [
+            {
+              "nodes_searched": 848,
+              "visits": 32,
+              "q": 0.82124
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 33,
+              "q": 0.82648
+            },
+            {
+              "nodes_searched": 1390,
+              "visits": 43,
+              "q": 0.80772
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 47,
+              "q": 0.81514
+            },
+            {
+              "nodes_searched": 3820,
+              "visits": 129,
+              "q": 0.80054
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 129,
+              "q": 0.80054
+            }
+          ],
+          "trajectory_full": [
+            {
+              "nodes_searched": 848,
+              "visits": 32,
+              "q": 0.82124
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 33,
+              "q": 0.82648
+            },
+            {
+              "nodes_searched": 1390,
+              "visits": 43,
+              "q": 0.80772
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 47,
+              "q": 0.81514
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 117,
+              "q": 0.80791
+            },
+            {
+              "nodes_searched": 3820,
+              "visits": 129,
+              "q": 0.80054
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 129,
+              "q": 0.80054
+            }
+          ],
+          "trajectory_summary": {
+            "q_first": 0.82124,
+            "q_last": 0.80054,
+            "q_peak": 0.82648,
+            "q_peak_at_visits": 33,
+            "q_trough": 0.80054,
+            "q_trough_at_visits": 129,
+            "q_stabilized_at_visits": 32,
+            "visit_growth_rate": 16.166666666666668,
+            "q_crossed_zero": false,
+            "inflection_points": [],
+            "block_count": 7
+          }
+        },
+        {
+          "uci": "b8b1",
+          "san": "Rxb1+",
+          "visits": 107,
+          "visits_in_flight": 5,
+          "prior_pct": 26.57,
+          "q": 0.5977,
+          "v": 0.7381,
+          "wl": 0.5977,
+          "draw": 0.297,
+          "moves_left": 113.8,
+          "u": 0.35085,
+          "s": 0.94751,
+          "pv_san": [
+            "Rxb1+",
+            "Kxb1",
+            "Qg5",
+            "Rd3",
+            "Rb8+",
+            "Nb3",
+            "Qxg2",
+            "Qd6",
+            "Ra8",
+            "Rd2",
+            "Qg5",
+            "Kb2"
+          ],
+          "pv_san_truncated": false,
+          "trajectory": [
+            {
+              "nodes_searched": 848,
+              "visits": 19,
+              "q": 0.39601
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 19,
+              "q": 0.39601
+            },
+            {
+              "nodes_searched": 1390,
+              "visits": 24,
+              "q": 0.3625
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 28,
+              "q": 0.36092
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 49,
+              "q": 0.48253
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 107,
+              "q": 0.5977
+            }
+          ],
+          "trajectory_selected": [
+            {
+              "nodes_searched": 848,
+              "visits": 19,
+              "q": 0.39601
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 19,
+              "q": 0.39601
+            },
+            {
+              "nodes_searched": 1390,
+              "visits": 24,
+              "q": 0.3625
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 28,
+              "q": 0.36092
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 49,
+              "q": 0.48253
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 107,
+              "q": 0.5977
+            }
+          ],
+          "trajectory_full": [
+            {
+              "nodes_searched": 848,
+              "visits": 19,
+              "q": 0.39601
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 19,
+              "q": 0.39601
+            },
+            {
+              "nodes_searched": 1390,
+              "visits": 24,
+              "q": 0.3625
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 28,
+              "q": 0.36092
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 49,
+              "q": 0.48253
+            },
+            {
+              "nodes_searched": 3820,
+              "visits": 61,
+              "q": 0.53854
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 107,
+              "q": 0.5977
+            }
+          ],
+          "trajectory_summary": {
+            "q_first": 0.39601,
+            "q_last": 0.5977,
+            "q_peak": 0.5977,
+            "q_peak_at_visits": 107,
+            "q_trough": 0.36092,
+            "q_trough_at_visits": 28,
+            "q_stabilized_at_visits": null,
+            "visit_growth_rate": 14.666666666666666,
+            "q_crossed_zero": false,
+            "inflection_points": [],
+            "block_count": 7
+          }
+        },
+        {
+          "uci": "b8a8",
+          "san": "Ra8",
+          "visits": 47,
+          "visits_in_flight": 0,
+          "prior_pct": 4.88,
+          "q": 0.77958,
+          "v": 0.5453,
+          "wl": 0.77958,
+          "draw": 0.182,
+          "moves_left": 107.8,
+          "u": 0.15157,
+          "s": 0.93088,
+          "pv_san": [
+            "Ra8",
+            "Qxa4",
+            "Rxd4",
+            "Rxd4",
+            "Qxd4+",
+            "Rb2",
+            "Qg1+",
+            "Qd1",
+            "Qxg2",
+            "Qd6"
+          ],
+          "pv_san_truncated": false,
+          "trajectory": [
+            {
+              "nodes_searched": 848,
+              "visits": 6,
+              "q": 0.65089
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 6,
+              "q": 0.65089
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 12,
+              "q": 0.76057
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 42,
+              "q": 0.78418
+            },
+            {
+              "nodes_searched": 3820,
+              "visits": 47,
+              "q": 0.77958
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 47,
+              "q": 0.77958
+            }
+          ],
+          "trajectory_selected": [
+            {
+              "nodes_searched": 848,
+              "visits": 6,
+              "q": 0.65089
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 6,
+              "q": 0.65089
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 12,
+              "q": 0.76057
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 42,
+              "q": 0.78418
+            },
+            {
+              "nodes_searched": 3820,
+              "visits": 47,
+              "q": 0.77958
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 47,
+              "q": 0.77958
+            }
+          ],
+          "trajectory_full": [
+            {
+              "nodes_searched": 848,
+              "visits": 6,
+              "q": 0.65089
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 6,
+              "q": 0.65089
+            },
+            {
+              "nodes_searched": 1390,
+              "visits": 8,
+              "q": 0.70936
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 12,
+              "q": 0.76057
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 42,
+              "q": 0.78418
+            },
+            {
+              "nodes_searched": 3820,
+              "visits": 47,
+              "q": 0.77958
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 47,
+              "q": 0.77958
+            }
+          ],
+          "trajectory_summary": {
+            "q_first": 0.65089,
+            "q_last": 0.77958,
+            "q_peak": 0.78418,
+            "q_peak_at_visits": 42,
+            "q_trough": 0.65089,
+            "q_trough_at_visits": 6,
+            "q_stabilized_at_visits": 12,
+            "visit_growth_rate": 6.833333333333333,
+            "q_crossed_zero": false,
+            "inflection_points": [
+              {
+                "nodes_searched": 3820,
+                "visits": 47,
+                "q": 0.77958
+              }
+            ],
+            "block_count": 7
+          }
+        },
+        {
+          "uci": "e5f4",
+          "san": "Qf4",
+          "visits": 27,
+          "visits_in_flight": 0,
+          "prior_pct": 8.3,
+          "q": 0.46599,
+          "v": 0.4882,
+          "wl": 0.46599,
+          "draw": 0.387,
+          "moves_left": 121.5,
+          "u": 0.44243,
+          "s": 0.90997,
+          "pv_san": [
+            "Qf4",
+            "Rxb8",
+            "Rxb8",
+            "Rd3",
+            "Nd7",
+            "g3",
+            "Qc7",
+            "Qxa4",
+            "Nc5"
+          ],
+          "pv_san_truncated": false,
+          "trajectory": [
+            {
+              "nodes_searched": 848,
+              "visits": 8,
+              "q": 0.56902
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 9,
+              "q": 0.52005
+            },
+            {
+              "nodes_searched": 1390,
+              "visits": 11,
+              "q": 0.52547
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 12,
+              "q": 0.50765
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 22,
+              "q": 0.475
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 27,
+              "q": 0.46599
+            }
+          ],
+          "trajectory_selected": [
+            {
+              "nodes_searched": 848,
+              "visits": 8,
+              "q": 0.56902
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 9,
+              "q": 0.52005
+            },
+            {
+              "nodes_searched": 1390,
+              "visits": 11,
+              "q": 0.52547
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 12,
+              "q": 0.50765
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 22,
+              "q": 0.475
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 27,
+              "q": 0.46599
+            }
+          ],
+          "trajectory_full": [
+            {
+              "nodes_searched": 848,
+              "visits": 8,
+              "q": 0.56902
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 9,
+              "q": 0.52005
+            },
+            {
+              "nodes_searched": 1390,
+              "visits": 11,
+              "q": 0.52547
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 12,
+              "q": 0.50765
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 22,
+              "q": 0.475
+            },
+            {
+              "nodes_searched": 3820,
+              "visits": 22,
+              "q": 0.475
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 27,
+              "q": 0.46599
+            }
+          ],
+          "trajectory_summary": {
+            "q_first": 0.56902,
+            "q_last": 0.46599,
+            "q_peak": 0.56902,
+            "q_peak_at_visits": 8,
+            "q_trough": 0.46599,
+            "q_trough_at_visits": 27,
+            "q_stabilized_at_visits": 12,
+            "visit_growth_rate": 3.1666666666666665,
+            "q_crossed_zero": false,
+            "inflection_points": [],
+            "block_count": 7
+          }
+        },
+        {
+          "uci": "e5g5",
+          "san": "Qg5",
+          "visits": 19,
+          "visits_in_flight": 0,
+          "prior_pct": 4.0,
+          "q": 0.60671,
+          "v": 0.5741,
+          "wl": 0.60671,
+          "draw": 0.294,
+          "moves_left": 115.6,
+          "u": 0.29809,
+          "s": 0.90414,
+          "pv_san": [],
+          "pv_san_truncated": false,
+          "trajectory": [
+            {
+              "nodes_searched": 848,
+              "visits": 4,
+              "q": 0.58609
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 4,
+              "q": 0.58609
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 6,
+              "q": 0.52584
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 16,
+              "q": 0.64382
+            },
+            {
+              "nodes_searched": 3820,
+              "visits": 18,
+              "q": 0.64804
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 19,
+              "q": 0.60671
+            }
+          ],
+          "trajectory_selected": [
+            {
+              "nodes_searched": 848,
+              "visits": 4,
+              "q": 0.58609
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 4,
+              "q": 0.58609
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 6,
+              "q": 0.52584
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 16,
+              "q": 0.64382
+            },
+            {
+              "nodes_searched": 3820,
+              "visits": 18,
+              "q": 0.64804
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 19,
+              "q": 0.60671
+            }
+          ],
+          "trajectory_full": [
+            {
+              "nodes_searched": 848,
+              "visits": 4,
+              "q": 0.58609
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 4,
+              "q": 0.58609
+            },
+            {
+              "nodes_searched": 1390,
+              "visits": 5,
+              "q": 0.57233
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 6,
+              "q": 0.52584
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 16,
+              "q": 0.64382
+            },
+            {
+              "nodes_searched": 3820,
+              "visits": 18,
+              "q": 0.64804
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 19,
+              "q": 0.60671
+            }
+          ],
+          "trajectory_summary": {
+            "q_first": 0.58609,
+            "q_last": 0.60671,
+            "q_peak": 0.64804,
+            "q_peak_at_visits": 18,
+            "q_trough": 0.52584,
+            "q_trough_at_visits": 6,
+            "q_stabilized_at_visits": 16,
+            "visit_growth_rate": 2.5,
+            "q_crossed_zero": false,
+            "inflection_points": [
+              {
+                "nodes_searched": 3820,
+                "visits": 18,
+                "q": 0.64804
+              }
+            ],
+            "block_count": 7
+          }
+        },
+        {
+          "uci": "a4e8",
+          "san": "Be8",
+          "visits": 18,
+          "visits_in_flight": 1,
+          "prior_pct": 7.67,
+          "q": 0.346,
+          "v": 0.5957,
+          "wl": 0.346,
+          "draw": 0.54,
+          "moves_left": 136.5,
+          "u": 0.57183,
+          "s": 0.91851,
+          "pv_san": [],
+          "pv_san_truncated": false,
+          "trajectory": [
+            {
+              "nodes_searched": 848,
+              "visits": 5,
+              "q": 0.38193
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 5,
+              "q": 0.38193
+            },
+            {
+              "nodes_searched": 1390,
+              "visits": 7,
+              "q": 0.3443
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 8,
+              "q": 0.32793
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 15,
+              "q": 0.38312
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 18,
+              "q": 0.346
+            }
+          ],
+          "trajectory_selected": [
+            {
+              "nodes_searched": 848,
+              "visits": 5,
+              "q": 0.38193
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 5,
+              "q": 0.38193
+            },
+            {
+              "nodes_searched": 1390,
+              "visits": 7,
+              "q": 0.3443
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 8,
+              "q": 0.32793
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 15,
+              "q": 0.38312
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 18,
+              "q": 0.346
+            }
+          ],
+          "trajectory_full": [
+            {
+              "nodes_searched": 848,
+              "visits": 5,
+              "q": 0.38193
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 5,
+              "q": 0.38193
+            },
+            {
+              "nodes_searched": 1390,
+              "visits": 7,
+              "q": 0.3443
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 8,
+              "q": 0.32793
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 15,
+              "q": 0.38312
+            },
+            {
+              "nodes_searched": 3820,
+              "visits": 17,
+              "q": 0.36282
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 18,
+              "q": 0.346
+            }
+          ],
+          "trajectory_summary": {
+            "q_first": 0.38193,
+            "q_last": 0.346,
+            "q_peak": 0.38312,
+            "q_peak_at_visits": 15,
+            "q_trough": 0.32793,
+            "q_trough_at_visits": 8,
+            "q_stabilized_at_visits": 7,
+            "visit_growth_rate": 2.1666666666666665,
+            "q_crossed_zero": false,
+            "inflection_points": [],
+            "block_count": 7
+          }
+        },
+        {
+          "uci": "e5a5",
+          "san": "Qa5",
+          "visits": 15,
+          "visits_in_flight": 1,
+          "prior_pct": 5.83,
+          "q": 0.40517,
+          "v": 0.3983,
+          "wl": 0.40517,
+          "draw": 0.514,
+          "moves_left": 111.1,
+          "u": 0.51179,
+          "s": 0.91524,
+          "pv_san": [],
+          "pv_san_truncated": false,
+          "trajectory": [
+            {
+              "nodes_searched": 848,
+              "visits": 4,
+              "q": 0.39476
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 4,
+              "q": 0.39476
+            },
+            {
+              "nodes_searched": 1390,
+              "visits": 5,
+              "q": 0.43808
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 7,
+              "q": 0.43237
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 12,
+              "q": 0.38327
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 15,
+              "q": 0.40517
+            }
+          ],
+          "trajectory_selected": [
+            {
+              "nodes_searched": 848,
+              "visits": 4,
+              "q": 0.39476
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 4,
+              "q": 0.39476
+            },
+            {
+              "nodes_searched": 1390,
+              "visits": 5,
+              "q": 0.43808
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 7,
+              "q": 0.43237
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 12,
+              "q": 0.38327
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 15,
+              "q": 0.40517
+            }
+          ],
+          "trajectory_full": [
+            {
+              "nodes_searched": 848,
+              "visits": 4,
+              "q": 0.39476
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 4,
+              "q": 0.39476
+            },
+            {
+              "nodes_searched": 1390,
+              "visits": 5,
+              "q": 0.43808
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 7,
+              "q": 0.43237
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 12,
+              "q": 0.38327
+            },
+            {
+              "nodes_searched": 3820,
+              "visits": 13,
+              "q": 0.38938
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 15,
+              "q": 0.40517
+            }
+          ],
+          "trajectory_summary": {
+            "q_first": 0.39476,
+            "q_last": 0.40517,
+            "q_peak": 0.43808,
+            "q_peak_at_visits": 5,
+            "q_trough": 0.38327,
+            "q_trough_at_visits": 12,
+            "q_stabilized_at_visits": 4,
+            "visit_growth_rate": 1.8333333333333333,
+            "q_crossed_zero": false,
+            "inflection_points": [],
+            "block_count": 7
+          }
+        },
+        {
+          "uci": "a4c2",
+          "san": "Bc2",
+          "visits": 13,
+          "visits_in_flight": 1,
+          "prior_pct": 2.71,
+          "q": 0.64615,
+          "v": 0.4749,
+          "wl": 0.64615,
+          "draw": 0.271,
+          "moves_left": 109.7,
+          "u": 0.26983,
+          "s": 0.91753,
+          "pv_san": [],
+          "pv_san_truncated": false,
+          "trajectory": [
+            {
+              "nodes_searched": 848,
+              "visits": 2,
+              "q": 0.55502
+            },
+            {
+              "nodes_searched": 1390,
+              "visits": 3,
+              "q": 0.62719
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 4,
+              "q": 0.53097
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 11,
+              "q": 0.64181
+            },
+            {
+              "nodes_searched": 3820,
+              "visits": 12,
+              "q": 0.65168
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 13,
+              "q": 0.64615
+            }
+          ],
+          "trajectory_selected": [
+            {
+              "nodes_searched": 848,
+              "visits": 2,
+              "q": 0.55502
+            },
+            {
+              "nodes_searched": 1390,
+              "visits": 3,
+              "q": 0.62719
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 4,
+              "q": 0.53097
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 11,
+              "q": 0.64181
+            },
+            {
+              "nodes_searched": 3820,
+              "visits": 12,
+              "q": 0.65168
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 13,
+              "q": 0.64615
+            }
+          ],
+          "trajectory_full": [
+            {
+              "nodes_searched": 848,
+              "visits": 2,
+              "q": 0.55502
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 2,
+              "q": 0.55502
+            },
+            {
+              "nodes_searched": 1390,
+              "visits": 3,
+              "q": 0.62719
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 4,
+              "q": 0.53097
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 11,
+              "q": 0.64181
+            },
+            {
+              "nodes_searched": 3820,
+              "visits": 12,
+              "q": 0.65168
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 13,
+              "q": 0.64615
+            }
+          ],
+          "trajectory_summary": {
+            "q_first": 0.55502,
+            "q_last": 0.64615,
+            "q_peak": 0.65168,
+            "q_peak_at_visits": 12,
+            "q_trough": 0.53097,
+            "q_trough_at_visits": 4,
+            "q_stabilized_at_visits": 11,
+            "visit_growth_rate": 1.8333333333333333,
+            "q_crossed_zero": false,
+            "inflection_points": [
+              {
+                "nodes_searched": 1390,
+                "visits": 3,
+                "q": 0.62719
+              }
+            ],
+            "block_count": 7
+          }
+        },
+        {
+          "uci": "e5h2",
+          "san": "Qxh2",
+          "visits": 1,
+          "visits_in_flight": 0,
+          "prior_pct": 1.96,
+          "q": -0.63279,
+          "v": -0.6339,
+          "wl": -0.63279,
+          "draw": 0.232,
+          "moves_left": 96.9,
+          "u": 1.46201,
+          "s": 0.82811,
+          "pv_san": [],
+          "pv_san_truncated": false,
+          "trajectory": [
+            {
+              "nodes_searched": 848,
+              "visits": 1,
+              "q": -0.63279
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 1,
+              "q": -0.63279
+            },
+            {
+              "nodes_searched": 1390,
+              "visits": 1,
+              "q": -0.63279
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 1,
+              "q": -0.63279
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 1,
+              "q": -0.63279
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 1,
+              "q": -0.63279
+            }
+          ],
+          "trajectory_selected": [
+            {
+              "nodes_searched": 848,
+              "visits": 1,
+              "q": -0.63279
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 1,
+              "q": -0.63279
+            },
+            {
+              "nodes_searched": 1390,
+              "visits": 1,
+              "q": -0.63279
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 1,
+              "q": -0.63279
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 1,
+              "q": -0.63279
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 1,
+              "q": -0.63279
+            }
+          ],
+          "trajectory_full": [
+            {
+              "nodes_searched": 848,
+              "visits": 1,
+              "q": -0.63279
+            },
+            {
+              "nodes_searched": 1001,
+              "visits": 1,
+              "q": -0.63279
+            },
+            {
+              "nodes_searched": 1390,
+              "visits": 1,
+              "q": -0.63279
+            },
+            {
+              "nodes_searched": 1760,
+              "visits": 1,
+              "q": -0.63279
+            },
+            {
+              "nodes_searched": 3461,
+              "visits": 1,
+              "q": -0.63279
+            },
+            {
+              "nodes_searched": 3820,
+              "visits": 1,
+              "q": -0.63279
+            },
+            {
+              "nodes_searched": 4877,
+              "visits": 1,
+              "q": -0.63279
+            }
+          ],
+          "trajectory_summary": {
+            "q_first": -0.63279,
+            "q_last": -0.63279,
+            "q_peak": -0.63279,
+            "q_peak_at_visits": 1,
+            "q_trough": -0.63279,
+            "q_trough_at_visits": 1,
+            "q_stabilized_at_visits": 1,
+            "visit_growth_rate": 0.0,
+            "q_crossed_zero": false,
+            "inflection_points": [],
+            "block_count": 7
+          }
+        }
+      ],
+      "root_stats": {
+        "visits": 4713,
+        "visits_in_flight": 164,
+        "prior_pct": 100.0,
+        "q": 0.88247,
+        "v": 0.7181,
+        "wl": 0.88247,
+        "draw": 0.032,
+        "moves_left": 72.4
+      },
+      "search_complete": true
+    },
+    "focal_move_uci": "d8d4",
+    "focal_move_san": "Rxd4",
+    "focal_is_engine_pick": true,
+    "focal_policy_pct": null,
+    "focal_policy_rank": null,
+    "focal_mcts_child": {
+      "uci": "d8d4",
+      "san": "Rxd4",
+      "visits": 4295,
+      "visits_in_flight": 156,
+      "prior_pct": 6.79,
+      "q": 0.91785,
+      "v": 0.9134,
+      "wl": 0.91785,
+      "draw": 0.012,
+      "moves_left": 67.9,
+      "u": 0.00227,
+      "s": 0.92918,
+      "pv_san": [
+        "Rxd4",
+        "Qc3",
+        "Rxb1+",
+        "Kxb1",
+        "Qb8+",
+        "Qb2",
+        "Rd8",
+        "Qxb8",
+        "Rxb8+",
+        "Kc1",
+        "Nd7",
+        "Bd1",
+        "Bc6",
+        "Rd6",
+        "Rc8"
+      ],
+      "pv_san_truncated": false,
+      "trajectory": [
+        {
+          "nodes_searched": 848,
+          "visits": 600,
+          "q": 0.95212
+        },
+        {
+          "nodes_searched": 1001,
+          "visits": 772,
+          "q": 0.94804
+        },
+        {
+          "nodes_searched": 1760,
+          "visits": 1463,
+          "q": 0.95381
+        },
+        {
+          "nodes_searched": 3461,
+          "visits": 2970,
+          "q": 0.89473
+        },
+        {
+          "nodes_searched": 3820,
+          "visits": 3294,
+          "q": 0.90092
+        },
+        {
+          "nodes_searched": 4877,
+          "visits": 4295,
+          "q": 0.91785
+        }
+      ],
+      "trajectory_selected": [
+        {
+          "nodes_searched": 848,
+          "visits": 600,
+          "q": 0.95212
+        },
+        {
+          "nodes_searched": 1001,
+          "visits": 772,
+          "q": 0.94804
+        },
+        {
+          "nodes_searched": 1760,
+          "visits": 1463,
+          "q": 0.95381
+        },
+        {
+          "nodes_searched": 3461,
+          "visits": 2970,
+          "q": 0.89473
+        },
+        {
+          "nodes_searched": 3820,
+          "visits": 3294,
+          "q": 0.90092
+        },
+        {
+          "nodes_searched": 4877,
+          "visits": 4295,
+          "q": 0.91785
+        }
+      ],
+      "trajectory_full": [
+        {
+          "nodes_searched": 848,
+          "visits": 600,
+          "q": 0.95212
+        },
+        {
+          "nodes_searched": 1001,
+          "visits": 772,
+          "q": 0.94804
+        },
+        {
+          "nodes_searched": 1390,
+          "visits": 1114,
+          "q": 0.95342
+        },
+        {
+          "nodes_searched": 1760,
+          "visits": 1463,
+          "q": 0.95381
+        },
+        {
+          "nodes_searched": 3461,
+          "visits": 2970,
+          "q": 0.89473
+        },
+        {
+          "nodes_searched": 3820,
+          "visits": 3294,
+          "q": 0.90092
+        },
+        {
+          "nodes_searched": 4877,
+          "visits": 4295,
+          "q": 0.91785
+        }
+      ],
+      "trajectory_summary": {
+        "q_first": 0.95212,
+        "q_last": 0.91785,
+        "q_peak": 0.95381,
+        "q_peak_at_visits": 1463,
+        "q_trough": 0.89473,
+        "q_trough_at_visits": 2970,
+        "q_stabilized_at_visits": 2970,
+        "visit_growth_rate": 615.8333333333334,
+        "q_crossed_zero": false,
+        "inflection_points": [
+          {
+            "nodes_searched": 3820,
+            "visits": 3294,
+            "q": 0.90092
+          }
+        ],
+        "block_count": 7
+      }
+    },
+    "focal_mcts_rank_by_visits": 1,
+    "focal_stockfish_candidate": {
+      "uci": "d8d4",
+      "san": "Rxd4",
+      "eval_cp": -402,
+      "mate_in": null,
+      "pv_san": [
+        "Rxd4",
+        "Qc3",
+        "Rxb1+",
+        "Kxb1",
+        "Qb8+"
+      ]
+    },
+    "focal_stockfish_rank": 1,
+    "focal_layer_trajectory": {
+      "uci": "d8d4",
+      "san": "Rxd4",
+      "layer_trajectory": [
+        {
+          "layer": 0,
+          "rank": 43,
+          "prob": 0.0012793736532330513
+        },
+        {
+          "layer": 1,
+          "rank": 32,
+          "prob": 0.0031330841593444347
+        },
+        {
+          "layer": 2,
+          "rank": 29,
+          "prob": 0.0013282308354973793
+        },
+        {
+          "layer": 3,
+          "rank": 31,
+          "prob": 0.002533194376155734
+        },
+        {
+          "layer": 4,
+          "rank": 35,
+          "prob": 0.0027684636879712343
+        },
+        {
+          "layer": 5,
+          "rank": 32,
+          "prob": 0.004594480153173208
+        },
+        {
+          "layer": 6,
+          "rank": 24,
+          "prob": 0.007343295030295849
+        },
+        {
+          "layer": 7,
+          "rank": 35,
+          "prob": 0.003341882023960352
+        },
+        {
+          "layer": 8,
+          "rank": 35,
+          "prob": 0.0022525808308273554
+        },
+        {
+          "layer": 9,
+          "rank": 37,
+          "prob": 0.002555031795054674
+        },
+        {
+          "layer": 10,
+          "rank": 34,
+          "prob": 0.0017266875365749002
+        },
+        {
+          "layer": 11,
+          "rank": 33,
+          "prob": 0.0020061165560036898
+        },
+        {
+          "layer": 12,
+          "rank": 31,
+          "prob": 0.002265013288706541
+        },
+        {
+          "layer": 13,
+          "rank": 25,
+          "prob": 0.004383703228086233
+        },
+        {
+          "layer": 14,
+          "rank": 14,
+          "prob": 0.013800184242427349
+        },
+        {
+          "layer": 15,
+          "rank": 9,
+          "prob": 0.011493640951812267
+        }
+      ],
+      "entered_top5_at_layer": null,
+      "exited_top5_at_layer": null,
+      "peak_rank": 9,
+      "peak_layer": 15,
+      "network_dismissal": "never_rose"
+    },
+    "focal_mcts_trajectory_summary": {
+      "q_first": 0.95212,
+      "q_last": 0.91785,
+      "q_peak": 0.95381,
+      "q_peak_at_visits": 1463,
+      "q_trough": 0.89473,
+      "q_trough_at_visits": 2970,
+      "q_stabilized_at_visits": 2970,
+      "visit_growth_rate": 615.8333333333334,
+      "q_crossed_zero": false,
+      "inflection_points": [
+        {
+          "nodes_searched": 3820,
+          "visits": 3294,
+          "q": 0.90092
+        }
+      ],
+      "block_count": 7
+    },
+    "network_dismissal": "never_rose",
+    "search_dismissal": "unknown",
+    "focused_total_nodes": 6270,
+    "focused_visits": 5680,
+    "focused_q": 0.92482,
+    "focused_pv_san": [
+      "Rxd4",
+      "Qc3",
+      "Rxb1+",
+      "Kxb1",
+      "Qb8+",
+      "Qb2",
+      "Rd8",
+      "Qxb8",
+      "Rxb8+",
+      "Kc1",
+      "Nd7",
+      "Bd1",
+      "Bc6",
+      "Rd6",
+      "Rc8"
+    ],
+    "focused_trajectory_summary": {
+      "q_first": 0.91737,
+      "q_last": 0.92482,
+      "q_peak": 0.92482,
+      "q_peak_at_visits": 5680,
+      "q_trough": 0.91737,
+      "q_trough_at_visits": 4609,
+      "q_stabilized_at_visits": 4609,
+      "visit_growth_rate": 535.5,
+      "q_crossed_zero": false,
+      "inflection_points": [],
+      "block_count": 3
+    }
+  }
+}

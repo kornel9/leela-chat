@@ -587,3 +587,75 @@ def test_trough_completeness_trough_cited_without_q_first_passes():
     )
     r = validate_response(prose, fen=_TROUGH_FEN, findings=findings)
     assert not any(e.kind == "incomplete_trough_citation" for e in r.errors)
+
+
+# === Chunk 7c.7 sub-fix 1b: real-row regression test =======================
+
+def test_validator_no_misfire_on_real_walkthrough_did_you_consider_v4_row():
+    """Snapshot-style regression test against a real captured row.
+
+    Per Chunk 7c.7 sub-fix 1b. The fixture at
+    ``tests/unit/fixtures/walkthrough_real_row_for_trough_check.json``
+    was captured via ``leela_chat.scripts.capture_walkthrough_row``
+    on 2026-05-25 — a fresh pod run of did_you_consider/v4/deep
+    against the canonical walkthrough_rxd4 FEN, persisting the FULL
+    findings_dict + prose + LLM-produced validation_errors. This test
+    re-runs ``validate_response`` against the captured findings_dict +
+    prose and asserts the live error set matches the captured snapshot.
+
+    Why a snapshot-style assertion: the original 7c spot-check that
+    motivated 7c.5.A's validator (Q stable in tight +0.917 to +0.923
+    band, q_trough +0.647 → delta 0.276 → fired) is sampling-variance
+    sensitive — Lc0's MCTS isn't deterministic by default, so a fresh
+    capture produces a different trajectory shape (typical capture:
+    delta ~0.05; no fire). The "trigger fires on real data" check
+    therefore needs synthetic fixtures (the
+    ``test_trough_completeness_trigger_canonical_7c_case`` test
+    above). This test serves a different role: it guards against
+    the validator MISFIRING on clean real-world prose — a false
+    positive would force the templated fallback on every clean
+    deep-mode response.
+
+    If a future capture has incomplete_trough_citation in the snapshot
+    (real trough + violating prose), the assertion automatically
+    becomes a "trigger fires on real data" check.
+    """
+    import json
+    from pathlib import Path
+
+    fixture_path = (
+        Path(__file__).parent / "fixtures"
+        / "walkthrough_real_row_for_trough_check.json"
+    )
+    if not fixture_path.exists():
+        import pytest
+        pytest.skip(
+            f"Fixture not present at {fixture_path}; capture via "
+            f"`uv run python -m leela_chat.scripts.capture_walkthrough_row --out "
+            f"{fixture_path.with_suffix('.jsonl')}` and rsync the sidecar."
+        )
+
+    fixture = json.loads(fixture_path.read_text())
+    prose = fixture["prose"]
+    findings_dict = fixture["findings_dict"]
+    fen = fixture["fen"]
+    snapshot_errors = fixture["validation_errors"]
+
+    # Re-run validate_response against the captured findings + prose.
+    live_result = validate_response(prose, fen=fen, findings=findings_dict)
+    live_error_kinds = sorted(e.kind for e in live_result.errors)
+    snapshot_error_kinds = sorted(e["kind"] for e in snapshot_errors)
+
+    # The captured snapshot was produced by the validator at capture
+    # time; re-running against the same prose + findings must produce
+    # the same kinds. (Spans may differ if validator detail formatting
+    # changes; kind matching is the regression-meaningful assertion.)
+    assert live_error_kinds == snapshot_error_kinds, (
+        f"Validator behavior changed for the real-row fixture.\n"
+        f"  Snapshot kinds: {snapshot_error_kinds}\n"
+        f"  Live kinds:     {live_error_kinds}\n"
+        f"  Captured at:    {fixture.get('captured_at')}\n"
+        f"  Prompt version: {fixture.get('prompt_version')}\n"
+        f"If the new validator behavior is correct, re-capture the "
+        f"fixture via `uv run python -m leela_chat.scripts.capture_walkthrough_row`."
+    )
