@@ -1142,6 +1142,40 @@ To be clear about what you actually have to build:
 
 ---
 
+## Research & tooling — gap-fill additions (2026-06-02)
+
+Added after a corpus audit surfaced these as missing (or only incidentally mentioned). Each slots into the tier/section named on its line and has a matching source-cited note in `leelachat-wiki/wiki/` (`→ wiki:<slug>`). ✓ = read directly this session. These **augment** the phase lists above; no existing entry was changed.
+
+### Circuit methodology & transcoders (→ general mech interp; the lineage of the Fudan North Star)
+- **Dunefsky, Chlenski, Nanda — "Transcoders Find Interpretable LLM Feature Circuits" ✓** (arXiv 2406.11944, NeurIPS 2024). Transcoders replace an MLP sublayer with a sparse, input-invariant approximation enabling weights-based circuit analysis — the building block under Fudan's Transcoder/Lorsa decomposition. **You previously had zero transcoder-foundational papers.** Phases 4, 7. → wiki:transcoders-find-circuits (+ concept wiki:transcoders).
+- **Anthropic — "Circuit Tracing" + "On the Biology of a Large Language Model" ✓** (transformer-circuits.pub, Mar 2025). Attribution graphs via cross-layer transcoders + backward-Jacobian attribution — the LLM-side parent of Fudan's "reasoning pathways." Code: `safety-research/circuit-tracer` (@80ca62b). Phases 5, 7. → wiki:circuit-tracing.
+- **Kissane, Krzyzanowski, Bloom, Conmy, Nanda — "Interpreting Attention Layer Outputs with Sparse Autoencoders" ✓** (arXiv 2406.17759, 2024). SAEs on concatenated attention outputs — the attention-SAE basis for Fudan's Lorsa; previously only implicit via the Fudan line. Phases 4, 6. → wiki:attention-saes-kissane (+ concept wiki:attention-saes).
+
+### Sparse-autoencoder evaluation & known pitfalls (→ SAE methodology)
+- **Karvonen et al. — "SAEBench" ✓** (arXiv 2503.09532, ICML 2025). Eight-metric SAE benchmark; key result: sparsity-fidelity proxy gains do NOT reliably predict practical quality — directly informs the Phase-4 Fudan go/no-go. Successor to "Measuring Progress." Phase 4. → wiki:saebench.
+- **Chanin et al. "A is for Absorption" (arXiv 2409.14507) + Bussmann/Nanda "Matryoshka SAEs" (arXiv 2503.17547) ✓.** Feature absorption = systematic SAE blind spots on hierarchical features (degrades Phase-5 labeling); Matryoshka SAEs are the current mitigation. Phases 4, 5. → wiki:feature-absorption-matryoshka.
+- **Lieberum et al. — "Gemma Scope" ✓** (arXiv 2408.05036, 2024). 400+ open JumpReLU SAEs across all layers of Gemma 2; the de-facto SAE calibration suite. Previously only an incidental mention. Phase 4. → wiki:gemma-scope.
+- **Sharkey et al. — "Open Problems in Mechanistic Interpretability" ✓** (arXiv 2501.16496, 2025). Field roadmap + a skeptic's checklist for the feature-based bet. Phase-4 orientation. → wiki:open-problems-mech-interp.
+
+### Automated interpretability / feature labeling (→ Phase 5, previously only Neuronpedia + Anthropic updates)
+- **Paulo et al. — "Automatically Interpreting Millions of Features" ✓** (arXiv 2410.13928, 2024) + **EleutherAI `delphi`** (Apache-2.0 ✓, @a70e7ee) + Bills et al. 2023 (OpenAI explanation→simulation→scoring precedent). A runnable explainer→scorer auto-interp pipeline — concrete Phase-5 infrastructure you lacked. Phase 5. → wiki:auto-interpretability (+ concept wiki:auto-interp).
+
+### Concept-probing foundations (→ concept probing methodology; augments Alain&Bengio / Belinkov / Hewitt&Liang)
+- **Kim et al. — "TCAV: Testing with Concept Activation Vectors" ✓** (arXiv 1711.11279, ICML 2018). The concept-direction methodology under McGrath/Schut concept work — the foundation for "what does Leela see." Phase 3. → wiki:tcav (+ concept wiki:concept-vectors).
+- **Elazar et al. — "Amnesic Probing" ✓** (arXiv 2006.00995, TACL 2021). Causally ablates a concept direction (INLP) and measures task-performance drop — operationalizes "encoded vs. causally used." Phases 3, 6. → wiki:amnesic-probing.
+
+### Faithfulness & constrained generation (→ cross-cutting; the academic backbone of Rule 1 + the validator)
+- **Turpin et al. (arXiv 2305.04388, NeurIPS 2023) + Lanham et al. (arXiv 2307.13702) + Anthropic "Reasoning Models Don't Always Say What They Think" (2025) ✓.** Verbalized CoT/explanations are systematically unfaithful (biasing features that shift answers by up to 36% go unmentioned). Essential context for validator design + any Phase-7 "explain the reasoning" feature. Phases 1, 7, 8. → wiki:cot-faithfulness (+ concept wiki:faithfulness).
+- **Willard & Louf — "Efficient Guided Generation" / Outlines ✓** (arXiv 2307.09702, 2023). FSM-indexed vocabulary masking for O(1) structured decoding — the pre-hoc complement to the post-hoc validator (enforce legal-move/eval grammar at generation time). Phase 1. → wiki:constrained-decoding.
+
+### Chess-specific (→ chess interp / Tier 4 models)
+- **Tang/Tan et al. — "Maia-2: A Unified Model for Human-AI Alignment in Chess" ✓** (arXiv 2409.20553, NeurIPS 2024) + **`CSSLab/maia2`** (MIT ✓, @16c1383). A single skill-conditioned model across the rating spectrum — for Phase-6 differential ("what would a 1900 see?") it beats juggling separate Maia-1100…1900 nets. First-class entry complementing the existing Tang skill-adaptation-SAE entry above. Phase 6. → wiki:maia-2.
+- **`google-deepmind/searchless_chess` ✓** (Apache-2.0, @90ae0e6) — released code + weights for "Grandmaster-Level Chess Without Search" (Ruoss et al., NeurIPS 2024; paper already indexed as `grandmaster-chess-without-search`). A concrete network-alone baseline; its Stockfish-action-value pipeline is a Phase-3 concept-label source. Phase 3 + comparison baseline. → wiki:searchless-chess.
+
+**Code references:** `feature-circuits` (Marks et al. Sparse Feature Circuits; MIT, @7fbd82b) is **URL-only** — `github.com/saprmarks/feature-circuits`, not vendored. `lczero-training` (Lc0 net training; **no LICENSE file — verify**, @a60c7d2) is vendored as full source under `update_research/repos/`.
+
+---
+
 ## License survey
 
 Critical if you ever want to commercialize or open-source.

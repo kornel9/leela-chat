@@ -1,0 +1,30 @@
+# Self-repair (the Hydra effect)
+
+**Summary**: Self-repair (the "Hydra effect") is the phenomenon where ablating one component of a neural network triggers downstream components to compensate, so the network's output is largely restored — meaning ablation-based importance measures systematically understate a component's true causal role when probing networks like Lc0/BT4.
+
+**Sources**: The Hydra Effect.pdf, How to Use and Interpret Activation Patching.pdf, Towards Automated Circuit Discovery.pdf
+
+**Last updated**: 2026-06-02
+
+---
+
+## What it is
+Self-repair is the observation that knocking out one part of a transformer does not cleanly remove its function: a downstream component increases its own effect to compensate, partially rebuilding the lost signal (cut off one head, another grows back — hence "Hydra"). The original study identified two motifs in a 7B language model: a downstream attention layer increasing its direct logit-lens effect after an upstream attention layer is ablated, and late-layer MLPs reducing their normal suppression of the answer token (source: The Hydra Effect.pdf, §2.5.2). It matters for interpreting Lc0/BT4 because any extractor or handler that judges a component's importance purely from how much ablating it changes the output will under-report importance — low ablation impact does not imply low importance (source: The Hydra Effect.pdf, §2.5 / Figure 2c).
+
+## In the literature
+- **The Hydra Effect (McGrath et al., 2023)** is the foundational study. Using resample ablations on 1,209 Counterfact factual-recall prompts in a 7B Chinchilla-family model, it shows that ablating an attention layer makes a downstream attention layer substantially increase its logit-lens impact, even though the model was trained with no dropout or stochastic depth (source: The Hydra Effect.pdf, §2.5.2). The compensatory response explains up to 92% of the variance in downstream direct-effect changes at layer 23 of 32 (source: The Hydra Effect.pdf, §4.2 / Figure 7b), and the combined Hydra effect plus reduced MLP erasure restores roughly 70% of the lost token-logit signal (source: The Hydra Effect.pdf, §6 Conclusion). The paper explicitly flags this as a challenge for automated circuit discovery, because total-effect priority ordering does not reflect the intact network's computational structure (source: The Hydra Effect.pdf, §6 Conclusion). See [[hydra-effect]].
+- **How to Use and Interpret Activation Patching (Heimersheim & Nanda, 2024)** treats self-repair as a practical pitfall for patching work, calling it the "backup" or Hydra effect: backup components compensate for ablated circuit components at approximately 0.7x of the original boost, making original components appear about 0.3x less important than they really are (source: How to Use and Interpret Activation Patching.pdf, §3.2). Notably, the guide references but does not re-derive the McGrath quantification — it cites the 0.7x compensation factor rather than replicating it (source: How to Use and Interpret Activation Patching.pdf, notes). It also pairs self-repair with the related "negative components" problem, where harmful heads can make a circuit analysis look complete even when only half the positive components are found (source: How to Use and Interpret Activation Patching.pdf, §3.2). See [[activation-patching-guide]].
+- **Towards Automated Circuit Discovery (Conmy et al., 2023)** is the concrete case of the challenge the Hydra paper warns about. ACDC's greedy KL-driven edge-pruning recovers known circuits well (e.g. 5/5 component types and only 68 of 32,000 edges on GPT-2 Small's Greater-Than circuit), but it systematically misses "negative" circuit components — those actively harmful to task performance — because the greedy KL objective only rewards their absence, never their inclusion (source: Towards Automated Circuit Discovery.pdf, §4.1). This is the same blind spot self-repair exposes: a single-pass ablation/pruning method does not see components whose contribution is masked or compensatory. See [[automated-circuit-discovery]].
+
+## Relevance to Leela Chat
+Self-repair is mandatory context for Phase 6 (differential/counterfactual analysis) and Phase 7 (reasoning pathways). For Phase 6's counterfactual handlers (e.g. `why_is_my_move_wrong`), ablation extractors over BT4's residual stream must not treat total-effect and direct-effect as interchangeable, and should compare multi-component knockouts — simultaneously ablating a candidate feature and its likely backups — against mean-ablation baselines to detect and quantify compensatory rewriting (source: The Hydra Effect.pdf, project_relevance; source: How to Use and Interpret Activation Patching.pdf, project_relevance). For Phase 7 pathway extraction, ACDC-style circuit discovery over BT4's DAG inherits both the Hydra caveat and the negative-component blind spot, so any pathway the translator narrates to the user must be validated against these failure modes rather than reported as the complete causal story (source: Towards Automated Circuit Discovery.pdf, project_relevance). The MLP-erasure motif also warns Phase 3 probe validation that reading off individual MLP outputs via logit-lens alone is unreliable when erasure MLPs sit downstream (source: The Hydra Effect.pdf, project_relevance).
+
+## Related pages
+- [[hydra-effect]] — the foundational paper defining self-repair and the MLP-erasure motif.
+- [[activation-patching-guide]] — practical patching guide that treats self-repair as the "backup effect" pitfall.
+- [[automated-circuit-discovery]] — ACDC, the circuit-discovery method whose blind spots self-repair exposes.
+- [[activation-patching]] — the core technique whose importance estimates self-repair distorts.
+- [[circuit-discovery]] — the broader workflow self-repair complicates.
+- [[path-patching]] — finer-grained patching used to separate direct from mediated component effects.
+- [[residual-stream]] — where compensatory rewriting takes place in the network.
+- [[logit-lens]] — the direct-effect read-off whose interpretation self-repair confounds.

@@ -322,7 +322,7 @@ Produce these five sections, in order:
 State the phase number, name, and exit criteria from §11.
 
 #### 2. Mandatory reading — surface specific papers from PRIOR_WORK.md
-Pull the "Read" list for this phase and present each as a checkbox the user can confirm or defer. Examples:
+Pull the "Read" list for this phase and present each as a checkbox the user can confirm or defer. **Also open the matching `leelachat-wiki/wiki/` notes** for this phase's papers, concepts, and repos — the vault is the navigation layer into `PRIOR_WORK.md` (which remains canonical for adopt/skip). Examples:
 
 - **Phase 0:**
   - v2 Bible cover-to-cover (`docs/BIBLE.md`)
@@ -458,6 +458,8 @@ Detail and per-chunk work items belong in `docs/PHASE_NOTES.md`, not here.
 **Read for "why":** `docs/BIBLE.md` — the strategic vision, full phase descriptions, philosophy, pitfalls, glossary.
 
 **Read for "what to use":** `docs/PRIOR_WORK.md` — every paper, GitHub repo, dataset, model, library worth knowing about, organized by tier and by phase relevance. Use the table of contents at the top of that file to navigate.
+
+**Browse as a linked graph:** `leelachat-wiki/` — an Obsidian vault of 100+ source-cited notes (one per paper, concept, tool, and vendored repo) that link into `PRIOR_WORK.md`. Start at `leelachat-wiki/wiki/index.md`. It is a navigation/graph layer; `PRIOR_WORK.md` stays canonical for adopt/skip.
 
 **Read for "what we decided":** `docs/DECISIONS.md` — architecture decision records.
 
