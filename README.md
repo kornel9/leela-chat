@@ -10,8 +10,7 @@ The LLM is a translator, never an inventor.
 
 ## Status
 
-Phase 0 — Environment and Foundations. Not yet usable. See
-`docs/PHASE_NOTES.md` for current progress.
+Phase 3: MCTS-grounded explanations working in quick/deep modes; evaluation in progress.
 
 ## Quick links
 
