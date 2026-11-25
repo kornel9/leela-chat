@@ -1,0 +1,632 @@
+"""leela-chat CLI: REPL (default) + one-shot ``ask`` subcommand.
+
+Per ADR-0005 G1.5: REPL is for human interactive use; the one-shot ``ask``
+subcommand is the entry point Chunk 7's eval grader would have called
+(skipped per ADR-0010, but the contract stays — Phase 3+ may want it back).
+
+Per ADR-0005 G1.2: ``--mode`` selects the LLM tier — ``iter`` (Sonnet,
+prompt-design iteration) vs ``prod`` (Opus, eval-set runs and live use).
+Default is ``prod``.
+
+Run with:
+
+    uv run python -m leela_chat.cli                                    # REPL
+    uv run python -m leela_chat.cli ask --fen ... --question ...       # one-shot
+    uv run python -m leela_chat.cli ask --fen ... --question ... -v    # + telemetry
+
+Resource lifecycle:
+- Both subcommands load BT4 once (~30-50 s), start one Stockfish UCI
+  subprocess, and — when the Lc0 binary + weights are present — one
+  Lc0 subprocess for MCTS. Both engines are closed in a ``finally`` block.
+- Lc0 paths default to the pod conventions; override with ``LC0_PATH``
+  and ``LC0_WEIGHTS`` env vars. If either is missing, the CLI degrades
+  gracefully to policy-only mode (``findings.mcts = None``) and the v4
+  prompt template handles the no-MCTS case. Useful for local dev boxes
+  without a Lc0 build.
+- The CLI is intentionally not optimised for repeat one-shot calls — the
+  REPL is the right mode for interactive personal use. One-shot exists
+  for scripting and for the eval-grader contract.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import shlex
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+import chess
+import chess.engine
+from loguru import logger
+
+from leela_chat.classifier import classify
+from leela_chat.conversation import ConversationState, Turn
+from leela_chat.handlers import Mode, VALID_MODES
+from leela_chat.handlers.what_is_leela_seeing import (
+    HANDLER_NAME as WHAT_HANDLER_NAME,
+    PROMPT_VERSION as WHAT_PROMPT_VERSION,
+    PROMPT_VERSION_DETAILED as WHAT_PROMPT_VERSION_DETAILED,
+    handle_what_is_leela_seeing,
+    templated_fallback as what_templated_fallback,
+)
+from leela_chat.handlers.did_you_consider import (
+    HANDLER_NAME as DYC_HANDLER_NAME,
+    PROMPT_VERSION as DYC_PROMPT_VERSION,
+    handle_did_you_consider,
+    templated_fallback as dyc_templated_fallback,
+)
+from leela_chat.handlers.why_this_move import (
+    HANDLER_NAME as WHY_HANDLER_NAME,
+    PROMPT_VERSION as WHY_PROMPT_VERSION,
+    PROMPT_VERSION_DETAILED as WHY_PROMPT_VERSION_DETAILED,
+    handle_why_this_move,
+    templated_fallback as why_templated_fallback,
+)
+from leela_chat.llm.client import LLMClient, LLMMode
+from leela_chat.llm.env import load_env
+from leela_chat.llm.translate import ValidatedTranslation, translate_and_validate
+from leela_chat.network import load_bt4
+
+if TYPE_CHECKING:
+    from transformer_lens import HookedTransformer
+
+    from leela_chat.engine.lc0_engine import Lc0Engine
+
+
+# Pod-default paths for Lc0 binary + BT4 weights (Phase-0 build conventions).
+# Override via LC0_PATH / LC0_WEIGHTS env vars on a local dev box.
+_DEFAULT_LC0_BINARY = Path("/workspace/bin/lc0")
+_DEFAULT_LC0_WEIGHTS = Path(
+    "/workspace/weights/BT4-1024x15x32h-swa-6147500/model.pb.gz"
+)
+
+
+# Available handlers in this build. Order matters only for ``--help``
+# rendering; the classifier picks by question + position context.
+HANDLERS_AVAILABLE: list[str] = [
+    WHAT_HANDLER_NAME, WHY_HANDLER_NAME, DYC_HANDLER_NAME,
+]
+
+
+# === Shared session context =================================================
+
+
+@dataclass
+class CliContext:
+    """Resources held for the lifetime of a CLI invocation.
+
+    Built once per ``leela-chat`` invocation by :func:`_build_context`. The
+    REPL holds it for the whole interactive session; the one-shot ``ask``
+    holds it for one Q&A. Either way, :func:`_close_context` must run on
+    exit (handled by the ``finally`` block in each command).
+
+    ``lc0`` is optional: when the binary or weights are missing (typical
+    on a local dev box), the field is ``None`` and Handler 1 skips MCTS.
+    Pod runs always have a real :class:`Lc0Engine`.
+    """
+
+    model: "HookedTransformer"
+    stockfish: chess.engine.SimpleEngine
+    client: LLMClient
+    verbose: bool
+    lc0: "Lc0Engine | None" = None
+
+
+def _build_context(mode: LLMMode, verbose: bool) -> CliContext:
+    """Load env, BT4, Stockfish, optional Lc0, and LLM client.
+
+    Lc0 is best-effort: if the binary or weights are missing at the
+    configured paths, log a warning and proceed in policy-only mode.
+    The handler + v4 prompt + templated fallback all handle
+    ``findings.mcts = None`` gracefully.
+    """
+    load_env()
+    stockfish_path = os.environ.get("STOCKFISH_PATH", "/usr/games/stockfish")
+    lc0_path = Path(os.environ.get("LC0_PATH", str(_DEFAULT_LC0_BINARY)))
+    lc0_weights = Path(os.environ.get("LC0_WEIGHTS", str(_DEFAULT_LC0_WEIGHTS)))
+
+    logger.info("Loading BT4 (this can take ~30-50 s on first call)...")
+    t0 = time.perf_counter()
+    model = load_bt4()
+    logger.info(f"BT4 loaded in {time.perf_counter() - t0:.1f}s")
+
+    logger.info(f"Starting Stockfish from {stockfish_path}...")
+    stockfish = chess.engine.SimpleEngine.popen_uci(stockfish_path)
+    logger.info(f"Stockfish ready: id_name={stockfish.id.get('name', '?')}")
+
+    lc0: "Lc0Engine | None" = None
+    if lc0_path.exists() and lc0_weights.exists():
+        from leela_chat.engine.lc0_engine import Lc0Engine
+        lc0 = Lc0Engine(binary=lc0_path, weights=lc0_weights)
+    else:
+        missing = []
+        if not lc0_path.exists():
+            missing.append(f"binary at {lc0_path}")
+        if not lc0_weights.exists():
+            missing.append(f"weights at {lc0_weights}")
+        logger.warning(
+            "Lc0 missing ({}); proceeding without MCTS — handler will use "
+            "policy + Stockfish only.".format(", ".join(missing)),
+        )
+
+    client = LLMClient(mode=mode)
+    return CliContext(
+        model=model,
+        stockfish=stockfish,
+        client=client,
+        verbose=verbose,
+        lc0=lc0,
+    )
+
+
+def _close_context(ctx: CliContext) -> None:
+    """Cleanly close the engine subprocesses. Idempotent in practice."""
+    try:
+        ctx.stockfish.close()
+    except Exception as exc:  # pragma: no cover — defensive cleanup
+        logger.warning(f"Stockfish close failed: {type(exc).__name__}: {exc}")
+    if ctx.lc0 is not None:
+        try:
+            ctx.lc0.close()
+        except Exception as exc:  # pragma: no cover — defensive cleanup
+            logger.warning(f"Lc0 close failed: {type(exc).__name__}: {exc}")
+
+
+# === Per-question core ======================================================
+
+
+def _resolve_handler_mode(args: argparse.Namespace) -> Mode:
+    """Resolve the parsed --quick/--deep/--detailed flags into a single Mode.
+
+    The argparse mutually-exclusive group ensures at most one flag is set;
+    if none is set, we default to quick. ``--detailed`` is a deprecated
+    alias for ``--deep`` (preserved from Chunk 6.5) and triggers an INFO
+    log so users can migrate scripts.
+    """
+    if getattr(args, "detailed", False):
+        logger.info(
+            "--detailed is a deprecated alias for --deep (per ADR-0012). "
+            "Use --deep going forward; --detailed will keep working for "
+            "back-compat but new scripts should migrate."
+        )
+        return "deep"
+    if getattr(args, "deep", False):
+        return "deep"
+    # --quick explicit, or no flag (default)
+    return "quick"
+
+
+def _answer_one(
+    ctx: CliContext,
+    fen: str,
+    question: str,
+    *,
+    handler_override: str | None = None,
+    move_uci: str | None = None,
+    mode: Mode = "quick",
+) -> tuple[ValidatedTranslation, float, float, dict]:
+    """Run handler + translate for one (fen, question[, move]) tuple.
+
+    Args:
+        ctx: Active CLI context.
+        fen: Position to analyze. Caller is responsible for FEN validity —
+            this function does NOT catch ``ValueError`` from ``chess.Board``.
+        question: User's literal question.
+        handler_override: If supplied, force this handler instead of asking
+            the classifier. Must be one of ``HANDLERS_AVAILABLE``.
+        move_uci: Move the user is asking about (for move-specific handlers
+            like ``why_this_move``). When the resolved handler needs a move
+            and this is None, raises ``ValueError``. When the resolved
+            handler doesn't take a move, this is ignored.
+        mode: Per-handler latency mode (per ADR-0012, 2026-05-24).
+            ``"quick"`` is the conversational tier (<30s gate); ``"deep"``
+            is the quality-prioritised tier (<90s gate, enables the
+            dual-timescale signals from Chunk 6.5 + the Chunk 7
+            extractors as they land). Handler 3 (``did_you_consider``) is
+            always-deep by construction — a ``mode="quick"`` request on
+            Handler 3 is auto-upgraded to deep with an INFO log
+            (preserves the old ``--detailed`` no-op semantics).
+
+    Returns:
+        4-tuple of (validated translation, handler latency in seconds,
+        translate latency in seconds, findings.model_dump() dict).
+        The findings dict was added in Chunk 6.9 so the smoke battery
+        runner can serialize trusted-moves arrays for the diagnostic
+        without re-invoking the handler.
+    """
+    board = chess.Board(fen)
+    handler_name = handler_override or classify(
+        question, current_handlers=HANDLERS_AVAILABLE
+    )
+    if handler_name not in HANDLERS_AVAILABLE:
+        raise ValueError(
+            f"Handler {handler_name!r} not implemented in this build "
+            f"(available: {HANDLERS_AVAILABLE})."
+        )
+
+    t0 = time.perf_counter()
+    if handler_name in (WHY_HANDLER_NAME, DYC_HANDLER_NAME):
+        if move_uci is None:
+            raise ValueError(
+                f"Handler {handler_name!r} requires --move <UCI>."
+            )
+        move = chess.Move.from_uci(move_uci)
+        if move not in board.legal_moves:
+            raise ValueError(
+                f"Move {move_uci!r} is not legal on FEN {fen!r}."
+            )
+        if handler_name == DYC_HANDLER_NAME:
+            # did_you_consider is always-deep by construction (prompt
+            # contract requires dismissal-tag data the quick-mode config
+            # wouldn't produce). A mode="quick" request is auto-upgraded
+            # with an INFO log — preserves the old --detailed no-op
+            # semantics (per the Chunk 6.5 handler 3 always-detailed
+            # design).
+            if mode == "quick":
+                logger.info(
+                    "mode='quick' is a no-op for did_you_consider — auto-"
+                    "upgrading to deep (handler is always-deep by "
+                    "construction)."
+                )
+            findings = handle_did_you_consider(
+                board, move,
+                model=ctx.model,
+                stockfish_engine=ctx.stockfish,
+                lc0_engine=ctx.lc0,
+            )
+            fallback_fn = dyc_templated_fallback
+            prompt_version = DYC_PROMPT_VERSION
+        else:
+            findings = handle_why_this_move(
+                board, move,
+                model=ctx.model,
+                stockfish_engine=ctx.stockfish,
+                lc0_engine=ctx.lc0,
+                mode=mode,
+            )
+            fallback_fn = why_templated_fallback
+            prompt_version = (
+                WHY_PROMPT_VERSION_DETAILED if mode == "deep" else WHY_PROMPT_VERSION
+            )
+    else:
+        findings = handle_what_is_leela_seeing(
+            board,
+            model=ctx.model,
+            stockfish_engine=ctx.stockfish,
+            lc0_engine=ctx.lc0,
+            mode=mode,
+        )
+        fallback_fn = what_templated_fallback
+        prompt_version = (
+            WHAT_PROMPT_VERSION_DETAILED if mode == "deep" else WHAT_PROMPT_VERSION
+        )
+    t1 = time.perf_counter()
+    result = translate_and_validate(
+        findings=findings,
+        question=question,
+        handler_name=handler_name,
+        templated_fallback=fallback_fn,
+        prompt_version=prompt_version,
+        client=ctx.client,
+    )
+    t2 = time.perf_counter()
+    return result, t1 - t0, t2 - t1, findings.model_dump()
+
+
+def _emit_telemetry(
+    result: ValidatedTranslation, handler_s: float, translate_s: float
+) -> None:
+    """Print one-line telemetry footer to stderr."""
+    total_in = sum(r.input_tokens for r in result.llm_responses)
+    total_out = sum(r.output_tokens for r in result.llm_responses)
+    print(
+        f"[source={result.source} validation_ok={result.validation.ok} "
+        f"handler={result.handler_name} prompt=v{result.prompt_version} "
+        f"handler_s={handler_s:.2f} translate_s={translate_s:.2f} "
+        f"llm_calls={len(result.llm_responses)} "
+        f"tokens=in:{total_in}/out:{total_out}]",
+        file=sys.stderr,
+    )
+
+
+# === cmd_ask: one-shot ======================================================
+
+
+def cmd_ask(args: argparse.Namespace) -> int:
+    """One-shot: load context, ask one question, print response, exit."""
+    try:
+        board = chess.Board(args.fen)
+    except ValueError as exc:
+        print(f"error: invalid FEN: {exc}", file=sys.stderr)
+        return 2
+
+    # Validate --move (UCI format + legality) up-front so we can exit
+    # before paying the BT4-load cost on bad input.
+    move_uci: str | None = getattr(args, "move", None)
+    if move_uci is not None:
+        try:
+            move_obj = chess.Move.from_uci(move_uci)
+        except (ValueError, chess.InvalidMoveError) as exc:
+            print(f"error: invalid UCI move {move_uci!r}: {exc}", file=sys.stderr)
+            return 2
+        if move_obj not in board.legal_moves:
+            print(
+                f"error: move {move_uci!r} is not legal on this position.",
+                file=sys.stderr,
+            )
+            return 2
+
+    # Default-routing: --move without --handler implies why_this_move.
+    handler_override = args.handler
+    if handler_override is None and move_uci is not None:
+        handler_override = WHY_HANDLER_NAME
+
+    llm_mode = LLMMode(args.mode)
+    handler_mode = _resolve_handler_mode(args)
+    ctx = _build_context(mode=llm_mode, verbose=args.verbose)
+    try:
+        try:
+            result, handler_s, translate_s, _findings = _answer_one(
+                ctx, args.fen, args.question,
+                handler_override=handler_override,
+                move_uci=move_uci,
+                mode=handler_mode,
+            )
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
+        print(result.text)
+        if args.verbose:
+            _emit_telemetry(result, handler_s, translate_s)
+        return 0
+    finally:
+        _close_context(ctx)
+
+
+# === cmd_repl: interactive ==================================================
+
+
+REPL_HELP = """\
+Commands:
+  :fen <FEN>    Switch to a new position (replaces the current one).
+  :history      Show the Q&A history of this session.
+  :help         Show this message.
+  :quit         Exit the REPL.
+
+Anything else is treated as a question about the current position.
+"""
+
+
+def _prompt_initial_fen() -> str | None:
+    """Loop until a valid FEN is entered, or return None on quit/EOF."""
+    while True:
+        try:
+            raw = input("Position FEN (or :quit): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()  # newline so the next shell prompt looks clean
+            return None
+        if raw in (":quit", ":q"):
+            return None
+        if not raw:
+            continue
+        try:
+            chess.Board(raw)
+        except ValueError as exc:
+            print(f"  invalid FEN: {exc}", file=sys.stderr)
+            continue
+        return raw
+
+
+def _print_history(state: ConversationState) -> None:
+    if not state.turns:
+        print("(no turns yet)")
+        return
+    for i, turn in enumerate(state.turns, start=1):
+        print(f"--- turn {i} [source={turn.source}] ---")
+        print(f"FEN: {turn.fen}")
+        print(f"Q:   {turn.question}")
+        print(f"A:   {turn.response}")
+
+
+def cmd_repl(args: argparse.Namespace) -> int:
+    """Interactive REPL. Returns process exit code."""
+    llm_mode = LLMMode(args.mode)
+    handler_mode = _resolve_handler_mode(args)
+    ctx = _build_context(mode=llm_mode, verbose=args.verbose)
+    state = ConversationState()
+    try:
+        initial = _prompt_initial_fen()
+        if initial is None:
+            return 0
+        state.current_fen = initial
+        print(REPL_HELP)
+
+        while True:
+            try:
+                raw = input("> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return 0
+            if not raw:
+                continue
+
+            # Dispatch on commands. Anything not starting with ":" is a
+            # question against state.current_fen.
+            if raw in (":quit", ":q"):
+                return 0
+            if raw in (":help", ":h", ":?"):
+                print(REPL_HELP)
+                continue
+            if raw == ":history":
+                _print_history(state)
+                continue
+            if raw.startswith(":fen"):
+                parts = shlex.split(raw)
+                if len(parts) < 2:
+                    print("usage: :fen <FEN>", file=sys.stderr)
+                    continue
+                # Join in case the user pasted unquoted FEN with spaces.
+                new_fen = " ".join(parts[1:])
+                try:
+                    chess.Board(new_fen)
+                except ValueError as exc:
+                    print(f"  invalid FEN: {exc}", file=sys.stderr)
+                    continue
+                state.current_fen = new_fen
+                print(f"(position changed)")
+                continue
+            if raw.startswith(":"):
+                print(f"unknown command: {raw}. Type :help for commands.", file=sys.stderr)
+                continue
+
+            # Treat as question.
+            assert state.current_fen is not None  # set by _prompt_initial_fen
+            try:
+                result, handler_s, translate_s, _findings = _answer_one(
+                    ctx, state.current_fen, raw,
+                    handler_override=args.handler,
+                    mode=handler_mode,
+                )
+            except ValueError as exc:
+                # Shouldn't happen for a question (FEN already validated;
+                # handler_override is whatever the user passed at startup).
+                print(f"error: {exc}", file=sys.stderr)
+                continue
+            except Exception as exc:  # noqa: BLE001 — REPL should keep going
+                logger.exception("Unhandled error during answer:")
+                print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+                continue
+
+            print(result.text)
+            state.turns.append(Turn(
+                fen=state.current_fen,
+                question=raw,
+                response=result.text,
+                source=result.source,
+            ))
+            if args.verbose:
+                _emit_telemetry(result, handler_s, translate_s)
+    finally:
+        _close_context(ctx)
+
+
+# === argparse ===============================================================
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="leela-chat",
+        description="Conversational interface to Leela Chess Zero.",
+    )
+    sub = parser.add_subparsers(dest="cmd")
+
+    p_repl = sub.add_parser("repl", help="Interactive REPL (default).")
+    _add_common_flags(p_repl)
+
+    p_ask = sub.add_parser("ask", help="One-shot question against a single position.")
+    p_ask.add_argument(
+        "--fen", required=True,
+        help="Position to analyze, in FEN notation.",
+    )
+    p_ask.add_argument(
+        "--question", required=True,
+        help="Natural-language question.",
+    )
+    p_ask.add_argument(
+        "--move",
+        default=None,
+        help=(
+            "Move to ask about, in UCI (e.g. 'd2d4'). Required when "
+            "--handler why_this_move. When supplied without --handler, "
+            "the handler defaults to why_this_move."
+        ),
+    )
+    _add_common_flags(p_ask)
+
+    # Repl is the default when no subcommand — flags must also be accepted
+    # at the top level so `leela-chat --mode iter` works without `repl`.
+    _add_common_flags(parser)
+
+    return parser
+
+
+def _add_common_flags(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--handler",
+        choices=HANDLERS_AVAILABLE,
+        help=(
+            "Force a specific handler. Phase 1 has only one; the classifier "
+            "routes to it by default. Pre-wired for handlers 2/3."
+        ),
+    )
+    p.add_argument(
+        "--mode",
+        choices=["iter", "prod"],
+        default="prod",
+        help="LLM tier (ADR-0005): 'iter' = Sonnet, 'prod' = Opus.",
+    )
+    p.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help=(
+            "Emit a one-line telemetry footer to stderr after each response "
+            "(source, validation status, latency, token counts). Off by default."
+        ),
+    )
+    # Handler latency mode (per ADR-0012, 2026-05-24). Mutually exclusive
+    # group: --quick (default), --deep (full quality tier), --detailed
+    # (DEPRECATED alias for --deep, preserved for backward compat from
+    # Chunk 6.5). See leela_chat.handlers.Mode for the literal.
+    mode_group = p.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--quick",
+        action="store_true",
+        help=(
+            "Quick mode (default): conversational tier. Single MCTS pass "
+            "(snapshot), no per-layer trajectory, no chess-content extractors. "
+            "Handler latency capped at <30s sustained per ADR-0012."
+        ),
+    )
+    mode_group.add_argument(
+        "--deep",
+        action="store_true",
+        help=(
+            "Deep mode: quality-prioritised tier. Enables Chunk 6.5 dual-"
+            "timescale signals (MCTS Q-trajectory + BT4 per-layer rank "
+            "emergence) for Handlers 1 and 2, and (as Chunk 7 sub-chunks "
+            "land) multi-config MCTS ensemble, chess-content extractors, "
+            "network confidence, Stockfish depth 30. Handler latency "
+            "bounded at <90s sustained per ADR-0012. No-op upgrade for "
+            "did_you_consider (always-deep by construction)."
+        ),
+    )
+    mode_group.add_argument(
+        "--detailed",
+        action="store_true",
+        help=(
+            "DEPRECATED alias for --deep (preserved from Chunk 6.5). New "
+            "scripts should use --deep. Logs a deprecation INFO when used."
+        ),
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    # Default to REPL if no subcommand was given.
+    if args.cmd is None or args.cmd == "repl":
+        return cmd_repl(args)
+    if args.cmd == "ask":
+        return cmd_ask(args)
+
+    parser.print_help()
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

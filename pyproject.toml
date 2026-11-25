@@ -1,0 +1,108 @@
+[project]
+name = "leela-chat"
+version = "0.0.0"
+description = "Conversational interface to Leela Chess Zero — extract signals from Lc0's MCTS tree and network internals, translate to prose via a frontier LLM."
+requires-python = "==3.11.*"
+dependencies = [
+    # torch + torchvision split per ADR-0002 (local CPU laptop vs remote
+    # cloud GPU box). Marker = "'microsoft' in platform_release" reliably
+    # identifies WSL (uname -r contains "microsoft" on every WSL kernel).
+    # Local-version pins (+cpu / +cu128) avoid the PEP 440 equality
+    # collision where the CPU index hosts both the CUDA build "2.12.0"
+    # and the explicit "2.12.0+cpu" wheel under the same version.
+    # Versions chosen to exist on BOTH the CPU index (cpu wheels) and the
+    # cu128 index (cuda wheels). cu128 lags one minor behind cpu — last
+    # version present on both as of 2026-05 is torch 2.11.0 / torchvision
+    # 0.26.0. Bump together when both indexes ship a newer matched pair.
+    "torch==2.11.0+cpu;   'microsoft' in platform_release",
+    "torch==2.11.0+cu128; 'microsoft' not in platform_release",
+    "torchvision==0.26.0+cpu;   'microsoft' in platform_release",
+    "torchvision==0.26.0+cu128; 'microsoft' not in platform_release",
+    "python-chess>=1.999,<2.0",
+    "lczerolens[hf]>=0.4.0,<0.5",
+    "loguru>=0.7,<0.8",
+    "pydantic>=2.7,<3.0",
+    # LLM translation layer (Phase 1 Chunk 2). Per ADR-0005 the project pins
+    # Anthropic Claude as primary provider. python-dotenv loads .env into
+    # os.environ so anthropic.Anthropic() picks up ANTHROPIC_API_KEY.
+    "anthropic>=0.40,<1.0",
+    "python-dotenv>=1.0,<2.0",
+    # Runtime deps for the vendored TransformerLens fork (see
+    # leela_chat/_vendor/VENDOR.md). These are what the BT4 inference path
+    # imports at module load time. We don't add wandb/tensorboard/openai
+    # etc. that Fudan lists — those are for SAE *training*, which we don't
+    # do here. Versions kept loose since we're insulated by the vendoring.
+    "einops>=0.7,<1.0",
+    "jaxtyping>=0.2,<1.0",
+    "beartype>=0.14,<1.0",
+    "fancy-einsum>=0.0.3,<0.1",
+    "transformers>=4.46,<5.0",
+    "better-abc>=0.0.3,<0.1",
+    "accelerate>=0.23,<2.0",
+    "sentencepiece>=0.1,<1.0",
+    "rich>=12.6,<16.0",
+    "typeguard>=4.0,<5.0",
+    # Lichess Puzzle DB corpus infrastructure (Phase 2 Chunk 6.8). zstandard
+    # decompresses the .csv.zst downloaded from database.lichess.org;
+    # pyarrow parses the resulting ~2GB CSV into a Parquet for fast
+    # theme/rating filtering at sampling time. Also reused by Phase 3+
+    # probe-training data work.
+    "zstandard>=0.22,<1.0",
+    "pyarrow>=16.0,<20.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0,<9.0",
+    "pytest-asyncio>=0.23,<0.30",
+    "ipykernel>=6.29,<7.0",
+    "jupyter>=1.0,<2.0",
+]
+
+[tool.uv]
+package = false
+# Restrict the lock resolver to the two real environments this project runs
+# in (per ADR-0002): local WSL laptop and remote Linux CUDA box. Without
+# this uv tries to also resolve for Windows / macOS / aarch64 etc., where
+# torch==2.12.0+cu128 has no matching wheel.
+environments = [
+    "sys_platform == 'linux' and 'microsoft' in platform_release",
+    "sys_platform == 'linux' and 'microsoft' not in platform_release",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# Project uses ``package = false`` (uv won't install ``leela_chat`` into the
+# venv). Adding the repo root to pythonpath lets pytest import ``leela_chat``
+# directly from the source tree.
+pythonpath = ["."]
+markers = [
+    # Tests needing a real BT4 weights file + CUDA + lc0 binary. Auto-skip
+    # when those aren't present (see fixtures in tests/integration/).
+    "integration: requires GPU + lc0 binary + BT4 weights",
+]
+
+# torch + torchvision indexes per ADR-0002 (local CPU laptop vs remote
+# CUDA box split). Selection is driven by the platform_release markers in
+# the dependency declarations above. Both indexes are explicit so they're
+# only used for the named packages.
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", marker = "'microsoft' in platform_release" },
+    { index = "pytorch-cuda", marker = "'microsoft' not in platform_release" },
+]
+torchvision = [
+    { index = "pytorch-cpu", marker = "'microsoft' in platform_release" },
+    { index = "pytorch-cuda", marker = "'microsoft' not in platform_release" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cuda"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

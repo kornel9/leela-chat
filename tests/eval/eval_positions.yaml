@@ -1,0 +1,33 @@
+# tests/eval/eval_positions.yaml — THE eval set.
+#
+# Per CLAUDE.md §2 Rule 3: before ANY change to extraction, translation,
+# or validation code is committed, the full eval set runs and per-handler
+# scores are compared to baseline. A drop of >5% on any handler is a
+# regression — investigate before merging.
+#
+# Add positions. NEVER remove them.
+#
+# ---
+# Schema (illustrated in this comment block to avoid violating the
+# "never remove" rule with a throwaway example entry):
+#
+#   positions:
+#     - id: italian-game-classical-mainline    # unique kebab-case slug
+#       fen: r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 4
+#       handler: why_this_move                 # which handler this evaluates
+#       question: Why did Black play Nf6 here?
+#       ground_truth:                          # structure varies by handler
+#         best_move_san: Nf6
+#         reasoning_tags: [development, central-control]
+#       tags: [opening, italian-game, classical]
+#       added: 2026-05-16
+#       author: KF
+#       notes: |
+#         Standard Italian Game line. Tests that the handler can articulate
+#         a developing move without confabulating tactical themes.
+#
+# Required fields per entry: id, fen, handler, question, ground_truth, added.
+# Optional: tags, author, notes.
+# ---
+
+positions: []

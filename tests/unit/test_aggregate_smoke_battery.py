@@ -1,0 +1,408 @@
+"""Unit tests for the smoke-battery aggregator (Chunk 6.8.1 hardening).
+
+Specifically tests the three-rate classification + top-api-error-kinds
+banner + circuit-breaker sentinel detection added in Chunk 6.8.1.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from leela_chat.scripts.aggregate_smoke_battery import (
+    _classify_api_error_subkind,
+    _detect_circuit_breaker_sentinel,
+    _excerpt_around_span,
+    _render,
+    _span_in_findings_summary,
+    _strip_san_marks,
+)
+
+
+# === _classify_api_error_subkind ==========================================
+
+
+def test_classify_credit_exhausted():
+    detail = "LLM API call failed (BadRequestError): Your credit balance is too low to access the Anthropic API."
+    assert _classify_api_error_subkind(detail) == "credit_exhausted"
+
+
+def test_classify_rate_limit():
+    detail = "LLM API error (RateLimitError): Error code: 429 - {...}"
+    assert _classify_api_error_subkind(detail) == "rate_limit"
+
+
+def test_classify_overloaded():
+    detail = "LLM API error (OverloadedError): Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error'}}"
+    assert _classify_api_error_subkind(detail) == "overloaded"
+
+
+def test_classify_timeout():
+    detail = "Connection timed out after 60s"
+    assert _classify_api_error_subkind(detail) == "timeout"
+
+
+def test_classify_other():
+    detail = "Some unknown error condition"
+    assert _classify_api_error_subkind(detail) == "other"
+
+
+def test_classify_empty():
+    assert _classify_api_error_subkind("") == "other"
+    assert _classify_api_error_subkind(None) == "other"
+
+
+# === _detect_circuit_breaker_sentinel =====================================
+
+
+def test_sentinel_detection_present():
+    rows = [
+        {"position_id": "p1", "source": "templated"},
+        {"_circuit_breaker": True, "consecutive_api_errors": 3, "last_error_kind": "api_error", "last_error_detail": "credit too low"},
+    ]
+    sentinel = _detect_circuit_breaker_sentinel(rows)
+    assert sentinel is not None
+    assert sentinel["consecutive_api_errors"] == 3
+
+
+def test_sentinel_detection_absent():
+    rows = [{"position_id": "p1", "source": "llm", "validation_ok": True}]
+    assert _detect_circuit_breaker_sentinel(rows) is None
+
+
+# === _render: three-rate computation ======================================
+
+
+def _row(
+    *, source: str = "llm", validation_ok: bool = True,
+    llm_calls: int = 1, errors: list[dict] | None = None,
+    category: str = "tactical_puzzle",
+    handler: str = "what_is_leela_seeing", mode: str = "default",
+    position_id: str = "p_test", themes: list[str] | None = None,
+    rating: int = 1900, prose: str = "Some prose.",
+    handler_s: float = 5.0, translate_s: float = 10.0,
+    focal_uci: str | None = None, mcts_bestmove_uci: str | None = None,
+) -> dict:
+    return {
+        "position_id": position_id,
+        "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "category": category,
+        "stratum": category,
+        "themes": themes or ["fork"],
+        "rating": rating,
+        "handler": handler,
+        "mode": mode,
+        "focal_uci": focal_uci,
+        "focal_source": "puzzle_solution",
+        "mcts_bestmove_uci": mcts_bestmove_uci,
+        "focal_matches_mcts_pick": (
+            focal_uci is not None and focal_uci == mcts_bestmove_uci
+        ),
+        "source": source,
+        "validation_ok": validation_ok,
+        "validation_errors": errors or [],
+        "prompt_version": 4,
+        "handler_s": handler_s,
+        "translate_s": translate_s,
+        "llm_calls": llm_calls,
+        "input_tokens": 1000 if llm_calls > 0 else 0,
+        "output_tokens": 200 if llm_calls > 0 else 0,
+        "prose": prose,
+    }
+
+
+def test_render_clean_run_no_banner():
+    """All llm_success → no LLM-health warning banner."""
+    rows = [_row(source="llm", validation_ok=True) for _ in range(20)]
+    md = _render(rows, Path("test.jsonl"))
+    assert "LLM-success rate: 100.0%" in md or "LLM-success rate:** 100.0%" in md
+    # Banner only appears when below 95%; here it's 100%, no banner.
+    assert "⚠️ LLM-success rate" not in md
+
+
+def test_render_credit_empty_run_banner_fires():
+    """Every call api_error → llm_success_rate=0% → banner with credit_exhausted."""
+    err = {"kind": "api_error", "detail": "credit balance is too low", "span": ""}
+    rows = [_row(source="templated", validation_ok=False, llm_calls=2, errors=[err]) for _ in range(20)]
+    md = _render(rows, Path("test.jsonl"))
+    # Banner present
+    assert "⚠️ LLM-success rate" in md
+    assert "LLM-success rate is 0.0%" in md
+    # Top api_error sub-kind surfaced
+    assert "credit_exhausted" in md
+    # Validation-pass numbers flagged as unreliable
+    assert "unreliable" in md
+
+
+def test_render_mixed_failure_kinds_surfaces_top_3():
+    """Run with mixed api_error kinds → top 3 in banner."""
+    err_credit = {"kind": "api_error", "detail": "credit balance is too low", "span": ""}
+    err_rate = {"kind": "api_error", "detail": "Error code: 429 rate limit", "span": ""}
+    err_overload = {"kind": "api_error", "detail": "Error code: 529 overloaded", "span": ""}
+    rows = (
+        [_row(source="templated", validation_ok=False, llm_calls=2, errors=[err_credit])] * 5
+        + [_row(source="templated", validation_ok=False, llm_calls=2, errors=[err_rate])] * 3
+        + [_row(source="templated", validation_ok=False, llm_calls=2, errors=[err_overload])] * 2
+    )
+    md = _render(rows, Path("test.jsonl"))
+    assert "credit_exhausted" in md
+    assert "rate_limit" in md
+    assert "overloaded" in md
+    # Counts should reflect the per-kind counts.
+    assert "(5)" in md
+    assert "(3)" in md
+    assert "(2)" in md
+
+
+def test_render_circuit_breaker_sentinel_banner():
+    """If a sentinel row is in the JSONL, the summary surfaces it
+    prominently before the headline aggregate."""
+    sentinel = {
+        "_circuit_breaker": True,
+        "consecutive_api_errors": 3,
+        "last_error_kind": "api_error",
+        "last_error_detail": "credit balance is too low to access the API",
+        "ts": "2026-05-21T18:00:00Z",
+    }
+    rows = (
+        [_row(source="templated", validation_ok=False, llm_calls=2,
+              errors=[{"kind": "api_error", "detail": "credit too low", "span": ""}])
+         for _ in range(3)]
+        + [sentinel]
+    )
+    md = _render(rows, Path("test.jsonl"))
+    assert "CIRCUIT BREAKER ENGAGED" in md
+    assert "3 consecutive" in md
+    # Sentinel row itself excluded from per-rate computation.
+    assert "Runs:** 3" in md  # NOT 4 (sentinel excluded)
+
+
+def test_render_validation_pass_among_llm_success_is_separated():
+    """When some llm calls succeed and some templated, val_pass_rate
+    should be computed ONLY among the llm-success calls."""
+    rows = (
+        [_row(source="llm", validation_ok=True) for _ in range(15)]
+        + [_row(source="llm", validation_ok=False) for _ in range(5)]  # llm but bad prose
+        + [_row(source="templated", validation_ok=False, llm_calls=2,
+                errors=[{"kind": "api_error", "detail": "rate", "span": ""}])] * 5
+    )
+    md = _render(rows, Path("test.jsonl"))
+    # llm_success: 20 (15+5), templated: 5 → llm_success_rate = 20/25 = 80%
+    assert "LLM-success rate:** 80.0%" in md
+    # Validation-pass AMONG llm-success: 15/20 = 75%
+    assert "Validation-pass among LLM-success:** 75.0%" in md
+    # Banner fires because llm_success < 95%
+    assert "⚠️ LLM-success rate" in md
+
+
+# === Chunk 6.9 — failed-prose excerpt + findings_summary diagnostic =======
+
+
+def test_strip_san_marks_drops_check_and_mate():
+    assert _strip_san_marks("Kxf3+") == "Kxf3"
+    assert _strip_san_marks("Qxh1#") == "Qxh1"
+    assert _strip_san_marks("Nf6") == "Nf6"
+    assert _strip_san_marks("") == ""
+
+
+def test_span_in_findings_detects_pv_san_match():
+    """Kxf3+ in prose; Kxf3 in stockfish_pv_sans → validator_gap."""
+    summary = {"stockfish_pv_sans": ["Qxf3+", "Kxf3", "Qxf3"]}
+    assert _span_in_findings_summary("Kxf3+", summary) is True
+    assert _span_in_findings_summary("Kxf3", summary) is True
+    assert _span_in_findings_summary("Kxf3#", summary) is True
+    # Unrelated move: not in findings.
+    assert _span_in_findings_summary("Nxf3+", summary) is False
+
+
+def test_span_in_findings_walks_all_trusted_lists():
+    summary = {
+        "top_moves_san": ["d4"],
+        "mcts_children_san": ["Nf3"],
+        "mcts_bestmove_san": "Bc4",
+        "stockfish_top_san": ["Qd2"],
+        "stockfish_pv_sans": ["e4"],
+        "focal_move_san": "h6",
+    }
+    for span in ["d4", "Nf3", "Bc4", "Qd2", "e4", "h6"]:
+        assert _span_in_findings_summary(span, summary) is True, span
+    assert _span_in_findings_summary("Ra1", summary) is False
+
+
+def test_span_in_findings_empty_summary_returns_false():
+    assert _span_in_findings_summary("Nf3", {}) is False
+    assert _span_in_findings_summary("Nf3", None or {}) is False
+
+
+def test_excerpt_around_span_includes_context():
+    prose = "The position is complex. After Nf3+ White wins material via a discovered attack."
+    excerpt = _excerpt_around_span(prose, "Nf3+", radius=15)
+    # Should include the span + ~15 chars on each side.
+    assert "Nf3+" in excerpt
+    assert "After" in excerpt or "After" in prose[:prose.find("Nf3+")]
+
+
+def test_excerpt_around_span_not_in_prose_returns_marker():
+    """If the span isn't in the prose (e.g. templated fallback), return
+    a clear marker explaining why rather than empty string."""
+    excerpt = _excerpt_around_span("Some templated text.", "Nf3+", radius=80)
+    assert "not in prose" in excerpt
+    assert "templated" in excerpt
+
+
+def test_excerpt_normalises_newlines_and_pipes():
+    """Markdown table cells can't contain raw newlines or unescaped pipes."""
+    prose = "Line 1\nNf3+ is the move | also good is Nc6"
+    excerpt = _excerpt_around_span(prose, "Nf3+", radius=40)
+    assert "\n" not in excerpt
+    # Pipe should be escaped to \| or removed.
+    assert "|" not in excerpt or "\\|" in excerpt
+
+
+def test_render_backward_compat_old_jsonl_without_new_fields():
+    """Old JSONL without llm_attempt_texts + findings_summary still
+    renders without crashing. The illegal_move table will show
+    'span not in prose' excerpts because the templated `prose` field
+    doesn't contain the LLM's failed-attempt spans."""
+    err = {"kind": "illegal_move", "span": "Nf3+", "detail": "..."}
+    rows = [
+        _row(source="templated", validation_ok=False, llm_calls=2, errors=[err]),
+    ]
+    # Strip the new fields from the synthetic row to simulate old JSONL.
+    for r in rows:
+        r.pop("llm_attempt_texts", None)
+        r.pop("findings_summary", None)
+    md = _render(rows, Path("test.jsonl"))
+    # Should render — no crash. The illegal_move table is present.
+    assert "illegal_move classification" in md
+    # In-findings should be ✗ (no findings_summary → can't confirm).
+    assert "✗" in md
+
+
+def test_render_new_jsonl_with_findings_summary_detects_validator_gap():
+    """New JSONL: span IS in findings_summary → classification flips
+    to validator_gap, not real_hallucination."""
+    err = {"kind": "illegal_move", "span": "Kxf3+", "detail": "..."}
+    row = _row(source="templated", validation_ok=False, llm_calls=2, errors=[err])
+    row["llm_attempt_texts"] = [
+        "After Qxf3+ White must play Kxf3+ and Black wins the queen."
+    ]
+    row["findings_summary"] = {
+        "stockfish_pv_sans": ["Qxf3+", "Kxf3", "Qxf3"],
+    }
+    md = _render([row], Path("test.jsonl"))
+    # Classification flips: in-findings → validator_gap.
+    assert "validator_gap" in md
+    assert "Validator gaps" in md  # the new headline bullet
+
+
+def test_render_new_jsonl_with_findings_summary_real_hallucination():
+    """Span NOT in findings_summary AND in failed prose as a move citation
+    → classification stays at 'hallucination' (heuristic) or 'real_hallucination'."""
+    err = {"kind": "illegal_move", "span": "Nf3+", "detail": "..."}
+    row = _row(source="templated", validation_ok=False, llm_calls=2, errors=[err])
+    row["llm_attempt_texts"] = [
+        "White plays Nf3+ attacking the queen — a clean knight fork."
+    ]
+    row["findings_summary"] = {
+        "top_moves_san": ["d4", "e4"],
+        "mcts_children_san": ["d4", "c4"],
+        "stockfish_pv_sans": ["d4", "Nf6"],
+    }
+    md = _render([row], Path("test.jsonl"))
+    # NOT validator_gap (in-findings is ✗).
+    assert "validator_gap" not in md or "Validator gaps** (span IS in findings, validator missed it): 0" in md
+
+
+# === Chunk 7b.2.C: interpretive-claims surfacing in aggregator output ===
+
+
+def test_render_interpretive_claims_section_present_when_candidates_exist():
+    """Aggregator surfaces per-cell interpretive-claim candidates when
+    the JSONL row has a non-empty interpretive_claims list."""
+    row = _row(source="llm", validation_ok=True)
+    row["interpretive_claims"] = [
+        "White's queen has nowhere to hide after the d4-knight falls.",
+    ]
+    md = _render([row], Path("test.jsonl"))
+    # Section header present
+    assert "## Interpretive claims to scrutinize" in md
+    # Stats line surfaces the count
+    assert "1 of 1 cells have ≥1 candidate" in md or "median per cell = 1" in md
+    # The specific claim text rendered
+    assert "queen has nowhere to hide" in md
+
+
+def test_render_interpretive_claims_section_present_when_no_candidates():
+    """Aggregator renders the section header + 'no candidates' note when
+    every cell has empty interpretive_claims (clean prose OR heuristic too
+    narrow)."""
+    row = _row(source="llm", validation_ok=True)
+    row["interpretive_claims"] = []
+    md = _render([row], Path("test.jsonl"))
+    assert "## Interpretive claims to scrutinize" in md
+    assert "no candidates surfaced" in md
+
+
+def test_render_interpretive_claims_backward_compat_no_field():
+    """OLD JSONL rows without the interpretive_claims field render with
+    empty per-cell lists (back-compat for pre-7b.2.C JSONLs)."""
+    row = _row(source="llm", validation_ok=True)
+    # Intentionally don't add interpretive_claims to the row.
+    assert "interpretive_claims" not in row
+    md = _render([row], Path("test.jsonl"))
+    # Section should still render without crashing.
+    assert "## Interpretive claims to scrutinize" in md
+    assert "no candidates surfaced" in md
+
+
+def test_render_interpretive_claims_backlog_signal_fires_when_median_high():
+    """If per-cell median > 1 OR max > 3 (tightened from >2/>4 per 7b.2
+    retro — n=2 baseline warranted faster over-firing detection), the
+    aggregator fires the rater-overwhelm backlog signal."""
+    # Build 4 cells with elevated counts; passes under either threshold.
+    rows = []
+    for i, count in enumerate([5, 6, 7, 8]):
+        row = _row(
+            source="llm", validation_ok=True,
+            category=f"cat_{i}", position_id=f"p_{i}",
+        )
+        row["interpretive_claims"] = [f"Sample interpretive sentence {j}." for j in range(count)]
+        rows.append(row)
+    md = _render(rows, Path("test.jsonl"))
+    assert "Interpretive-claim heuristic surfacing too many candidates" in md
+    assert "Tighten Rule A" in md or "narrow Rule B" in md
+
+
+def test_render_interpretive_claims_no_backlog_signal_when_bounded():
+    """If per-cell counts are within target (median ≤ 1 AND max ≤ 3 per
+    the tighter 7c-7f early-warning thresholds), no backlog signal."""
+    rows = []
+    for i, count in enumerate([0, 0, 1, 1]):  # sorted = [0,0,1,1]; median=1, max=1
+        row = _row(
+            source="llm", validation_ok=True,
+            category=f"cat_{i}", position_id=f"p_{i}",
+        )
+        row["interpretive_claims"] = [f"Sentence {j}." for j in range(count)]
+        rows.append(row)
+    md = _render(rows, Path("test.jsonl"))
+    assert "Interpretive-claim heuristic surfacing too many candidates" not in md
+
+
+def test_render_interpretive_claims_tightened_threshold_catches_what_old_missed():
+    """Per 7b.2 retro: the tightened thresholds (median>1 OR max>3) catch
+    cases the original (median>2 OR max>4) would have let through. Concrete
+    case: counts [0, 1, 2, 3] — median=2, max=3. Under OLD thresholds:
+    median=2 is NOT > 2 AND max=3 is NOT > 4, so signal would have stayed
+    quiet. Under NEW thresholds: median=2 IS > 1, so signal FIRES."""
+    rows = []
+    for i, count in enumerate([0, 1, 2, 3]):
+        row = _row(
+            source="llm", validation_ok=True,
+            category=f"cat_{i}", position_id=f"p_{i}",
+        )
+        row["interpretive_claims"] = [f"Sentence {j}." for j in range(count)]
+        rows.append(row)
+    md = _render(rows, Path("test.jsonl"))
+    # New threshold (median > 1) fires.
+    assert "Interpretive-claim heuristic surfacing too many candidates" in md

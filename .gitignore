@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# uv / venv
+.venv/
+uv.lock.bak
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Project data (per CLAUDE.md §5)
+data/
+weights/
+logs/
+# Lichess Puzzle DB corpus (Phase 2 Chunk 6.8): network-volume artifact;
+# ~500MB compressed + ~2GB uncompressed; not git-friendly. Lives at
+# /workspace/lichess_puzzle_db/ on the pod, NOT inside the repo, but
+# this catch-all guards against accidentally placing a copy in-tree.
+lichess_puzzle_db/
+
+# Secrets
+.env*
+!.env.example
+
+# OS / editor / agent local state
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+*~
+
+# Third-party reference material (papers, other people's repos) — kept
+# locally for research, never committed.
+update_research/
+# Windows NTFS "downloaded from internet" metadata sidecars — appear when
+# copying files from Windows to WSL; pure noise. Delete on disk too.
+*:Zone.Identifier
